@@ -29,7 +29,8 @@ class setup_power_BCMP:
                 self,
                 sim_params_dict,
                 halo_params_dict,
-                num_points_trapz_int=64
+                num_points_trapz_int=64,
+                BCMP_obj=None
             ):    
         
         self.cosmo_params = sim_params_dict['cosmo']
@@ -45,7 +46,8 @@ class setup_power_BCMP:
             wa=0.
             )
 
-        BCMP_obj = BCM_18_wP(sim_params_dict, halo_params_dict, num_points_trapz_int=num_points_trapz_int)
+        if BCMP_obj is None:
+            BCMP_obj = BCM_18_wP(sim_params_dict, halo_params_dict, num_points_trapz_int=num_points_trapz_int)
         self.Mtot_mat = BCMP_obj.Mtot_mat
         Mtot_rep = jnp.repeat(self.Mtot_mat[None, :, :, :], len(BCMP_obj.r_array), axis=0)
         self.r_array = BCMP_obj.r_array
@@ -169,30 +171,28 @@ class setup_power_BCMP:
         return constants.RHO_CRIT_0_KPC3 * self.get_Ez(z)**2  * 1E9      
 
     @partial(jit, static_argnums=(0,))        
-    def get_lgsigma_z(self, jz, lgM, kmin=0.0001, kmax=1000.0, **kwargs):
+    def get_lgsigma_z(self, jz, lgM, kmin=0.0001, kmax=1000.0):
         M = jnp.exp(lgM)
         R = (3.0 * M / 4.0 / np.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
         def int_sigma(logk):
             k = jnp.exp(logk)
             x = k * R
             w = 3.0 * (jnp.sin(x) - x * jnp.cos(x)) / (x * x * x)
-            # pk = transfer_fn(self.cosmo_jax, k, **kwargs) ** 2 * (k**self.cosmo_jax.n_s) * (g ** 2)
             pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:, jz])))
             return k * (k * w) ** 2 * pkz
 
         y = romb(int_sigma, jnp.log10(kmin), jnp.log10(kmax), divmax=7)
-        return jnp.sqrt(y / (2.0 * jnp.pi**2.0))
+        return jnp.log(jnp.sqrt(y / (2.0 * jnp.pi**2.0)))
 
         
     @partial(jit, static_argnums=(0,))        
-    def get_sigma_Mz(self, jz, jM, transfer_fn=tklib.Eisenstein_Hu, kmin=0.0001, kmax=1000.0, **kwargs):
+    def get_sigma_Mz(self, jz, jM, kmin=0.0001, kmax=1000.0):
         R = (3.0 * self.M_array[jM] / 4.0 / np.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
 
         def int_sigma(logk):
             k = jnp.exp(logk)
             x = k * R
             w = 3.0 * (jnp.sin(x) - x * jnp.cos(x)) / (x * x * x)
-            # pk = transfer_fn(self.cosmo_jax, k, **kwargs) ** 2 * (k**self.cosmo_jax.n_s) * (g ** 2)
             pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:, jz])))
             return k * (k * w) ** 2 * pkz
 
@@ -202,6 +202,7 @@ class setup_power_BCMP:
 
     @partial(jit, static_argnums=(0,))
     def get_fsigma_Mz(self, jz, jM, mdef_delta=200):
+        '''Tinker 2008 mass function'''
         sigma = self.sigma_Mz_mat[jz, jM]
         z = self.z_array[jz]
         rho_treshold = mdef_delta * self.get_rho_c(z)
@@ -230,6 +231,7 @@ class setup_power_BCMP:
     
     @partial(jit, static_argnums=(0,))
     def get_bias_Mz(self, jz, jM, mdef_delta=200):
+        '''Tinker 2010 bias function'''
         sigma = self.sigma_Mz_mat[jz, jM]
         delta_c = constants.DELTA_COLLAPSE
         nu = delta_c / sigma
@@ -251,6 +253,7 @@ class setup_power_BCMP:
     
     @partial(jit, static_argnums=(0,))
     def get_conc_Mz(self, jz, jM, mdef='200c'):
+        '''Duffy 2008 concentration relation, for mdef = 200c'''
         M = self.M_array[jM]
         z = self.z_array[jz]
         A = 5.71

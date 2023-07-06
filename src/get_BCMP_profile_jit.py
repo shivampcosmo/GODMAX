@@ -1,4 +1,6 @@
-platform = 'gpu'
+# platform = 'cpu'
+from jax.lib import xla_bridge
+platform = xla_bridge.get_backend().platform
 import jax
 jax.config.update('jax_platform_name', platform)
 
