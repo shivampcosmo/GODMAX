@@ -31,7 +31,8 @@ class setup_power_BCMP:
                 sim_params_dict,
                 halo_params_dict,
                 num_points_trapz_int=64,
-                BCMP_obj=None
+                BCMP_obj=None,
+                verbose_time=False
             ):    
         
         self.cosmo_params = sim_params_dict['cosmo']
@@ -66,7 +67,7 @@ class setup_power_BCMP:
         self.sig_logc_z_array = jnp.array(halo_params_dict['sig_logc_z_array'])
         self.beam_fwhm_arcmin = sim_params_dict['beam_fwhm_arcmin']        
 
-        self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(100), 100)
+        self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(100), 64)
         self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
 
 

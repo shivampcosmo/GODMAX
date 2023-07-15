@@ -395,7 +395,7 @@ class BCM_18_wP:
         # bisec = Bisection(optimality_fun=zeta_equation, lower=0.01, upper=1.5, 
         #             check_bracket=False, unroll=True)
         # zeta = bisec.run().params
-        zeta_array = jnp.linspace(0.5, 1.5, 100)
+        zeta_array = jnp.linspace(0.5, 1.5, 32)
         value_out = vmap(zeta_equation)(zeta_array)
         zeta = jnp.interp(0.0, value_out, zeta_array)
         return zeta
