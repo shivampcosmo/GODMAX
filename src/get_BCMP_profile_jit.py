@@ -9,15 +9,16 @@ from jax import grad, jit, vmap
 import numpy as np
 from jaxopt import Bisection
 from functools import partial
-
+import constants
 import astropy.units as u
 from astropy import constants as const
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.eV / u.cm**3)).value
-from colossus.halo import mass_so
+# from colossus.halo import mass_so
+import jax_cosmo.background as bkgrd
 
 from jax_cosmo import Cosmology
-from colossus.cosmology import cosmology
+# from colossus.cosmology import cosmology
 
 
 
@@ -27,10 +28,11 @@ class BCM_18_wP:
             self,
             sim_params_dict,
             halo_params_dict,
-            num_points_trapz_int=64
+            num_points_trapz_int=64,
+            verbose_time=False            
         ):
         cosmo_params = sim_params_dict['cosmo']
-        self.cosmo_colossus = cosmology.setCosmology('myCosmo', **cosmo_params)
+        # self.cosmo_colossus = cosmology.setCosmology('myCosmo', **cosmo_params)
         self.cosmo_jax = Cosmology(
             Omega_c=cosmo_params['Om0'] - cosmo_params['Ob0'],
             Omega_b=cosmo_params['Ob0'],
@@ -69,27 +71,41 @@ class BCM_18_wP:
         zmin, zmax, nz = halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz']
         Mmin, Mmax, nM = halo_params_dict['Mmin'], halo_params_dict['Mmax'], halo_params_dict['nM']
         cmin, cmax, nc = halo_params_dict['cmin'], halo_params_dict['cmax'], halo_params_dict['nc']
-        self.r_array = jnp.logspace(np.log10(rmin), np.log10(rmax), nr)
+        self.r_array = jnp.logspace(jnp.log10(rmin), jnp.log10(rmax), nr)
         self.z_array = jnp.linspace(zmin, zmax, nz)
-        self.M200c_array = jnp.logspace(np.log10(Mmin), np.log10(Mmax), nM)
+        self.scale_fac_a_array = 1./(1. + self.z_array)
+        self.M200c_array = jnp.logspace(jnp.log10(Mmin), jnp.log10(Mmax), nM)
         self.conc_array = jnp.exp(jnp.linspace(jnp.log(cmin), jnp.log(cmax), nc))
         
-        mdef = halo_params_dict['mdef']
-        r200c_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
-        for jz in range(len(self.z_array)):
-            r200c_mat[:, jz] = (mass_so.M_to_R(self.M200c_array, self.z_array[jz], mdef) / (1000.))
+        # mdef = halo_params_dict['mdef']
+        # r200c_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
+        # for jz in range(len(self.z_array)):
+        #     r200c_mat[:, jz] = (mass_so.M_to_R(self.M200c_array, self.z_array[jz], mdef) / (1000.))
 
-        self.r200c_mat = jnp.array(r200c_mat)
+        # self.r200c_mat = jnp.array(r200c_mat)
+        vmap_func1 = vmap(self.get_M_to_R, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.r200c_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
 
 
         self.rt_mat = self.r200c_mat * self.epsilon_rt
         Mc_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
         beta_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
-        for jM in range(len(self.M200c_array)):
-            Mc_mat[jM, :] = self.Mc0 * ((np.array(self.M200c_array)[jM]/self.Mstar0) ** self.nu_M) * ((1 + np.array(self.z_array)) ** self.nu_z)
-            beta_mat[jM, :] = 3 - ((Mc_mat[jM, :] / np.array(self.M200c_array)[jM]) ** self.mu_beta)
-        self.Mc_mat = jnp.array(Mc_mat)
-        self.beta_mat = jnp.array(beta_mat)
+
+        # for jM in range(len(self.M200c_array)):
+        #     Mc_mat[jM, :] = self.Mc0 * ((np.array(self.M200c_array)[jM]/self.Mstar0) ** self.nu_M) * ((1 + np.array(self.z_array)) ** self.nu_z)
+        #     beta_mat[jM, :] = 3 - ((Mc_mat[jM, :] / np.array(self.M200c_array)[jM]) ** self.mu_beta)
+        # self.Mc_mat = jnp.array(Mc_mat)
+        # self.beta_mat = jnp.array(beta_mat)
+        vmap_func1 = vmap(self.get_Mc, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Mc_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
+
+        vmap_func1 = vmap(self.get_beta, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.beta_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
+
+
         self.r_co_mat = self.theta_co * self.r200c_mat
         self.r_ej_mat = self.theta_ej * self.r200c_mat
         self.fstar_array = self.A_starcga * ((self.M1_starcga / self.M200c_array) ** self.eta_star)
@@ -166,6 +182,23 @@ class BCM_18_wP:
             fx = (vmap(f, axis_tup)(jnp.arange(len(logx)), jc, jz, jM, x))*(4*jnp.pi*x**2) * x
         integral_value = jnp.trapz(fx, x=logx)
         return integral_value
+
+    @partial(jit, static_argnums=(0,))
+    def get_M_to_R(self, jM, jz, mdef_delta=200):
+        rho_c_z = constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(self.cosmo_jax,self.scale_fac_a_array[jz]) * 1e9
+        rho_treshold = mdef_delta * rho_c_z
+        R = (self.M200c_array[jM] * 3.0 / 4.0 / jnp.pi / rho_treshold)**(1.0 / 3.0)
+        return R
+
+    @partial(jit, static_argnums=(0,))
+    def get_Mc(self, jM, jz):
+        value = self.Mc0 * jnp.power(((self.M200c_array[jM])/self.Mstar0), self.nu_M) * jnp.power((1 + (self.z_array[jz])), self.nu_z)
+        return value
+
+    @partial(jit, static_argnums=(0,))
+    def get_beta(self, jM, jz):
+        value = 3 - jnp.power((self.Mc_mat[jM, jz] / (self.M200c_array[jM])), self.mu_beta)
+        return value
 
 
 
@@ -359,9 +392,12 @@ class BCM_18_wP:
             rf = zeta * ri
             Mf = self.fclm_array[jM] * Mi + self.get_Mcga(0, jc, jz, jM, r_array_here=jnp.array([rf])) + self.get_Mgas(0, jc, jz, jM, r_array_here=jnp.array([rf]))
             return ((rf / ri - 1) - self.a_zeta * ((Mi / Mf)**self.n_zeta - 1))
-        bisec = Bisection(optimality_fun=zeta_equation, lower=0.01, upper=1.5, 
-                    check_bracket=False, unroll=True)
-        zeta = bisec.run().params
+        # bisec = Bisection(optimality_fun=zeta_equation, lower=0.01, upper=1.5, 
+        #             check_bracket=False, unroll=True)
+        # zeta = bisec.run().params
+        zeta_array = jnp.linspace(0.5, 1.5, 100)
+        value_out = vmap(zeta_equation)(zeta_array)
+        zeta = jnp.interp(0.0, value_out, zeta_array)
         return zeta
 
 

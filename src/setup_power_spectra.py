@@ -13,6 +13,7 @@ import astropy.units as u
 from astropy import constants as const
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.eV / u.cm**3)).value
+G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
 import constants
 from mcfit import xi2P
 
@@ -46,6 +47,9 @@ class setup_power_BCMP:
             wa=0.
             )
 
+        H0 = 100. * (u.km / (u.s * u.Mpc))
+        self.rho_m_bar = ((self.cosmo_params['Om0'] * 3 * (H0**2) / (8 * jnp.pi * G_new_rhom)).to(u.M_sun / (u.Mpc**3))).value
+
         if BCMP_obj is None:
             BCMP_obj = BCM_18_wP(sim_params_dict, halo_params_dict, num_points_trapz_int=num_points_trapz_int)
         self.Mtot_mat = BCMP_obj.Mtot_mat
@@ -59,7 +63,8 @@ class setup_power_BCMP:
         self.r200c_mat = BCMP_obj.r200c_mat
         self.rho_dmb_mat = BCMP_obj.rho_dmb_mat
         self.rho_nfw_mat = BCMP_obj.rho_nfw_mat
-        self.sig_logc_z_array = jnp.array(halo_params_dict['sig_logc_z_array'])        
+        self.sig_logc_z_array = jnp.array(halo_params_dict['sig_logc_z_array'])
+        self.beam_fwhm_arcmin = sim_params_dict['beam_fwhm_arcmin']        
 
         self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(100), 100)
         self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
@@ -135,6 +140,7 @@ class setup_power_BCMP:
 
         ellmin, ellmax, nell = halo_params_dict['ellmin'], halo_params_dict['ellmax'], halo_params_dict['nell']
         self.ell_array = jnp.logspace(jnp.log10(ellmin), jnp.log10(ellmax), nell)
+        self.sig_beam = self.beam_fwhm_arcmin * (1. / 60.) * (jnp.pi / 180.) * (1. / jnp.sqrt(8. * jnp.log(2)))
 
         vmap_func1 = vmap(self.get_uyl, (0, None, None, None))
         vmap_func2 = vmap(vmap_func1, (None, 0, None, None))
@@ -157,6 +163,12 @@ class setup_power_BCMP:
         vmap_func3 = vmap(vmap_func2, (None, None, 0, None))
         vmap_func4 = vmap(vmap_func3, (None, None, None, 0))
         self.ukappal_nfw_prefac_mat = vmap_func4(jnp.arange(nell), jnp.arange(self.nc), jnp.arange(self.nz), jnp.arange(self.nM)).T
+
+        vmap_func1 = vmap(self.get_Pklin_lz, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Pklin_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+
+
 
     def get_rho_m(self, z):
         return (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * (1.0 + z)**3) * 1E9
@@ -268,22 +280,27 @@ class setup_power_BCMP:
     @partial(jit, static_argnums=(0,))
     def get_uyl(self, jl, jc, jz, jM, xmin=0.01, xmax=4, num_points_trapz_int=64):
         r200c = self.r200c_mat[jz, jM]
-        z = self.z_array[jz]
+        # z = self.z_array[jz]
         # az = 1.0 / (1.0 + z)
         # Da_z = angular_diameter_distance(self.cosmo_jax, az)
-        Da_z = self.DA_array[jz]
+        Da_z = jnp.clip(self.DA_array[jz], 1.0)
         l200c = Da_z/r200c
         prefac = r200c/l200c**2
         logx_array = jnp.linspace(jnp.log(xmin), jnp.log(xmax), num_points_trapz_int)
         x_array = jnp.exp(logx_array)
 
-        y3d_xarray = jnp.exp(jnp.interp(logx_array, jnp.log(self.r_array/r200c), jnp.log(self.y3d_mat[:,jc, jz, jM])))
+        y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jc, jz, jM]))
+        y3d_clipped = jnp.clip(self.y3d_mat[:,jc, jz, jM], y3d_min + 1e-25)
+        # y3d_xarray = jnp.exp(jnp.interp(logx_array, jnp.log(self.r_array/r200c), jnp.log(self.y3d_mat[:,jc, jz, jM])))
+        y3d_xarray = jnp.exp(jnp.interp(logx_array, jnp.log(self.r_array/r200c), jnp.log(y3d_clipped)))        
         ell = self.ell_array[jl]
         sin_fac = (jnp.sin(ell*x_array/l200c))/(ell*x_array/l200c)
 
         fx = y3d_xarray * sin_fac * (4*jnp.pi*x_array**2) * x_array
         uyl = prefac * jnp.trapz(fx, x=logx_array)
-        return uyl
+        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+        return uyl * Bl
+
 
     @partial(jit, static_argnums=(0,))
     def get_byl(self, jl, jz):
@@ -304,21 +321,35 @@ class setup_power_BCMP:
         byl = jnp.trapz(fx, x=jnp.log(self.M_array))
         return byl
 
+    @partial(jit, static_argnums=(0,))
+    def get_Pklin_lz(self, jl, jz):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:,jz])))
+        return Pkz_ell
+
 
     @partial(jit, static_argnums=(0,))
     def get_ukappal_dmb_prefac(self, jl, jc, jz, jM):
         ell = self.ell_array[jl]
         chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/chi_z
-        uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_dmb[:,jc, jz, jM])))
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        # uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_dmb[:,jc, jz, jM])))
+        uk_min = jnp.min(jnp.absolute(self.uk_dmb[:,jc, jz, jM]))
+        uk_clipped = jnp.clip(self.uk_dmb[:,jc, jz, jM], uk_min + 1e-25) * self.M_array[jM]/self.rho_m_bar
+        uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(uk_clipped)))        
         return uk_dmb_ell
 
     @partial(jit, static_argnums=(0,))
     def get_ukappal_nfw_prefac(self, jl, jc, jz, jM):
         ell = self.ell_array[jl]
         chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/chi_z
-        uk_nfw_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_nfw[:,jc, jz, jM])))
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        # uk_nfw_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_nfw[:,jc, jz, jM])))
+        uk_min = jnp.min(jnp.absolute(self.uk_nfw[:,jc, jz, jM]))
+        uk_clipped = jnp.clip(self.uk_nfw[:,jc, jz, jM], uk_min + 1e-25) * self.M_array[jM]/self.rho_m_bar
+        uk_nfw_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(uk_clipped)))        
         return uk_nfw_ell
     
     @partial(jit, static_argnums=(0,))
