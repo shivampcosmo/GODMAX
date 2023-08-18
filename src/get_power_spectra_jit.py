@@ -146,7 +146,7 @@ class get_power_BCMP:
         Note: this function handles differently nzs that correspond to extended redshift
         distribution, and delta functions.
         """
-        z = self.z_array_nz[jz]
+        z = self.z_array[jz]
         chi = self.chi_array[jz]
 
         @vmap

@@ -89,8 +89,8 @@ class BCM_18_wP:
 
 
         self.rt_mat = self.r200c_mat * self.epsilon_rt
-        Mc_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
-        beta_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
+        # Mc_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
+        # beta_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
 
         # for jM in range(len(self.M200c_array)):
         #     Mc_mat[jM, :] = self.Mc0 * ((np.array(self.M200c_array)[jM]/self.Mstar0) ** self.nu_M) * ((1 + np.array(self.z_array)) ** self.nu_z)
@@ -169,9 +169,9 @@ class BCM_18_wP:
         vmap_func2 = vmap(vmap_func1, (None, 0, None, None))
         vmap_func3 = vmap(vmap_func2, (None, None, 0, None))
         vmap_func4 = vmap(vmap_func3, (None, None, None, 0))
-        Pnt_fac = vmap_func4(jnp.arange(nr), jnp.arange(nc), jnp.arange(nz), jnp.arange(nM)).T
+        self.Pnt_fac = vmap_func4(jnp.arange(nr), jnp.arange(nc), jnp.arange(nz), jnp.arange(nM)).T
 
-        self.Pnt_mat = Pnt_fac * self.Ptot_mat
+        self.Pnt_mat = self.Pnt_fac * self.Ptot_mat
         self.Pth_mat = self.Ptot_mat * jnp.maximum(0, 1 - (self.Pnt_mat / self.Ptot_mat))
 
     def logspace_trapezoidal_integral(self, f, logx, jc=None, jz=None, jM=None, axis_tup=(0, None, None, None)):
@@ -465,7 +465,7 @@ class BCM_18_wP:
         return fz
 
     @partial(jit, static_argnums=(0,))
-    def get_Pnt_fac(self, jr, jc, jM, jz, r_array_here=None):
+    def get_Pnt_fac(self, jr, jc, jz, jM, r_array_here=None):
         '''This is the non-thermal pressure profile'''
         if r_array_here is None:
             r = self.r_array[jr]
