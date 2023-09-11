@@ -44,7 +44,7 @@ class get_power_BCMP:
         if verbose_time:
             ti = time.time()
         if setup_power_BCMP_obj is None:
-            setup_power_BCMP_obj = setup_power_BCMP(sim_params_dict, halo_params_dict, num_points_trapz_int=num_points_trapz_int, verbose_time=verbose_time)
+            setup_power_BCMP_obj = setup_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, num_points_trapz_int=num_points_trapz_int, verbose_time=verbose_time)
         if verbose_time:
             print('Time for setup_power_BCMP: ', time.time() - ti)
             ti = time.time()
@@ -61,6 +61,8 @@ class get_power_BCMP:
         self.byl_mat = setup_power_BCMP_obj.byl_mat
         self.ukappal_dmb_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_dmb_prefac_mat, 1, 3)
         self.ukappal_nfw_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_nfw_prefac_mat, 1, 3)        
+        self.bkl_dmb_mat = setup_power_BCMP_obj.bkl_dmb_mat
+        self.bkl_nfw_mat = setup_power_BCMP_obj.bkl_nfw_mat
         self.Pklin_lz_mat = setup_power_BCMP_obj.Pklin_lz_mat
         self.ell_array = setup_power_BCMP_obj.ell_array
         self.nell = len(self.ell_array)
@@ -79,7 +81,6 @@ class get_power_BCMP:
         vmap_func1 = vmap(self.weak_lensing_kernel, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Wk_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nz)).T
-        # self.Wk_mat = self.Wk_mat
         if verbose_time:
             print('Time for computing Wk_mat: ', time.time() - ti)
             ti = time.time()
@@ -136,6 +137,14 @@ class get_power_BCMP:
                 print('Total time for computing all Cls: ', time.time() - t0)                
                 # ti = time.time()
 
+            vmap_func1 = vmap(self.get_Cl_kappa_kappa_nfw_2h, (0, None, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0, None))
+            vmap_func3 = vmap(vmap_func2, (None, None, 0))
+            self.Cl_kappa_kappa_nfw_2h_mat = vmap_func3(jnp.arange(self.nbins), jnp.arange(self.nbins), jnp.arange(self.nell)).T
+            if verbose_time:
+                print('Time for computing Cl_kappa_kappa_2h_mat: ', time.time() - ti)
+                # print('Total time for computing all Cls: ', time.time() - t0)
+                ti = time.time()                
 
         
     @partial(jit, static_argnums=(0,))
@@ -212,9 +221,10 @@ class get_power_BCMP:
         """
         Wk_jb = self.Wk_mat[jb]
         prefac_for_uk = Wk_jb/(self.chi_array**2)
+        bkl_jl = self.bkl_dmb_mat[jl]
         byl_jl = self.byl_mat[jl]
         
-        fx = byl_jl * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+        fx = byl_jl * bkl_jl * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
         fx_intz = jnp.trapz(fx, x=self.z_array)
         return fx_intz
 
@@ -250,8 +260,9 @@ class get_power_BCMP:
         prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
         Wk_jb2 = self.Wk_mat[jb2]
         prefac_for_uk2 = Wk_jb2/(self.chi_array**2)
+        bkl_jl = self.bkl_dmb_mat[jl]
         
-        fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+        fx = (bkl_jl**2) * prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
         fx_intz = jnp.trapz(fx, x=self.z_array)
         return fx_intz
 
@@ -276,3 +287,19 @@ class get_power_BCMP:
         fx_intz = jnp.trapz(fx, x=self.z_array)
         return fx_intz
 
+
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_kappa_kappa_nfw_2h(self, jb1, jb2, jl):
+        """
+        Computes the 1-halo term of the cross-spectrum between the convergence and the
+        Compton-y map.
+        """
+        Wk_jb1 = self.Wk_mat[jb1]
+        prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
+        Wk_jb2 = self.Wk_mat[jb2]
+        prefac_for_uk2 = Wk_jb2/(self.chi_array**2)
+        bkl_jl = self.bkl_nfw_mat[jl]
+        
+        fx = (bkl_jl**2) * prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+        fx_intz = jnp.trapz(fx, x=self.z_array)
+        return fx_intz
