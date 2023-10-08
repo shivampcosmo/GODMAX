@@ -3,7 +3,7 @@ from jax.lib import xla_bridge
 platform = xla_bridge.get_backend().platform
 import jax
 jax.config.update('jax_platform_name', platform)
-
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 import numpy as np
@@ -16,7 +16,7 @@ RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.eV / u.cm**3)).value
 # from colossus.halo import mass_so
 import jax_cosmo.background as bkgrd
-
+import time
 from jax_cosmo import Cosmology
 # from colossus.cosmology import cosmology
 
@@ -31,6 +31,9 @@ class BCM_18_wP:
             num_points_trapz_int=64,
             verbose_time=False            
         ):
+
+        if verbose_time:
+            ti = time.time()
         cosmo_params = sim_params_dict['cosmo']
         # self.cosmo_colossus = cosmology.setCosmology('myCosmo', **cosmo_params)
         self.cosmo_jax = Cosmology(
@@ -44,25 +47,30 @@ class BCM_18_wP:
             wa=0.
             )
 
-        self.nfw_trunc = sim_params_dict['nfw_trunc']
-        self.theta_co=sim_params_dict['theta_co']
-        self.theta_ej=sim_params_dict['theta_ej']
-        self.neg_bhse_plus_1=sim_params_dict['neg_bhse_plus_1']
-        self.mu_beta=sim_params_dict['mu_beta']
-        self.eta_star=sim_params_dict['eta_star']
-        self.eta_cga=sim_params_dict['eta_cga']
-        self.A_starcga=sim_params_dict['A_starcga']
-        self.M1_starcga=sim_params_dict['M1_starcga']
-        self.epsilon_rt=sim_params_dict['epsilon_rt']
-        self.Mc0 = sim_params_dict['Mc0']
-        self.nu_z = sim_params_dict['nu_z']
-        self.nu_M = sim_params_dict['nu_M']
-        self.Mstar0 = sim_params_dict['Mstar0']
-        self.a_zeta=sim_params_dict['a_zeta']
-        self.n_zeta=sim_params_dict['n_zeta']
-        self.alpha_nt = sim_params_dict['alpha_nt']
-        self.beta_nt = sim_params_dict['beta_nt']
-        self.n_nt = sim_params_dict['n_nt']
+        self.nfw_trunc = sim_params_dict.get('nfw_trunc',True)
+        self.theta_co=sim_params_dict.get('theta_co',0.1)
+        self.theta_ej=sim_params_dict.get('theta_ej',4.0)
+        self.neg_bhse_plus_1=sim_params_dict.get('neg_bhse_plus_1',0.833)
+        self.mu_beta=sim_params_dict.get('mu_beta',0.21)
+        self.eta_star=sim_params_dict.get('eta_star',0.3)
+        self.eta_cga=sim_params_dict.get('eta_cga',0.6)
+        self.A_starcga=sim_params_dict.get('A_starcga',0.09)
+        log10_M1_starcga=sim_params_dict.get('log10_M1_starcga',11.4)
+        self.M1_starcga=10**log10_M1_starcga
+        self.epsilon_rt=sim_params_dict.get('epsilon_rt',4.0)
+        log10_Mc0 = sim_params_dict.get('log10_Mc0',14.83)
+        self.Mc0 = 10**log10_Mc0
+        self.nu_z = sim_params_dict.get('nu_z',0.0)
+        self.nu_M = sim_params_dict.get('nu_M',0.0)
+        log10_Mstar0 = sim_params_dict.get('log10_Mstar0',13.0)
+        self.Mstar0 = 10**log10_Mstar0
+        self.a_zeta=sim_params_dict.get('a_zeta',0.3)
+        self.n_zeta=sim_params_dict.get('n_zeta',2.0)
+        self.alpha_nt = sim_params_dict.get('alpha_nt',0.18)
+        self.beta_nt = sim_params_dict.get('beta_nt',0.5)
+        self.n_nt = sim_params_dict.get('n_nt',0.3)
+        self.gamma_rhogas = sim_params_dict.get('gamma_rhogas', 2.)
+        self.delta_rhogas = sim_params_dict.get('delta_rhogas', 7.)
 
         self.num_points_trapz_int = num_points_trapz_int
 
@@ -113,7 +121,7 @@ class BCM_18_wP:
         self.fcga_array = self.A_starcga * ((self.M1_starcga / self.M200c_array) ** self.eta_cga)
         self.fclm_array = (1 - cosmo_params['Ob0'] / cosmo_params['Om0']) + self.fstar_array - self.fcga_array
         self.Rh_mat = 0.015 * self.r200c_mat
-
+        
         vmap_func1 = vmap(self.get_rho_nfw_unnorm, (0, None, None, None))
         vmap_func2 = vmap(vmap_func1, (None, 0, None, None))
         vmap_func3 = vmap(vmap_func2, (None, None, 0, None))
@@ -140,6 +148,12 @@ class BCM_18_wP:
         vmap_func2 = vmap(vmap_func1, (None, 0, None))
         vmap_func3 = vmap(vmap_func2, (None, None, 0))
         self.rho_gas_norm_mat = vmap_func3(jnp.arange(nc), jnp.arange(nz), jnp.arange(nM)).T
+
+        vmap_func1 = vmap(self.get_rho_gas_normed, (0, None, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0, None))
+        vmap_func4 = vmap(vmap_func3, (None, None, None, 0))
+        self.rho_gas_mat = vmap_func4(jnp.arange(nr), jnp.arange(nc), jnp.arange(nz), jnp.arange(nM)).T
 
         vmap_func1 = vmap(self.get_zeta, (0, None, None, None))
         vmap_func2 = vmap(vmap_func1, (None, 0, None, None))
@@ -174,6 +188,10 @@ class BCM_18_wP:
         self.Pnt_mat = self.Pnt_fac * self.Ptot_mat
         self.Pth_mat = self.Ptot_mat * jnp.maximum(0, 1 - (self.Pnt_mat / self.Ptot_mat))
 
+        if verbose_time:
+            tf = time.time()
+            print('Time taken to calculate BCMP profile: ', tf-ti, ' seconds')
+
     def logspace_trapezoidal_integral(self, f, logx, jc=None, jz=None, jM=None, axis_tup=(0, None, None, None)):
         x = jnp.exp(logx)
         if jc is None:
@@ -188,6 +206,8 @@ class BCM_18_wP:
         rho_c_z = constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(self.cosmo_jax,self.scale_fac_a_array[jz]) * 1e9
         rho_treshold = mdef_delta * rho_c_z
         R = (self.M200c_array[jM] * 3.0 / 4.0 / jnp.pi / rho_treshold)**(1.0 / 3.0)
+        # convert to comoving coordinates
+        R *= (1 + self.z_array[jz])
         return R
 
     @partial(jit, static_argnums=(0,))
@@ -195,11 +215,15 @@ class BCM_18_wP:
         value = self.Mc0 * jnp.power(((self.M200c_array[jM])/self.Mstar0), self.nu_M) * jnp.power((1 + (self.z_array[jz])), self.nu_z)
         return value
 
+    # @partial(jit, static_argnums=(0,))
+    # def get_beta(self, jM, jz):
+    #     value = 3 - jnp.power((self.Mc_mat[jM, jz] / (self.M200c_array[jM])), self.mu_beta)
+    #     return value
+
     @partial(jit, static_argnums=(0,))
     def get_beta(self, jM, jz):
-        value = 3 - jnp.power((self.Mc_mat[jM, jz] / (self.M200c_array[jM])), self.mu_beta)
+        value = 3*jnp.power(self.M200c_array[jM]/self.Mc_mat[jM, jz],self.mu_beta)/(1 + jnp.power(self.M200c_array[jM]/self.Mc_mat[jM, jz],self.mu_beta))
         return value
-
 
 
     @partial(jit, static_argnums=(0,))
@@ -314,6 +338,20 @@ class BCM_18_wP:
         return Mcga
 
 
+    # @partial(jit, static_argnums=(0,))
+    # def get_rho_gas_unnorm(self, jr, jz, jM, r_array_here=None):
+    #     '''
+    #     This is the gas profile (Eq.2.12)
+    #     '''
+    #     if r_array_here is None:
+    #         r = self.r_array[jr]
+    #     else:
+    #         r = r_array_here[jr]
+    #     u = r / self.r_co_mat[jM, jz]
+    #     v = r / self.r_ej_mat[jM, jz]
+    #     rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jM, jz]) * jnp.power(1 + v**2, (7 - self.beta_mat[jM, jz]) / 2.))
+    #     return rho_gas_unnorm
+    
     @partial(jit, static_argnums=(0,))
     def get_rho_gas_unnorm(self, jr, jz, jM, r_array_here=None):
         '''
@@ -325,8 +363,8 @@ class BCM_18_wP:
             r = r_array_here[jr]
         u = r / self.r_co_mat[jM, jz]
         v = r / self.r_ej_mat[jM, jz]
-        rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jM, jz]) * jnp.power(1 + v**2, (7 - self.beta_mat[jM, jz]) / 2.))
-        return rho_gas_unnorm
+        rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jM, jz]) * jnp.power(1 + jnp.power(v, self.gamma_rhogas), (self.delta_rhogas - self.beta_mat[jM, jz]) / self.gamma_rhogas))
+        return rho_gas_unnorm    
 
     @partial(jit, static_argnums=(0,))
     def get_rho_gas_norm(self, jc, jz, jM, rmax_r200c=20):
@@ -448,13 +486,14 @@ class BCM_18_wP:
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        logx = jnp.linspace(jnp.log(r), jnp.log(6*self.r200c_mat[jM, jz]), self.num_points_trapz_int)
+        logx = jnp.linspace(jnp.log(r), jnp.log(4*self.r200c_mat[jM, jz]), self.num_points_trapz_int)
         x = jnp.exp(logx)
         fx1 = (vmap(self.get_rho_gas_normed, (0, None, None, None,None))(jnp.arange(len(logx)), jc, jz, jM, x))
         # fx2 = (vmap(self.get_Mdmb, (0, None, None, None,None))(jnp.arange(len(logx)), jc, jz, jM, x))
         fx2 = jnp.interp(logx, jnp.log(self.r_array), self.Mdmb_mat[:,jc, jz, jM])
         fx = (fx1 * fx2 * G_new / x**2) * x
         Ptot = jnp.trapz(fx, x=logx)
+        Ptot = jnp.clip(Ptot, 1e-30)
         return Ptot
     
     @partial(jit, static_argnums=(0,))

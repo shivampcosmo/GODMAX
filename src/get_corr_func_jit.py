@@ -86,7 +86,7 @@ class get_corrfunc_BCMP:
         want_like_diff = analysis_dict['want_like_diff']
         self.angles_data_array = jnp.array(analysis_dict['angles_data_array'])
         self.nt_out = len(self.angles_data_array)
-        
+        self.calc_nfw_only = analysis_dict['calc_nfw_only']
         self.ell_array = get_power_BCMP_obj.ell_array
         self.log_ell_array = jnp.log(self.ell_array)
         ellmin_transf, ellmax_transf, nell_transf = analysis_dict['ellmin_transf'], analysis_dict['ellmax_transf'], analysis_dict['nell_transf']
@@ -105,27 +105,28 @@ class get_corrfunc_BCMP:
             self.Cl_kappa_y_1h = get_power_BCMP_obj.Cl_kappa_y_1h_mat
             self.Cl_kappa_y_2h = get_power_BCMP_obj.Cl_kappa_y_2h_mat
             
-            Cl_kappa_y_1h_min = jnp.min(jnp.absolute(self.Cl_kappa_y_1h))
-            self.logCl_kappa_y_1h_clipped = jnp.log(jnp.clip(self.Cl_kappa_y_1h, Cl_kappa_y_1h_min + 1e-25))
-            # interpolate the self.logCl_kappa_y_1h_clipped to the self.ell_array_transf
-            # first create a lambda function for each value of ell_array_transf
-            # then use vmap to create a function that takes in the index of the ell_array_transf and the index of the bin
-            interp1h = lambda jb, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_y_1h_clipped[jb,:]))
-            vmap1 = vmap(interp1h, (0, None))
-            vmap2 = vmap(vmap1, (None, 0))
-            self.Cl_kappa_y_1h_ell_transf = vmap2(jnp.arange(self.nbins), self.log_ell_array_transf).T
-            
-            Cl_kappa_y_2h_min = jnp.min(jnp.absolute(self.Cl_kappa_y_2h))
-            self.logCl_kappa_y_2h_clipped = jnp.log(jnp.clip(self.Cl_kappa_y_2h, Cl_kappa_y_2h_min + 1e-25))
-            interp2h = lambda jb, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_y_2h_clipped[jb,:]))
-            vmap1 = vmap(interp2h, (0, None))
-            vmap2 = vmap(vmap1, (None, 0))
-            self.Cl_kappa_y_2h_ell_transf = vmap2(jnp.arange(self.nbins), self.log_ell_array_transf).T
 
             if verbose_time:
                 ti = time.time()
 
             if want_like_diff:
+                Cl_kappa_y_1h_min = jnp.min(jnp.absolute(self.Cl_kappa_y_1h))
+                self.logCl_kappa_y_1h_clipped = jnp.log(jnp.clip(self.Cl_kappa_y_1h, Cl_kappa_y_1h_min + 1e-25))
+                # interpolate the self.logCl_kappa_y_1h_clipped to the self.ell_array_transf
+                # first create a lambda function for each value of ell_array_transf
+                # then use vmap to create a function that takes in the index of the ell_array_transf and the index of the bin
+                interp1h = lambda jb, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_y_1h_clipped[jb,:]))
+                vmap1 = vmap(interp1h, (0, None))
+                vmap2 = vmap(vmap1, (None, 0))
+                self.Cl_kappa_y_1h_ell_transf = vmap2(jnp.arange(self.nbins), self.log_ell_array_transf).T
+                
+                Cl_kappa_y_2h_min = jnp.min(jnp.absolute(self.Cl_kappa_y_2h))
+                self.logCl_kappa_y_2h_clipped = jnp.log(jnp.clip(self.Cl_kappa_y_2h, Cl_kappa_y_2h_min + 1e-25))
+                interp2h = lambda jb, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_y_2h_clipped[jb,:]))
+                vmap1 = vmap(interp2h, (0, None))
+                vmap2 = vmap(vmap1, (None, 0))
+                self.Cl_kappa_y_2h_ell_transf = vmap2(jnp.arange(self.nbins), self.log_ell_array_transf).T
+
                 self.gty_1h_out_mat = vmap(self.get_Hankel_gty_1h)(jnp.arange(len(self.angles_data_array)))
                 self.gty_2h_out_mat = vmap(self.get_Hankel_gty_2h)(jnp.arange(len(self.angles_data_array)))
                 self.gty_out_mat = self.gty_1h_out_mat + self.gty_2h_out_mat
@@ -158,24 +159,26 @@ class get_corrfunc_BCMP:
             self.Cl_kappa_kappa_1h = get_power_BCMP_obj.Cl_kappa_kappa_1h_mat
             self.Cl_kappa_kappa_2h = get_power_BCMP_obj.Cl_kappa_kappa_2h_mat
 
-            Cl_kappa_kappa_1h_min = jnp.min(jnp.absolute(self.Cl_kappa_kappa_1h))
-            self.logCl_kappa_kappa_1h_clipped = jnp.log(jnp.clip(self.Cl_kappa_kappa_1h, Cl_kappa_kappa_1h_min + 1e-30))
-            interp1h = lambda jb1, jb2, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_kappa_1h_clipped[jb1, jb2, :]))
-            vmap1 = vmap(interp1h, (0, None, None))
-            vmap2 = vmap(vmap1, (None, 0, None))
-            vmap3 = vmap(vmap2, (None, None, 0))            
-            self.Cl_kappa_kappa_1h_ell_transf = vmap3(jnp.arange(self.nbins), jnp.arange(self.nbins), self.log_ell_array_transf).T
-
-            Cl_kappa_kappa_2h_min = jnp.min(jnp.absolute(self.Cl_kappa_kappa_2h))
-            self.logCl_kappa_kappa_2h_clipped = jnp.log(jnp.clip(self.Cl_kappa_kappa_2h, Cl_kappa_kappa_2h_min + 1e-30))
-            interp2h = lambda jb1, jb2, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_kappa_2h_clipped[jb1, jb2, :]))
-            vmap1 = vmap(interp2h, (0, None, None))
-            vmap2 = vmap(vmap1, (None, 0, None))
-            vmap3 = vmap(vmap2, (None, None, 0))            
-            self.Cl_kappa_kappa_2h_ell_transf = vmap3(jnp.arange(self.nbins), jnp.arange(self.nbins), self.log_ell_array_transf).T
 
 
             if want_like_diff:
+                Cl_kappa_kappa_1h_min = jnp.min(jnp.absolute(self.Cl_kappa_kappa_1h))
+                self.logCl_kappa_kappa_1h_clipped = jnp.log(jnp.clip(self.Cl_kappa_kappa_1h, Cl_kappa_kappa_1h_min + 1e-30))
+                interp1h = lambda jb1, jb2, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_kappa_1h_clipped[jb1, jb2, :]))
+                vmap1 = vmap(interp1h, (0, None, None))
+                vmap2 = vmap(vmap1, (None, 0, None))
+                vmap3 = vmap(vmap2, (None, None, 0))            
+                self.Cl_kappa_kappa_1h_ell_transf = vmap3(jnp.arange(self.nbins), jnp.arange(self.nbins), self.log_ell_array_transf).T
+
+                Cl_kappa_kappa_2h_min = jnp.min(jnp.absolute(self.Cl_kappa_kappa_2h))
+                self.logCl_kappa_kappa_2h_clipped = jnp.log(jnp.clip(self.Cl_kappa_kappa_2h, Cl_kappa_kappa_2h_min + 1e-30))
+                interp2h = lambda jb1, jb2, logell: jnp.exp(jnp.interp(logell, self.log_ell_array, self.logCl_kappa_kappa_2h_clipped[jb1, jb2, :]))
+                vmap1 = vmap(interp2h, (0, None, None))
+                vmap2 = vmap(vmap1, (None, 0, None))
+                vmap3 = vmap(vmap2, (None, None, 0))            
+                self.Cl_kappa_kappa_2h_ell_transf = vmap3(jnp.arange(self.nbins), jnp.arange(self.nbins), self.log_ell_array_transf).T
+
+
                 self.xip_1h_out_mat = vmap(self.get_Hankel_xip_1h)(jnp.arange(len(self.angles_data_array)))
                 self.xip_2h_out_mat = vmap(self.get_Hankel_xip_2h)(jnp.arange(len(self.angles_data_array)))            
                 self.xip_out_mat = self.xip_1h_out_mat + self.xip_2h_out_mat

@@ -48,6 +48,8 @@ class get_power_BCMP:
         if verbose_time:
             print('Time for setup_power_BCMP: ', time.time() - ti)
             ti = time.time()
+
+        self.calc_nfw_only = analysis_dict['calc_nfw_only']
         self.r_array = setup_power_BCMP_obj.r_array
         self.M_array = setup_power_BCMP_obj.M_array
         self.z_array = setup_power_BCMP_obj.z_array
@@ -60,13 +62,16 @@ class get_power_BCMP:
         self.uyl_mat = jnp.moveaxis(setup_power_BCMP_obj.uyl_mat, 1, 3)
         self.byl_mat = setup_power_BCMP_obj.byl_mat
         self.ukappal_dmb_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_dmb_prefac_mat, 1, 3)
-        self.ukappal_nfw_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_nfw_prefac_mat, 1, 3)        
-        self.bkl_dmb_mat = setup_power_BCMP_obj.bkl_dmb_mat
-        self.bkl_nfw_mat = setup_power_BCMP_obj.bkl_nfw_mat
+        self.bkl_dmb_mat = setup_power_BCMP_obj.bkl_dmb_mat        
+        if self.calc_nfw_only:
+            self.ukappal_nfw_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_nfw_prefac_mat, 1, 3)        
+            self.bkl_nfw_mat = setup_power_BCMP_obj.bkl_nfw_mat
+            
         self.Pklin_lz_mat = setup_power_BCMP_obj.Pklin_lz_mat
         self.ell_array = setup_power_BCMP_obj.ell_array
         self.nell = len(self.ell_array)
 
+        
         nz_info_dict = analysis_dict['nz_info_dict']
         self.nbins = nz_info_dict['nbins']
         self.z_array_nz = jnp.array(nz_info_dict['z_array'])
@@ -110,6 +115,17 @@ class get_power_BCMP:
                 print('Time for computing Cl_kappa_y_2h_mat: ', time.time() - ti)
                 ti = time.time()
 
+        if analysis_dict.get('do_yy', False):
+            self.Cl_y_y_1h_mat = vmap(self.get_Cl_y_y_1h)(jnp.arange(self.nell))
+            if verbose_time:
+                print('Time for computing Cl_y_y_1h_mat: ', time.time() - ti)
+                ti = time.time()
+
+            self.Cl_y_y_2h_mat = vmap(self.get_Cl_y_y_2h)(jnp.arange(self.nell))
+            if verbose_time:
+                print('Time for computing Cl_y_y_2h_mat: ', time.time() - ti)
+                ti = time.time()
+
         if analysis_dict['do_shear2pt']:
             vmap_func1 = vmap(self.get_Cl_kappa_kappa_1h, (0, None, None))
             vmap_func2 = vmap(vmap_func1, (None, 0, None))
@@ -128,23 +144,24 @@ class get_power_BCMP:
                 # print('Total time for computing all Cls: ', time.time() - t0)
                 ti = time.time()                
 
-            vmap_func1 = vmap(self.get_Cl_kappa_kappa_nfw_1h, (0, None, None))
-            vmap_func2 = vmap(vmap_func1, (None, 0, None))
-            vmap_func3 = vmap(vmap_func2, (None, None, 0))
-            self.Cl_kappa_kappa_nfw_1h_mat = vmap_func3(jnp.arange(self.nbins), jnp.arange(self.nbins), jnp.arange(self.nell)).T
-            if verbose_time:
-                print('Time for computing Cl_kappa_kappa_nfw_1h_mat: ', time.time() - ti)
-                print('Total time for computing all Cls: ', time.time() - t0)                
-                # ti = time.time()
+            if self.calc_nfw_only:
+                vmap_func1 = vmap(self.get_Cl_kappa_kappa_nfw_1h, (0, None, None))
+                vmap_func2 = vmap(vmap_func1, (None, 0, None))
+                vmap_func3 = vmap(vmap_func2, (None, None, 0))
+                self.Cl_kappa_kappa_nfw_1h_mat = vmap_func3(jnp.arange(self.nbins), jnp.arange(self.nbins), jnp.arange(self.nell)).T
+                if verbose_time:
+                    print('Time for computing Cl_kappa_kappa_nfw_1h_mat: ', time.time() - ti)
+                    # print('Total time for computing all Cls: ', time.time() - t0)                
+                    ti = time.time()
 
-            vmap_func1 = vmap(self.get_Cl_kappa_kappa_nfw_2h, (0, None, None))
-            vmap_func2 = vmap(vmap_func1, (None, 0, None))
-            vmap_func3 = vmap(vmap_func2, (None, None, 0))
-            self.Cl_kappa_kappa_nfw_2h_mat = vmap_func3(jnp.arange(self.nbins), jnp.arange(self.nbins), jnp.arange(self.nell)).T
-            if verbose_time:
-                print('Time for computing Cl_kappa_kappa_2h_mat: ', time.time() - ti)
-                # print('Total time for computing all Cls: ', time.time() - t0)
-                ti = time.time()                
+                vmap_func1 = vmap(self.get_Cl_kappa_kappa_nfw_2h, (0, None, None))
+                vmap_func2 = vmap(vmap_func1, (None, 0, None))
+                vmap_func3 = vmap(vmap_func2, (None, None, 0))
+                self.Cl_kappa_kappa_nfw_2h_mat = vmap_func3(jnp.arange(self.nbins), jnp.arange(self.nbins), jnp.arange(self.nell)).T
+                if verbose_time:
+                    print('Time for computing Cl_kappa_kappa_2h_mat: ', time.time() - ti)
+                    print('Total time for computing all Cls: ', time.time() - t0)
+                    # ti = time.time()                
 
         
     @partial(jit, static_argnums=(0,))
@@ -192,6 +209,33 @@ class get_power_BCMP:
         # Ell dependent factor
         ell_factor = jnp.sqrt((ell - 1) * (ell) * (ell + 1) * (ell + 2)) / (ell + 0.5) ** 2
         return constant_factor * ell_factor * radial_kernel
+
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_y_y_1h(self, jl):
+        """
+        Computes the 1-halo term of the cross-spectrum between the convergence and the
+        Compton-y map.
+        """
+        uyl_jl = self.uyl_mat[jl, ...]        
+        fx = uyl_jl * uyl_jl * self.p_logc_Mz
+        fx_intc = jnp.trapz(fx, x=self.logc_array)
+        fx = fx_intc * self.hmf_Mz_mat
+        fx_intM = jnp.trapz(fx, x=jnp.log(self.M_array))
+        fx = fx_intM * (self.chi_array ** 2) * self.dchi_dz_array
+        fx_intz = jnp.trapz(fx, x=self.z_array)
+        return fx_intz
+    
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_y_y_2h(self, jl):
+        """
+        Computes the 1-halo term of the cross-spectrum between the convergence and the
+        Compton-y map.
+        """
+        byl_jl = self.byl_mat[jl]
+        
+        fx = byl_jl * byl_jl * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+        fx_intz = jnp.trapz(fx, x=self.z_array)
+        return fx_intz
 
 
     @partial(jit, static_argnums=(0,))
