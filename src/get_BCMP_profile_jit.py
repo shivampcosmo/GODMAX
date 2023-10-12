@@ -77,18 +77,18 @@ class BCM_18_wP:
 
         rmin, rmax, nr = halo_params_dict['rmin'], halo_params_dict['rmax'], halo_params_dict['nr']
         zmin, zmax, nz = halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz']
-        Mmin, Mmax, nM = halo_params_dict['Mmin'], halo_params_dict['Mmax'], halo_params_dict['nM']
+        lg10_Mmin, lg10_Mmax, nM = halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM']
         cmin, cmax, nc = halo_params_dict['cmin'], halo_params_dict['cmax'], halo_params_dict['nc']
         self.r_array = jnp.logspace(jnp.log10(rmin), jnp.log10(rmax), nr)
         self.z_array = jnp.linspace(zmin, zmax, nz)
         self.scale_fac_a_array = 1./(1. + self.z_array)
-        self.M200c_array = jnp.logspace(jnp.log10(Mmin), jnp.log10(Mmax), nM)
+        self.M_array = jnp.logspace(lg10_Mmin, lg10_Mmax, nM)
         self.conc_array = jnp.exp(jnp.linspace(jnp.log(cmin), jnp.log(cmax), nc))
         
         # mdef = halo_params_dict['mdef']
-        # r200c_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
+        # r200c_mat = np.zeros((len(self.M_array), len(self.z_array)))
         # for jz in range(len(self.z_array)):
-        #     r200c_mat[:, jz] = (mass_so.M_to_R(self.M200c_array, self.z_array[jz], mdef) / (1000.))
+        #     r200c_mat[:, jz] = (mass_so.M_to_R(self.M_array, self.z_array[jz], mdef) / (1000.))
 
         # self.r200c_mat = jnp.array(r200c_mat)
         vmap_func1 = vmap(self.get_M_to_R, (0, None))
@@ -97,17 +97,17 @@ class BCM_18_wP:
 
 
         self.rt_mat = self.r200c_mat * self.epsilon_rt
-        # Mc_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
-        # beta_mat = np.zeros((len(self.M200c_array), len(self.z_array)))
+        # Mc_mat = np.zeros((len(self.M_array), len(self.z_array)))
+        # beta_mat = np.zeros((len(self.M_array), len(self.z_array)))
 
-        # for jM in range(len(self.M200c_array)):
-        #     Mc_mat[jM, :] = self.Mc0 * ((np.array(self.M200c_array)[jM]/self.Mstar0) ** self.nu_M) * ((1 + np.array(self.z_array)) ** self.nu_z)
-        #     beta_mat[jM, :] = 3 - ((Mc_mat[jM, :] / np.array(self.M200c_array)[jM]) ** self.mu_beta)
+        # for jM in range(len(self.M_array)):
+        #     Mc_mat[jM, :] = self.Mc0 * ((np.array(self.M_array)[jM]/self.Mstar0) ** self.nu_M) * ((1 + np.array(self.z_array)) ** self.nu_z)
+        #     beta_mat[jM, :] = 3 - ((Mc_mat[jM, :] / np.array(self.M_array)[jM]) ** self.mu_beta)
         # self.Mc_mat = jnp.array(Mc_mat)
         # self.beta_mat = jnp.array(beta_mat)
         vmap_func1 = vmap(self.get_Mc, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Mc_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
+        self.Mc_mat = vmap_func2(jnp.arange(nM),jnp.arange(nz)).T
 
         vmap_func1 = vmap(self.get_beta, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -116,9 +116,9 @@ class BCM_18_wP:
 
         self.r_co_mat = self.theta_co * self.r200c_mat
         self.r_ej_mat = self.theta_ej * self.r200c_mat
-        self.fstar_array = self.A_starcga * ((self.M1_starcga / self.M200c_array) ** self.eta_star)
+        self.fstar_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_star)
         self.fgas_array = (cosmo_params['Ob0'] / cosmo_params['Om0']) - self.fstar_array
-        self.fcga_array = self.A_starcga * ((self.M1_starcga / self.M200c_array) ** self.eta_cga)
+        self.fcga_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_cga)
         self.fclm_array = (1 - cosmo_params['Ob0'] / cosmo_params['Om0']) + self.fstar_array - self.fcga_array
         self.Rh_mat = 0.015 * self.r200c_mat
         
@@ -205,24 +205,24 @@ class BCM_18_wP:
     def get_M_to_R(self, jM, jz, mdef_delta=200):
         rho_c_z = constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(self.cosmo_jax,self.scale_fac_a_array[jz]) * 1e9
         rho_treshold = mdef_delta * rho_c_z
-        R = (self.M200c_array[jM] * 3.0 / 4.0 / jnp.pi / rho_treshold)**(1.0 / 3.0)
+        R = (self.M_array[jM] * 3.0 / 4.0 / jnp.pi / rho_treshold)**(1.0 / 3.0)
         # convert to comoving coordinates
         R *= (1 + self.z_array[jz])
         return R
 
     @partial(jit, static_argnums=(0,))
     def get_Mc(self, jM, jz):
-        value = self.Mc0 * jnp.power(((self.M200c_array[jM])/self.Mstar0), self.nu_M) * jnp.power((1 + (self.z_array[jz])), self.nu_z)
+        value = self.Mc0 * jnp.power(((self.M_array[jM])/self.Mstar0), self.nu_M) * jnp.power((1 + (self.z_array[jz])), self.nu_z)
         return value
 
     # @partial(jit, static_argnums=(0,))
     # def get_beta(self, jM, jz):
-    #     value = 3 - jnp.power((self.Mc_mat[jM, jz] / (self.M200c_array[jM])), self.mu_beta)
+    #     value = 3 - jnp.power((self.Mc_mat[jM, jz] / (self.M_array[jM])), self.mu_beta)
     #     return value
 
     @partial(jit, static_argnums=(0,))
     def get_beta(self, jM, jz):
-        value = 3*jnp.power(self.M200c_array[jM]/self.Mc_mat[jM, jz],self.mu_beta)/(1 + jnp.power(self.M200c_array[jM]/self.Mc_mat[jM, jz],self.mu_beta))
+        value = 3*jnp.power(self.M_array[jM]/self.Mc_mat[jM, jz],self.mu_beta)/(1 + jnp.power(self.M_array[jM]/self.Mc_mat[jM, jz],self.mu_beta))
         return value
 
 
@@ -249,7 +249,7 @@ class BCM_18_wP:
     def get_nfw_norm(self, jc, jz, jM):
         '''This is the normalization of the NFW profile'''
         r200c = self.r200c_mat[jM, jz]
-        M200c = self.M200c_array[jM]
+        M200c = self.M_array[jM]
         logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(r200c), self.num_points_trapz_int)
         # x = jnp.exp(logx)
         # fx = (vmap(self.get_rho_nfw_unnorm, (0, None, None, None,None))(jnp.arange(len(logx)), jc, jz, jM, x))*(4*jnp.pi*x**2) * x

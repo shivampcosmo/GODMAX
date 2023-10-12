@@ -23,6 +23,7 @@ import jax_cosmo.transfer as tklib
 from jax_cosmo.scipy.integrate import romb
 from jax_cosmo.scipy.integrate import simps
 from jax_cosmo.scipy.interpolate import interp
+from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 
 
 class setup_power_BCMP:
@@ -61,7 +62,7 @@ class setup_power_BCMP:
         self.Mtot_mat = BCMP_obj.Mtot_mat
         Mtot_rep = jnp.repeat(self.Mtot_mat[None, :, :, :], len(BCMP_obj.r_array), axis=0)
         self.r_array = BCMP_obj.r_array
-        self.M_array = BCMP_obj.M200c_array
+        self.M_array = BCMP_obj.M_array
         self.z_array = BCMP_obj.z_array
         self.scale_fac_a_array = 1./(1. + self.z_array)
         self.conc_array = BCMP_obj.conc_array
@@ -92,6 +93,7 @@ class setup_power_BCMP:
         vmap_func1 = vmap(self.get_sigma_Mz, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.sigma_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        self.nu_Mz_mat = constants.DELTA_COLLAPSE / self.sigma_Mz_mat
 
         grad_lgsigma = grad(self.get_lgsigma_z, argnums=1)
         vmap_func1 = vmap(grad_lgsigma, (0, None))
@@ -117,7 +119,13 @@ class setup_power_BCMP:
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.bias_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
-        vmap_func1 = vmap(self.get_conc_Mz, (0, None))
+        conc_model = halo_params_dict.get('conc_model','Prada12')
+        if conc_model == 'Prada12':
+            vmap_func1 = vmap(self.get_conc_Mz_Prada12, (0, None))
+        if conc_model == 'Duffy08':
+            vmap_func1 = vmap(self.get_conc_Mz_Duffy08, (0, None))
+        if conc_model == 'Diemer15':
+            vmap_func1 = vmap(self.get_conc_Mz_Diemer15, (0, None))    
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.conc_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
@@ -219,10 +227,11 @@ class setup_power_BCMP:
 
         self.sig_beam = self.beam_fwhm_arcmin * (1. / 60.) * (jnp.pi / 180.) * (1. / jnp.sqrt(8. * jnp.log(2)))
 
-        if want_like_diff:
-            vmap_func1 = vmap(self.get_uyl, (0, None, None, None))
-        else:
-            vmap_func1 = vmap(self.get_uyl_mcfit, (0, None, None, None))
+        # if want_like_diff:
+        #     vmap_func1 = vmap(self.get_uyl, (0, None, None, None))
+        # else:
+        #     vmap_func1 = vmap(self.get_uyl_mcfit, (0, None, None, None))
+        vmap_func1 = vmap(self.get_uyl, (0, None, None, None))
         vmap_func2 = vmap(vmap_func1, (None, 0, None, None))
         vmap_func3 = vmap(vmap_func2, (None, None, 0, None))
         vmap_func4 = vmap(vmap_func3, (None, None, None, 0))
@@ -399,7 +408,7 @@ class setup_power_BCMP:
         return bias
     
     @partial(jit, static_argnums=(0,))
-    def get_conc_Mz(self, jz, jM, mdef='200c'):
+    def get_conc_Mz_Duffy08(self, jz, jM):
         '''Duffy 2008 concentration relation, for mdef = 200c'''
         M = self.M_array[jM]
         z = self.z_array[jz]
@@ -410,6 +419,57 @@ class setup_power_BCMP:
         c = A * (M / 2E12)**B * (1.0 + z)**C
         
         return c
+    
+    @partial(jit, static_argnums=(0,))
+    def get_conc_Mz_Prada12(self, jz, jM):
+        '''Prada 2012 concentration relation, for mdef = 200c'''
+        nu = self.nu_Mz_mat[jz, jM]
+        z = self.z_array[jz]
+        def cmin(x):
+            return 3.681 + (5.033 - 3.681) * (1.0 / jnp.pi * jnp.arctan(6.948 * (x - 0.424)) + 0.5)
+        def smin(x):
+            return 1.047 + (1.646 - 1.047) * (1.0 / jnp.pi * jnp.arctan(7.386 * (x - 0.526)) + 0.5)
+
+        a = 1.0 / (1.0 + z)
+        x = ((1 - self.cosmo_params['Om0']) / self.cosmo_params['Om0']) ** (1.0 / 3.0) * a
+
+        B0 = cmin(x) / cmin(1.393)
+        B1 = smin(x) / smin(1.393)
+        temp_sig = 1.686 / nu
+        temp_sigp = temp_sig * B1
+        temp_C = 2.881 * ((temp_sigp / 1.257) ** 1.022 + 1) * jnp.exp(0.06 / temp_sigp ** 2)
+        c200c = B0 * temp_C
+        return c200c    
+    
+    def get_conc_Mz_Diemer15(self, jz, jM):
+        nu = self.nu_Mz_mat[jz, jM]
+        z = self.z_array[jz]
+        M = self.M_array[jM]
+        DIEMER15_KAPPA = 1.00
+        # R = peaks.lagrangianR(M)
+        rho_m = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0']) * 1E9
+        R = (3.0 * M / 4.0 / np.pi / rho_m )**(1.0 / 3.0)
+        k_R = 2.0 * np.pi / R * DIEMER15_KAPPA        
+
+        interp = InterpolatedUnivariateSpline(jnp.log10(self.kPk_array), jnp.log10(self.plin_kz_mat[:, 0]))
+        n = interp.derivative(jnp.log10(k_R), n = 1)
+
+        DIEMER15_MEDIAN_PHI_0 = 6.58
+        DIEMER15_MEDIAN_PHI_1 = 1.27
+        DIEMER15_MEDIAN_ETA_0 = 7.28
+        DIEMER15_MEDIAN_ETA_1 = 1.56
+        DIEMER15_MEDIAN_ALPHA = 1.08
+        DIEMER15_MEDIAN_BETA  = 1.77
+
+        floor = DIEMER15_MEDIAN_PHI_0 + n * DIEMER15_MEDIAN_PHI_1
+        nu0 = DIEMER15_MEDIAN_ETA_0 + n * DIEMER15_MEDIAN_ETA_1
+        alpha = DIEMER15_MEDIAN_ALPHA
+        beta = DIEMER15_MEDIAN_BETA
+
+        c = 0.5 * floor * ((nu0 / nu)**alpha + (nu / nu0)**beta)
+
+        return c
+
 
 
     # @partial(jit, static_argnums=(0,))
@@ -437,7 +497,7 @@ class setup_power_BCMP:
     #     return uyl * Bl
     
     @partial(jit, static_argnums=(0,))
-    def get_uyl(self, jl, jc, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=32000):
+    def get_uyl(self, jl, jc, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=16000):
         chiz = jnp.clip(self.chi_array[jz], 1.0)
         az = 1.0 / (1.0 + self.z_array[jz])
         prefac = az/(chiz**2)
@@ -457,23 +517,23 @@ class setup_power_BCMP:
         Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
         return uyl * Bl
 
-    @partial(jit, static_argnums=(0,))
-    def get_uyl_mcfit(self, jl, jc, jz, jM, xmin=0.01, xmax=3, num_points_trapz_int=128):
-        chiz = jnp.clip(self.chi_array[jz], 1.0)
-        az = 1.0 / (1.0 + self.z_array[jz])
-        prefac = az/(chiz**2)
+    # @partial(jit, static_argnums=(0,))
+    # def get_uyl_mcfit(self, jl, jc, jz, jM, xmin=0.01, xmax=3, num_points_trapz_int=128):
+    #     chiz = jnp.clip(self.chi_array[jz], 1.0)
+    #     az = 1.0 / (1.0 + self.z_array[jz])
+    #     prefac = az/(chiz**2)
 
-        y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jc, jz, jM]))
-        y3d_clipped = jnp.clip(self.y3d_mat[:,jc, jz, jM], y3d_min + 1e-30)
-        logr_array_mcfit = jnp.linspace(jnp.log(jnp.min(self.r_array/chiz)), jnp.log(jnp.max(self.r_array/chiz)), num_points_trapz_int)
-        r_array_mcfit = jnp.exp(logr_array_mcfit)
-        y3d_array = jnp.exp(jnp.interp(jnp.log(r_array_mcfit), jnp.log(self.r_array/chiz), jnp.log(y3d_clipped)))
-        k_mcfit, uy_mcfit = (xi2P(np.array(r_array_mcfit),lowring=True)(np.array(y3d_array),  extrap=False))
-        uy_mcfit = jnp.array(uy_mcfit)
-        ell = self.ell_array[jl]
-        uyl = prefac *  (chiz**3) * jnp.exp(jnp.interp(jnp.log(ell), jnp.log(k_mcfit), jnp.log(uy_mcfit)))
-        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.) 
-        return uyl * Bl     
+    #     y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jc, jz, jM]))
+    #     y3d_clipped = jnp.clip(self.y3d_mat[:,jc, jz, jM], y3d_min + 1e-30)
+    #     logr_array_mcfit = jnp.linspace(jnp.log(jnp.min(self.r_array/chiz)), jnp.log(jnp.max(self.r_array/chiz)), num_points_trapz_int)
+    #     r_array_mcfit = jnp.exp(logr_array_mcfit)
+    #     y3d_array = jnp.exp(jnp.interp(jnp.log(r_array_mcfit), jnp.log(self.r_array/chiz), jnp.log(y3d_clipped)))
+    #     k_mcfit, uy_mcfit = (xi2P(np.array(r_array_mcfit),lowring=True)(np.array(y3d_array),  extrap=False))
+    #     uy_mcfit = jnp.array(uy_mcfit)
+    #     ell = self.ell_array[jl]
+    #     uyl = prefac *  (chiz**3) * jnp.exp(jnp.interp(jnp.log(ell), jnp.log(k_mcfit), jnp.log(uy_mcfit)))
+    #     Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.) 
+    #     return uyl * Bl     
 
 
     @partial(jit, static_argnums=(0,))
@@ -645,4 +705,38 @@ class setup_power_BCMP:
         Pmm_1h = jnp.trapz(fx, x=jnp.log(self.M_array))
         return Pmm_1h
 
+
+    @partial(jit, static_argnums=(0,))
+    def get_dPmm_dmb_dlnM_1h(self, jk, jz):
+        cmean_jz = self.conc_Mz_mat[jz, :]
+        logc_array = jnp.log(self.conc_array)
+        sig_logc = self.sig_logc_z_array[jz]
+        conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
+        cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
+        p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
+        
+        fx = ((self.Mtot_mat[:, jz, :] *  self.uk_dmb[jk,:,jz,:])**2).T * p_logc_Mz
+        ukz_intc = jnp.trapz(fx, x=logc_array)
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
+        # Pmm_1h = jnp.trapz(fx, x=jnp.log(self.M_array))
+        return fx
+
+    @partial(jit, static_argnums=(0,))
+    def get_dPmm_nfw_dlnM_1h(self, jk, jz):
+        cmean_jz = self.conc_Mz_mat[jz, :]
+        logc_array = jnp.log(self.conc_array)
+        sig_logc = self.sig_logc_z_array[jz]
+        conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
+        cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
+        p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
+        
+        fx = ((self.Mtot_mat[:, jz, :] *  self.uk_nfw[jk,:,jz,:])**2).T * p_logc_Mz
+        ukz_intc = jnp.trapz(fx, x=logc_array)
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
+        # Pmm_1h = jnp.trapz(fx, x=jnp.log(self.M_array))
+        return fx
 
