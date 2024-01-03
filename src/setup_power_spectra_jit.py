@@ -12,13 +12,12 @@ import jax_cosmo.transfer as tklib
 import astropy.units as u
 from astropy import constants as const
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
-G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.eV / u.cm**3)).value
+G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
 import constants
 from mcfit import xi2P
 import time
 import jax_cosmo.background as bkgrd
-# import jax_cosmo.constants as const
 import jax_cosmo.transfer as tklib
 from jax_cosmo.scipy.integrate import romb
 from jax_cosmo.scipy.integrate import simps
@@ -164,15 +163,6 @@ class setup_power_BCMP:
             self.uk_dmb = vmap_func3(jnp.arange(self.nc), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
 
-        if self.calc_nfw_only:
-            vmap_func1 = vmap(self.get_Pmm_dmb_1h, (0, None))
-            vmap_func2 = vmap(vmap_func1, (None, 0))
-            self.Pmm_dmb_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-
-            vmap_func1 = vmap(self.get_Pmm_nfw_1h, (0, None))
-            vmap_func2 = vmap(vmap_func1, (None, 0))
-            self.Pmm_nfw_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-
         # correct the 2halo term for matter. e.g in Cacciato et al 2012, Schmidt 2016, Mead et al 2020:
         do_corr_2h_mm = halo_params_dict['do_corr_2h_mm']
         if do_corr_2h_mm:
@@ -183,18 +173,32 @@ class setup_power_BCMP:
             vmap_func2 = vmap(vmap_func1, (None, 0))
             self.bm_dmb_2h = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
 
-            self.bm_dmb_kz_mat = self.bm_dmb_2h + self.bm_largescales_2h_mat
+            self.bm_largescales_2h_mat_lt_Mmin = 1. - self.bm_largescales_2h_mat
+            self.bm_dmb_kz_mat = self.bm_dmb_2h + self.bm_largescales_2h_mat_lt_Mmin
 
             if self.calc_nfw_only:
                 vmap_func1 = vmap(self.get_bm_nfw_2h, (0, None))
                 vmap_func2 = vmap(vmap_func1, (None, 0))
                 self.bm_nfw_2h = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-                self.bm_nfw_kz_mat = self.bm_nfw_2h + self.bm_largescales_2h_mat
+                self.bm_nfw_kz_mat = self.bm_nfw_2h + self.bm_largescales_2h_mat_lt_Mmin
         
         else:
             self.bm_dmb_kz_mat = jnp.ones((len(self.kPk_array), self.nz))
             if self.calc_nfw_only:
                 self.bm_nfw_kz_mat = jnp.ones((len(self.kPk_array), self.nz))
+
+        if self.calc_nfw_only:
+            vmap_func1 = vmap(self.get_Pmm_dmb_1h, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pmm_dmb_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
+
+            vmap_func1 = vmap(self.get_Pmm_nfw_1h, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pmm_nfw_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
+
+            self.Pmm_dmb_tot_mat = self.Pmm_dmb_1h_mat + (self.bm_dmb_kz_mat)**2 * self.plin_kz_mat
+            self.Pmm_nfw_tot_mat = self.Pmm_nfw_1h_mat + (self.bm_nfw_kz_mat)**2 * self.plin_kz_mat
+            self.Pmm_sup_tot_mat = self.Pmm_dmb_tot_mat / self.Pmm_nfw_tot_mat
 
 
         if verbose_time:
@@ -220,9 +224,13 @@ class setup_power_BCMP:
         c = const.c
         coeff = sigmat / (m_e * (c ** 2))
         oneMpc_h = (((10 ** 6) / self.cosmo_jax.h) * (u.pc).to(u.m)) * (u.m)
-        const_coeff = ((coeff * oneMpc_h).to(((u.cm ** 3) / u.eV))).value
-        Pe_conv_fac =  0.518
-        self.y3d_mat = Pe_conv_fac * const_coeff * BCMP_obj.Pth_mat
+        const_coeff = ((coeff * oneMpc_h).to(((u.cm ** 3) / u.keV))).value
+        # Pe_conv_fac =  0.518
+        # vol_universe = (self.scale_fac_a_array)**3
+        # self.vol_universe_mat = jnp.tile(vol_universe[None, None, :, None], (self.nr, self.nc, 1, self.nM))
+        # self.vol_universe_mat = jnp.ones_like(BCMP_obj.Pth_mat)
+        # self.y3d_mat = Pe_conv_fac * const_coeff * BCMP_obj.Pth_mat * self.vol_universe_mat
+        self.y3d_mat = const_coeff * BCMP_obj.Pe_mat_physical
 
 
         self.sig_beam = self.beam_fwhm_arcmin * (1. / 60.) * (jnp.pi / 180.) * (1. / jnp.sqrt(8. * jnp.log(2)))
@@ -471,7 +479,6 @@ class setup_power_BCMP:
         return c
 
 
-
     # @partial(jit, static_argnums=(0,))
     # def get_uyl(self, jl, jc, jz, jM, xmin=0.01, xmax=4, num_points_trapz_int=64):
     #     r200c = self.r200c_mat[jz, jM]
@@ -613,7 +620,7 @@ class setup_power_BCMP:
         dndlnM_z = self.hmf_Mz_mat[jz, :]     
         # rhom_z = self.get_rho_m(self.z_array[jz])
         rhom_z = self.get_rho_m(0.0)
-        fx = ukz_intc * dndlnM_z * ((1/rhom_z))
+        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
         bmm_2h = jnp.trapz(fx, x=jnp.log(self.M_array))
         return bmm_2h
 
@@ -631,7 +638,7 @@ class setup_power_BCMP:
         ukz_intc = jnp.trapz(fx, x=logc_array)
         dndlnM_z = self.hmf_Mz_mat[jz, :]     
         rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * ((1/rhom_z))
+        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
         bmm_2h = jnp.trapz(fx, x=jnp.log(self.M_array))
         return bmm_2h
 
@@ -649,7 +656,7 @@ class setup_power_BCMP:
         ukz_intc = jnp.trapz(fx, x=logc_array)
         dndlnM_z = self.hmf_Mz_mat[jz, :]     
         rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * ((1/rhom_z))
+        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
         bmm_2h = jnp.trapz(fx, x=jnp.log(self.M_array))
         return bmm_2h
 

@@ -115,7 +115,7 @@ class Battaglia_12_16:
 
     def get_Pth(self, r):
         P_fit = self.get_P_fit(r)
-        coeff = (const.G * (const.M_sun**2) / ((1.0 * u.Mpc)**4)).to((u.eV / (u.cm**3))).value
+        coeff = (const.G * (const.M_sun**2) / ((1.0 * u.Mpc)**4)).to((u.keV / (u.cm**3))).value
 
         P_Delta = coeff * self.M * self.mdef_Delta * self.rho_crit_z * self.fb / (2. * self.rDelta)
 
