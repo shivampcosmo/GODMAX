@@ -81,3 +81,13 @@ DELTA_COLLAPSE = 1.68647
 """The linear overdensity threshold for halo collapse according to the spherical top-hat collapse 
 model (`Gunn & Gott 1972 <http://adsabs.harvard.edu/abs/1972ApJ...176....1G>`__). This number 
 corresponds to :math:`3/5 (3\pi/2)^{2/3}` and is modified very slightly in a non-EdS universe."""
+
+
+c = 299792.458  # km/s
+tcmb = 2.726  # K
+rh = 2997.92458  # h^{-1} Mpc
+eta_nu = 0.68130
+H0 = 100.0  # km/s/( h^{-1} Mpc)
+C_1 = 5.0 * 1e-14
+rhocrit = 2.7750 * 1e11
+

@@ -54,11 +54,13 @@ class BCM_18_wP:
         self.log10_Mstar0_theta_ej=sim_params_dict.get('log10_Mstar0_theta_ej',14.0)
         self.nu_theta_ej_M=sim_params_dict.get('nu_theta_ej_M',0.0)
         self.nu_theta_ej_z=sim_params_dict.get('nu_theta_ej_z',0.0)
+        self.nu_theta_ej_c=sim_params_dict.get('nu_theta_ej_c',0.0)        
 
         self.theta_co_0=sim_params_dict.get('theta_co_0',0.1)
         self.log10_Mstar0_theta_co=sim_params_dict.get('log10_Mstar0_theta_co',14.0)
         self.nu_theta_co_M=sim_params_dict.get('nu_theta_co_M',0.0)
         self.nu_theta_co_z=sim_params_dict.get('nu_theta_co_z',0.0)                
+        self.nu_theta_co_c=sim_params_dict.get('nu_theta_co_c',0.0)                        
 
         self.neg_bhse_plus_1=sim_params_dict.get('neg_bhse_plus_1',0.833)
         self.mu_beta=sim_params_dict.get('mu_beta',0.21)
@@ -102,7 +104,8 @@ class BCM_18_wP:
         vmap_func1 = vmap(self.get_M_to_R, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.r200c_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
-
+        # add a concentration axis to r200c_mat as the first axis. i.e. repeat along the first axis:
+        self.r200c_mat_repeat = jnp.repeat(self.r200c_mat[None, :, :], nc, axis=0)
 
         self.rt_mat = self.r200c_mat * self.epsilon_rt
 
@@ -115,16 +118,18 @@ class BCM_18_wP:
         self.beta_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
 
 
-        vmap_func1 = vmap(self.get_theta_co, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.theta_co = vmap_func2(jnp.arange(nM),jnp.arange(nz)).T        
+        vmap_func1 = vmap(self.get_theta_co, (0, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        self.theta_co = vmap_func3(jnp.arange(nc), jnp.arange(nM),jnp.arange(nz)).T        
 
-        vmap_func1 = vmap(self.get_theta_ej, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.theta_ej = vmap_func2(jnp.arange(nM),jnp.arange(nz)).T                
+        vmap_func1 = vmap(self.get_theta_ej, (0, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        self.theta_ej = vmap_func3(jnp.arange(nc), jnp.arange(nM),jnp.arange(nz)).T                
 
-        self.r_co_mat = self.theta_co * self.r200c_mat
-        self.r_ej_mat = self.theta_ej * self.r200c_mat
+        self.r_co_mat = self.theta_co * self.r200c_mat_repeat
+        self.r_ej_mat = self.theta_ej * self.r200c_mat_repeat
         self.fstar_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_star)
         self.fgas_array = (cosmo_params['Ob0'] / cosmo_params['Om0']) - self.fstar_array
         self.fcga_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_cga)
@@ -264,15 +269,26 @@ class BCM_18_wP:
         value = self.Mc0 * jnp.power(((self.M_array[jM])/self.Mstar0), self.nu_M) * jnp.power((1 + (self.z_array[jz])), self.nu_z)
         return value
 
+    # @partial(jit, static_argnums=(0,))
+    # def get_theta_ej(self, jM, jz):
+    #     value = self.theta_ej_0 * jnp.power(((self.M_array[jM])/10**self.log10_Mstar0_theta_ej), self.nu_theta_ej_M) * jnp.power((1 + (self.z_array[jz])), self.nu_theta_ej_z)
+    #     return value
+
+    # @partial(jit, static_argnums=(0,))
+    # def get_theta_co(self, jM, jz):
+    #     value = self.theta_co_0 * jnp.power(((self.M_array[jM])/10**self.log10_Mstar0_theta_co), self.nu_theta_co_M) * jnp.power((1 + (self.z_array[jz])), self.nu_theta_co_z)
+    #     return value                        
+
     @partial(jit, static_argnums=(0,))
-    def get_theta_ej(self, jM, jz):
-        value = self.theta_ej_0 * jnp.power(((self.M_array[jM])/10**self.log10_Mstar0_theta_ej), self.nu_theta_ej_M) * jnp.power((1 + (self.z_array[jz])), self.nu_theta_ej_z)
+    def get_theta_ej(self, jc, jM, jz):
+        value = self.theta_ej_0 * jnp.power(((self.M_array[jM])/10**self.log10_Mstar0_theta_ej), self.nu_theta_ej_M) * jnp.power((1 + (self.z_array[jz])), self.nu_theta_ej_z) * jnp.power(1/self.conc_array[jc], self.nu_theta_ej_c)
         return value
 
     @partial(jit, static_argnums=(0,))
-    def get_theta_co(self, jM, jz):
-        value = self.theta_co_0 * jnp.power(((self.M_array[jM])/10**self.log10_Mstar0_theta_co), self.nu_theta_co_M) * jnp.power((1 + (self.z_array[jz])), self.nu_theta_co_z)
+    def get_theta_co(self, jc, jM, jz):
+        value = self.theta_co_0 * jnp.power(((self.M_array[jM])/10**self.log10_Mstar0_theta_co), self.nu_theta_co_M) * jnp.power((1 + (self.z_array[jz])), self.nu_theta_co_z) * jnp.power(1/self.conc_array[jc], self.nu_theta_co_c)
         return value                        
+
 
     # @partial(jit, static_argnums=(0,))
     # def get_beta(self, jM, jz):
@@ -394,7 +410,7 @@ class BCM_18_wP:
     #     return rho_gas_unnorm
     
     @partial(jit, static_argnums=(0,))
-    def get_rho_gas_unnorm(self, jr, jz, jM, r_array_here=None):
+    def get_rho_gas_unnorm(self, jr, jc, jz, jM, r_array_here=None):
         '''
         This is the gas profile (Eq.2.12)
         '''
@@ -402,8 +418,8 @@ class BCM_18_wP:
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        u = r / self.r_co_mat[jM, jz]
-        v = r / self.r_ej_mat[jM, jz]
+        u = r / self.r_co_mat[jc, jM, jz]
+        v = r / self.r_ej_mat[jc, jM, jz]
         rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jM, jz]) * jnp.power(1 + jnp.power(v, self.gamma_rhogas), (self.delta_rhogas - self.beta_mat[jM, jz]) / self.gamma_rhogas))
         return rho_gas_unnorm    
 
@@ -413,7 +429,7 @@ class BCM_18_wP:
         r200c = self.r200c_mat[jM, jz]
         logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
         # logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(self.r_array[-1]), self.num_points_trapz_int)        
-        int_unnorm_prof = self.logspace_trapezoidal_integral(self.get_rho_gas_unnorm, logx, jc=None, jz=jz, jM=jM, axis_tup=(0, None, None, None))
+        int_unnorm_prof = self.logspace_trapezoidal_integral(self.get_rho_gas_unnorm, logx, jc=jc, jz=jz, jM=jM, axis_tup=(0, None, None, None, None))
         rho_gas_norm = self.fgas_array[jM] * self.Mtot_mat[jc, jz, jM] / int_unnorm_prof
         return rho_gas_norm
 
@@ -428,8 +444,8 @@ class BCM_18_wP:
         # u = r / self.r_co_mat[jM, jz]
         # v = r / self.r_ej_mat[jM, jz]
         # rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jM, jz]) * jnp.power(1 + v**2, (7 - self.beta_mat[jM, jz]) / 2.))
-        u = r / self.r_co_mat[jM, jz]
-        v = r / self.r_ej_mat[jM, jz]
+        u = r / self.r_co_mat[jc, jM, jz]
+        v = r / self.r_ej_mat[jc, jM, jz]
         rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jM, jz]) * jnp.power(1 + jnp.power(v, self.gamma_rhogas), (self.delta_rhogas - self.beta_mat[jM, jz]) / self.gamma_rhogas))
         prefac = self.rho_gas_norm_mat[jc, jz, jM]
         return prefac * rho_gas_unnorm
@@ -530,7 +546,7 @@ class BCM_18_wP:
 
 
     @partial(jit, static_argnums=(0,))
-    def get_Ptot(self, jr, jc, jz, jM, r_array_here=None, rmax_r200c=32):
+    def get_Ptot(self, jr, jc, jz, jM, r_array_here=None, rmax_r200c=6):
         '''This is the total pressure profile, assuming HSE'''
         if r_array_here is None:
             r = self.r_array[jr]
@@ -547,9 +563,9 @@ class BCM_18_wP:
         return Ptot
     
     @partial(jit, static_argnums=(0,))
-    def get_fz_Pnt(self, jz):
+    def get_fz_Pnt(self, jz, rmax_r200c=6):
         '''This is the evolution of non-thermal pressure with redshift'''
-        fmax = 4**(-1 * self.n_nt) / self.alpha_nt
+        fmax = (rmax_r200c)**(-1 * self.n_nt) / self.alpha_nt
         fz = jnp.minimum((1 + self.z_array[jz])**self.beta_nt, (fmax - 1) * jnp.tanh(self.beta_nt * self.z_array[jz]) + 1)
         return fz
 

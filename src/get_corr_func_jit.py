@@ -54,6 +54,7 @@ class get_corrfunc_BCMP:
                 sim_params_dict,
                 halo_params_dict,
                 analysis_dict,
+                other_params_dict=None,
                 num_points_trapz_int=64,
                 setup_power_BCMP_obj=None,
                 get_power_BCMP_obj=None,
@@ -65,21 +66,21 @@ class get_corrfunc_BCMP:
 
         self.cosmo_params = sim_params_dict['cosmo']
 
-        self.cosmo_jax = Cosmology(
-            Omega_c=self.cosmo_params['Om0'] - self.cosmo_params['Ob0'],
-            Omega_b=self.cosmo_params['Ob0'],
-            h=self.cosmo_params['H0'] / 100.,
-            sigma8=self.cosmo_params['sigma8'],
-            n_s=self.cosmo_params['ns'],
-            Omega_k=0.,
-            w0=self.cosmo_params['w0'],
-            wa=0.
-            )
+        # self.cosmo_jax = Cosmology(
+        #     Omega_c=self.cosmo_params['Om0'] - self.cosmo_params['Ob0'],
+        #     Omega_b=self.cosmo_params['Ob0'],
+        #     h=self.cosmo_params['H0'] / 100.,
+        #     sigma8=self.cosmo_params['sigma8'],
+        #     n_s=self.cosmo_params['ns'],
+        #     Omega_k=0.,
+        #     w0=self.cosmo_params['w0'],
+        #     wa=0.
+        #     )
 
         if verbose_time:
             ti = time.time()
         if get_power_BCMP_obj is None:
-            get_power_BCMP_obj = get_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, num_points_trapz_int=num_points_trapz_int, setup_power_BCMP_obj=setup_power_BCMP_obj, verbose_time=verbose_time)
+            get_power_BCMP_obj = get_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, num_points_trapz_int=num_points_trapz_int, setup_power_BCMP_obj=setup_power_BCMP_obj, verbose_time=verbose_time)
         if verbose_time:
             print('Time for setup_power_BCMP: ', time.time() - ti)
             ti = time.time()
@@ -91,7 +92,8 @@ class get_corrfunc_BCMP:
         self.log_ell_array = jnp.log(self.ell_array)
         ellmin_transf, ellmax_transf, nell_transf = analysis_dict['ellmin_transf'], analysis_dict['ellmax_transf'], analysis_dict['nell_transf']
         self.ell_array_transf = jnp.logspace(jnp.log10(ellmin_transf), jnp.log10(ellmax_transf), nell_transf) 
-        self.log_ell_array_transf = jnp.log(self.ell_array_transf)     
+        self.log_ell_array_transf = jnp.log(self.ell_array_transf)  
+
         if want_like_diff:
             if analysis_dict['do_sheary']:
                 self.J2ltheta_mat = vmap(self.get_J2ltheta)(jnp.arange(len(self.angles_data_array)))

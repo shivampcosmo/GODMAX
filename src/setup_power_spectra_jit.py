@@ -37,6 +37,7 @@ class setup_power_BCMP:
             ):    
         
         self.cosmo_params = sim_params_dict['cosmo']
+        self.Om0 = self.cosmo_params['Om0']
 
         self.cosmo_jax = Cosmology(
             Omega_c=self.cosmo_params['Om0'] - self.cosmo_params['Ob0'],
@@ -50,7 +51,7 @@ class setup_power_BCMP:
             )
 
         H0 = 100. * (u.km / (u.s * u.Mpc))
-        self.rho_m_bar = ((self.cosmo_params['Om0'] * 3 * (H0**2) / (8 * jnp.pi * G_new_rhom)).to(u.M_sun / (u.Mpc**3))).value
+        self.rho_m_bar = self.cosmo_params['Om0'] * ((3 * (H0**2) / (8 * jnp.pi * G_new_rhom)).to(u.M_sun / (u.Mpc**3))).value
 
         if BCMP_obj is None:
             BCMP_obj = BCM_18_wP(sim_params_dict, halo_params_dict, num_points_trapz_int=num_points_trapz_int, verbose_time=verbose_time)
@@ -223,8 +224,11 @@ class setup_power_BCMP:
         m_e = const.m_e
         c = const.c
         coeff = sigmat / (m_e * (c ** 2))
-        oneMpc_h = (((10 ** 6) / self.cosmo_jax.h) * (u.pc).to(u.m)) * (u.m)
-        const_coeff = ((coeff * oneMpc_h).to(((u.cm ** 3) / u.keV))).value
+        oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
+        const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
+
+        # oneMpc_h = (((10 ** 6) / self.cosmo_jax.h) * (u.pc).to(u.m)) * (u.m)
+        # const_coeff = ((coeff * oneMpc_h).to(((u.cm ** 3) / u.keV))).value
         # Pe_conv_fac =  0.518
         # vol_universe = (self.scale_fac_a_array)**3
         # self.vol_universe_mat = jnp.tile(vol_universe[None, None, :, None], (self.nr, self.nc, 1, self.nM))
@@ -234,6 +238,11 @@ class setup_power_BCMP:
 
 
         self.sig_beam = self.beam_fwhm_arcmin * (1. / 60.) * (jnp.pi / 180.) * (1. / jnp.sqrt(8. * jnp.log(2)))
+
+        vmap_func1 = vmap(self.get_Pklin_lz, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Pklin_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+
 
         # if want_like_diff:
         #     vmap_func1 = vmap(self.get_uyl, (0, None, None, None))
@@ -262,9 +271,6 @@ class setup_power_BCMP:
             vmap_func4 = vmap(vmap_func3, (None, None, None, 0))
             self.ukappal_nfw_prefac_mat = vmap_func4(jnp.arange(nell), jnp.arange(self.nc), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
-        vmap_func1 = vmap(self.get_Pklin_lz, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Pklin_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
 
         if verbose_time:
             tf_uls = time.time()
@@ -277,11 +283,11 @@ class setup_power_BCMP:
 
 
     def get_rho_m(self, z):
-        return (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * (1.0 + z)**3) * 1E9
+        return (constants.RHO_CRIT_0_KPC3 * self.Om0 * (1.0 + z)**3) * 1E9
 
     def get_Ez(self, z):
         zp1 = (1.0 + z)
-        t = (self.cosmo_params['Om0']) * zp1**3 + (1 - self.cosmo_params['Om0'])
+        t = (self.Om0) * zp1**3 + (1 - self.Om0)
         E = jnp.sqrt(t)        
         return E
 
@@ -439,7 +445,7 @@ class setup_power_BCMP:
             return 1.047 + (1.646 - 1.047) * (1.0 / jnp.pi * jnp.arctan(7.386 * (x - 0.526)) + 0.5)
 
         a = 1.0 / (1.0 + z)
-        x = ((1 - self.cosmo_params['Om0']) / self.cosmo_params['Om0']) ** (1.0 / 3.0) * a
+        x = ((1 - self.Om0) / self.Om0) ** (1.0 / 3.0) * a
 
         B0 = cmin(x) / cmin(1.393)
         B1 = smin(x) / smin(1.393)
@@ -455,7 +461,7 @@ class setup_power_BCMP:
         M = self.M_array[jM]
         DIEMER15_KAPPA = 1.00
         # R = peaks.lagrangianR(M)
-        rho_m = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0']) * 1E9
+        rho_m = (constants.RHO_CRIT_0_KPC3 * self.Om0) * 1E9
         R = (3.0 * M / 4.0 / np.pi / rho_m )**(1.0 / 3.0)
         k_R = 2.0 * np.pi / R * DIEMER15_KAPPA        
 
@@ -504,7 +510,7 @@ class setup_power_BCMP:
     #     return uyl * Bl
     
     @partial(jit, static_argnums=(0,))
-    def get_uyl(self, jl, jc, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=16000):
+    def get_uyl(self, jl, jc, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=6000):
         chiz = jnp.clip(self.chi_array[jz], 1.0)
         az = 1.0 / (1.0 + self.z_array[jz])
         prefac = az/(chiz**2)

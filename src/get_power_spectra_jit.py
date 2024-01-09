@@ -8,7 +8,7 @@ from functools import partial
 import astropy.units as u
 from astropy import constants as const
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
-G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.eV / u.cm**3)).value
+G_Mpc_s_units = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
 import time
 import jax_cosmo.background as bkgrd
 from jax_cosmo.scipy.integrate import simps
@@ -20,6 +20,7 @@ class get_power_BCMP:
                 sim_params_dict,
                 halo_params_dict,
                 analysis_dict,
+                other_params_dict,
                 num_points_trapz_int=64,
                 setup_power_BCMP_obj=None,
                 verbose_time=False
@@ -70,6 +71,8 @@ class get_power_BCMP:
         self.Pklin_lz_mat = setup_power_BCMP_obj.Pklin_lz_mat
         self.ell_array = setup_power_BCMP_obj.ell_array
         self.nell = len(self.ell_array)
+        self.growth_array = setup_power_BCMP_obj.growth_array
+        self.dchi_dz_array = (const.c.to(u.km / u.s)).value / (bkgrd.H(self.cosmo_jax, setup_power_BCMP_obj.scale_fac_a_array))
 
         
         nz_info_dict = analysis_dict['nz_info_dict']
@@ -79,16 +82,48 @@ class get_power_BCMP:
         pzs_inp_mat = np.zeros((self.nbins, len(self.z_array_nz)))
         for jb in range(self.nbins):
             pzs_inp_mat[jb, :] = nz_info_dict['nz' + str(jb)]
-        self.pzs_inp_mat = jnp.array(pzs_inp_mat)
+        self.pzs_inp_mat_inp = jnp.array(pzs_inp_mat)
+
+        if other_params_dict is not None:
+            self.A_IA = other_params_dict['A_IA']
+            self.eta_IA = other_params_dict['eta_IA']
+            self.z0_IA = other_params_dict['z0_IA']
+            self.C1_bar = other_params_dict['C1_bar']
+            H0 = 100. * (u.km / (u.s * u.Mpc))
+            self.rho_m_bar = self.cosmo_params['Om0'] * ((3 * (H0**2) / (8 * np.pi * G_Mpc_s_units)).to(u.M_sun / (u.Mpc**3))).value
+            self.Delta_z_bias_array = jnp.array(other_params_dict['Delta_z_bias_array'])
+            self.mult_shear_bias_array = jnp.array(other_params_dict['mult_shear_bias_array'])
+        else:
+            self.A_IA = 0.0
+            self.eta_IA = 1.0
+            self.z0_IA = 1.0
+            self.C1_bar = 1.0
+            self.rho_m_bar = 1.0
+            self.Delta_z_bias_array = jnp.zeros(self.nbins)
+            self.mult_shear_bias_array = jnp.zeros(self.nbins)
+        
+        self.pzs_inp_mat = vmap(self.get_photoz_biased_nz)(jnp.arange(self.nbins))
+            
 
         if verbose_time:
             ti = time.time()
-        vmap_func1 = vmap(self.weak_lensing_kernel, (0, None))
+        vmap_func1 = vmap(self.get_weak_lensing_kernel, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Wk_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nz)).T
+        self.Wk_gravonly_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nz)).T
         if verbose_time:
             print('Time for computing Wk_mat: ', time.time() - ti)
             ti = time.time()
+        
+        if verbose_time:
+            ti = time.time()
+        vmap_func1 = vmap(self.get_nla_kernel, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.nla_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nz)).T
+        if verbose_time:
+            print('Time for computing nla_mat: ', time.time() - ti)
+            ti = time.time()
+        
+        self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
 
         self.logc_array = jnp.log(self.conc_array)
         sig_logc = setup_power_BCMP_obj.sig_logc_z_array
@@ -163,9 +198,18 @@ class get_power_BCMP:
                     print('Total time for computing all Cls: ', time.time() - t0)
                     # ti = time.time()                
 
+    @partial(jit, static_argnums=(0,))
+    def get_photoz_biased_nz(self, jb):
+        """
+        Returns a photo-z biased n(z)
+        """
+        val_biased = jnp.interp(self.z_array_nz - self.Delta_z_bias_array[jb], self.z_array_nz, self.pzs_inp_mat_inp[jb, :])
+        norm_val = jnp.trapz(val_biased, x=self.z_array_nz)
+        value = val_biased / norm_val
+        return value
         
     @partial(jit, static_argnums=(0,))
-    def weak_lensing_kernel(self, jb, jz):
+    def get_weak_lensing_kernel(self, jb, jz):
         """
         Returns a weak lensing kernel
 
@@ -188,33 +232,24 @@ class get_power_BCMP:
         constant_factor = 3.0 * H0**2 * self.cosmo_jax.Omega_m / (2.0 * (c**2))
         return constant_factor * radial_kernel
 
-
-
     @partial(jit, static_argnums=(0,))
-    def nla_kernel(self, pzs, bias, z, ell):
+    def get_nla_kernel(self, jb, jz):
         """
         Computes the NLA IA kernel
         """
-        # stack the dndz of all redshift bins
-        dndz = jnp.stack([pz(z) for pz in pzs], axis=0)
-        b = bias(self.cosmo_jax, z)
-        radial_kernel = dndz * b * bkgrd.H(self.cosmo_jax, z2a(z))
-        # Apply common A_IA normalization to the kernel
-        # Joachimi et al. (2011), arXiv: 1008.3491, Eq. 6.
-        radial_kernel *= (
-            -(5e-14 * const.rhocrit) * self.cosmo_jax.Omega_m / bkgrd.growth_factor(self.cosmo_jax, z2a(z))
-        )
-        # Constant factor
-        constant_factor = 1.0
-        # Ell dependent factor
-        ell_factor = jnp.sqrt((ell - 1) * (ell) * (ell + 1) * (ell + 2)) / (ell + 0.5) ** 2
-        return constant_factor * ell_factor * radial_kernel
+        z = self.z_array[jz]
+        Dz = self.growth_array[jz]
+        Az_IA = -1. * self.A_IA * self.rho_m_bar * self.C1_bar * (1. / Dz) * ((1. + z) / (1. + self.z0_IA))**self.eta_IA
+        # dchi_dz = (const.c.to(u.km / u.s)).value / (bkgrd.H(self.cosmo_jax, z2a(z)))
+        dchi_dz = self.dchi_dz_array[jz]
+        dndz = (jnp.interp(z, self.z_array_nz, self.pzs_inp_mat[jb, :]))
+        value = Az_IA * dndz / dchi_dz
+        return value        
 
     @partial(jit, static_argnums=(0,))
     def get_Cl_y_y_1h(self, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
+        Computes the 1-halo term of the auto-spectrum of the Compton-y map.
         """
         uyl_jl = self.uyl_mat[jl, ...]        
         fx = uyl_jl * uyl_jl * self.p_logc_Mz
@@ -228,8 +263,7 @@ class get_power_BCMP:
     @partial(jit, static_argnums=(0,))
     def get_Cl_y_y_2h(self, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
+        Computes the 2-halo term of the auto-spectrum of the Compton-y map.
         """
         byl_jl = self.byl_mat[jl]
         
@@ -255,12 +289,12 @@ class get_power_BCMP:
         fx_intM = jnp.trapz(fx, x=jnp.log(self.M_array))
         fx = fx_intM * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jnp.trapz(fx, x=self.z_array)
-        return fx_intz
+        return (1. + self.mult_shear_bias_array[jb]) * fx_intz
 
     @partial(jit, static_argnums=(0,))
     def get_Cl_kappa_y_2h(self, jb, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
+        Computes the 2-halo term of the cross-spectrum between the convergence and the
         Compton-y map.
         """
         Wk_jb = self.Wk_mat[jb]
@@ -270,14 +304,13 @@ class get_power_BCMP:
         
         fx = byl_jl * bkl_jl * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
         fx_intz = jnp.trapz(fx, x=self.z_array)
-        return fx_intz
+        return (1. + self.mult_shear_bias_array[jb]) * fx_intz
 
 
     @partial(jit, static_argnums=(0,))
     def get_Cl_kappa_kappa_1h(self, jb1, jb2, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
+        Computes the 1-halo term of the cross-spectrum between the convergence of two bins (dmb only).
         """
         Wk_jb1 = self.Wk_mat[jb1]
         prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
@@ -292,13 +325,12 @@ class get_power_BCMP:
         fx_intM = jnp.trapz(fx, x=jnp.log(self.M_array))
         fx = fx_intM * prefac_for_uk1 * prefac_for_uk2 * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jnp.trapz(fx, x=self.z_array)
-        return fx_intz
+        return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
 
     @partial(jit, static_argnums=(0,))
     def get_Cl_kappa_kappa_2h(self, jb1, jb2, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
+        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
         """
         Wk_jb1 = self.Wk_mat[jb1]
         prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
@@ -308,13 +340,12 @@ class get_power_BCMP:
         
         fx = (bkl_jl**2) * prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
         fx_intz = jnp.trapz(fx, x=self.z_array)
-        return fx_intz
+        return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
 
     @partial(jit, static_argnums=(0,))
     def get_Cl_kappa_kappa_nfw_1h(self, jb1, jb2, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
+        Computes the 1-halo term of the cross-spectrum between the convergence of two bins (nfw only).
         """
         Wk_jb1 = self.Wk_mat[jb1]
         prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
@@ -329,14 +360,13 @@ class get_power_BCMP:
         fx_intM = jnp.trapz(fx, x=jnp.log(self.M_array))
         fx = fx_intM * prefac_for_uk1 * prefac_for_uk2 * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jnp.trapz(fx, x=self.z_array)
-        return fx_intz
+        return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
 
 
     @partial(jit, static_argnums=(0,))
     def get_Cl_kappa_kappa_nfw_2h(self, jb1, jb2, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
+        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (nfw only).
         """
         Wk_jb1 = self.Wk_mat[jb1]
         prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
@@ -346,4 +376,4 @@ class get_power_BCMP:
         
         fx = (bkl_jl**2) * prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
         fx_intz = jnp.trapz(fx, x=self.z_array)
-        return fx_intz
+        return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
