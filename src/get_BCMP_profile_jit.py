@@ -1,8 +1,8 @@
-from jax.lib import xla_bridge
-platform = xla_bridge.get_backend().platform
+# from jax.lib import xla_bridge
+# platform = xla_bridge.get_backend().platform
 import jax
-jax.config.update('jax_platform_name', platform)
-jax.config.update("jax_enable_x64", True)
+# jax.config.update('jax_platform_name', platform)
+# jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 import numpy as np
@@ -11,6 +11,8 @@ from functools import partial
 import constants
 import astropy.units as u
 from astropy import constants as const
+import jax.scipy.integrate as jsi
+# import jax.scipy.integrate.trapezoid as trapz
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 mp = (1.6726219e-27*u.kg).to(u.Msun).value
@@ -252,7 +254,7 @@ class BCM_18_wP:
             fx = (vmap(f, axis_tup)(jnp.arange(len(logx)), jz, jM, x))*(4*jnp.pi*x**2) * x
         else:
             fx = (vmap(f, axis_tup)(jnp.arange(len(logx)), jc, jz, jM, x))*(4*jnp.pi*x**2) * x
-        integral_value = jnp.trapz(fx, x=logx)
+        integral_value = jsi.trapezoid(fx, x=logx)
         return integral_value
 
     @partial(jit, static_argnums=(0,))
@@ -557,7 +559,7 @@ class BCM_18_wP:
         fx1 = (vmap(self.get_rho_gas_normed, (0, None, None, None,None))(jnp.arange(len(logx)), jc, jz, jM, x))
         fx2 = jnp.exp(jnp.interp(logx, jnp.log(self.r_array), jnp.log(self.Mdmb_mat[:,jc, jz, jM])))
         fx = (fx1 * fx2 * G_new / x**2) * x
-        Ptot = jnp.trapz(fx, x=logx)
+        Ptot = jsi.trapezoid(fx, x=logx)
         # there is a factor of h^2 as dP = -G * rho_g * M(<r)/r^2 dr ~ G * M^2/r^4 and both mass and r are in the units of little h
         Ptot = jnp.clip(Ptot, 1e-30) * (self.cosmo_params['H0'] / 100.)**2
         return Ptot
