@@ -16,7 +16,7 @@ import jax_cosmo.background as bkgrd
 from jax_cosmo.scipy.integrate import simps
 from jax_cosmo.utils import z2a
 
-class get_power_BCMP:
+class get_power_BCMP_NO_CONC:
     def __init__(
                 self,
                 sim_params_dict,
@@ -44,11 +44,14 @@ class get_power_BCMP:
             wa=0.
             )
 
+        self.conc_dep_model = analysis_dict.get('conc_dep_model',False)
         if verbose_time:
             ti = time.time()
         if setup_power_BCMP_obj is None:
-            setup_power_BCMP_obj = setup_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, num_points_trapz_int=num_points_trapz_int, verbose_time=verbose_time)
-
+            if self.conc_dep_model:
+                setup_power_BCMP_obj = setup_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, num_points_trapz_int=num_points_trapz_int, verbose_time=verbose_time)
+            else:
+                setup_power_BCMP_obj = setup_power_BCMP_NO_CONC(sim_params_dict, halo_params_dict, analysis_dict, num_points_trapz_int=num_points_trapz_int, verbose_time=verbose_time)
         if verbose_time:
             print('Time for setup_power_BCMP: ', time.time() - ti)
             ti = time.time()
@@ -58,17 +61,20 @@ class get_power_BCMP:
         self.M_array = setup_power_BCMP_obj.M_array
         self.z_array = setup_power_BCMP_obj.z_array
         self.scale_fac_a_array = 1./(1. + self.z_array)
-        self.conc_array = setup_power_BCMP_obj.conc_array
-        self.nM, self.nz, self.nc = len(self.M_array), len(self.z_array), len(self.conc_array)
+        # self.conc_array = setup_power_BCMP_obj.conc_array
+        self.nM, self.nz = len(self.M_array), len(self.z_array)
         self.chi_array = setup_power_BCMP_obj.chi_array
         self.dchi_dz_array = (const.c.value * 1e-3) / bkgrd.H(self.cosmo_jax, self.scale_fac_a_array)
         self.hmf_Mz_mat = setup_power_BCMP_obj.hmf_Mz_mat
-        self.uyl_mat = jnp.moveaxis(setup_power_BCMP_obj.uyl_mat, 1, 3)
+        # self.uyl_mat = jnp.moveaxis(setup_power_BCMP_obj.uyl_mat, 1, 3)
+        self.uyl_mat = setup_power_BCMP_obj.uyl_mat
         self.byl_mat = setup_power_BCMP_obj.byl_mat
-        self.ukappal_dmb_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_dmb_prefac_mat, 1, 3)
+        # self.ukappal_dmb_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_dmb_prefac_mat, 1, 3)
+        self.ukappal_dmb_prefac_mat = setup_power_BCMP_obj.ukappal_dmb_prefac_mat
         self.bkl_dmb_mat = setup_power_BCMP_obj.bkl_dmb_mat        
         if self.calc_nfw_only:
-            self.ukappal_nfw_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_nfw_prefac_mat, 1, 3)        
+            # self.ukappal_nfw_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_nfw_prefac_mat, 1, 3)        
+            self.ukappal_nfw_prefac_mat = setup_power_BCMP_obj.ukappal_nfw_prefac_mat
             self.bkl_nfw_mat = setup_power_BCMP_obj.bkl_nfw_mat
             
         self.Pklin_lz_mat = setup_power_BCMP_obj.Pklin_lz_mat
@@ -128,12 +134,12 @@ class get_power_BCMP:
         
         self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
 
-        self.logc_array = jnp.log(self.conc_array)
-        sig_logc = setup_power_BCMP_obj.sig_logc_z_array
-        sig_logc_mat = jnp.tile(sig_logc[:, None, None], (1, self.nM, self.nc))
-        conc_mat = jnp.tile(self.conc_array[None, None, :], (self.nz, self.nM, 1))
-        cmean_mat = jnp.tile(setup_power_BCMP_obj.conc_Mz_mat[:,:,None], (1, 1, self.nc))
-        self.p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_mat)/ sig_logc_mat)**2) * (1.0/(sig_logc_mat * jnp.sqrt(2*jnp.pi)))
+        # self.logc_array = jnp.log(self.conc_array)
+        # sig_logc = setup_power_BCMP_obj.sig_logc_z_array
+        # sig_logc_mat = jnp.tile(sig_logc[:, None, None], (1, self.nM, self.nc))
+        # conc_mat = jnp.tile(self.conc_array[None, None, :], (self.nz, self.nM, 1))
+        # cmean_mat = jnp.tile(setup_power_BCMP_obj.conc_Mz_mat[:,:,None], (1, 1, self.nc))
+        # self.p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_mat)/ sig_logc_mat)**2) * (1.0/(sig_logc_mat * jnp.sqrt(2*jnp.pi)))
         if verbose_time:
             print('Time for computing p_logc_Mz: ', time.time() - ti)
             ti = time.time()
@@ -255,9 +261,10 @@ class get_power_BCMP:
         Computes the 1-halo term of the auto-spectrum of the Compton-y map.
         """
         uyl_jl = self.uyl_mat[jl, ...]        
-        fx = uyl_jl * uyl_jl * self.p_logc_Mz
-        fx_intc = jsi.trapezoid(fx, x=self.logc_array)
-        fx = fx_intc * self.hmf_Mz_mat
+        # fx = uyl_jl * uyl_jl * self.p_logc_Mz
+        # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
+        # fx = fx_intc * self.hmf_Mz_mat
+        fx =  uyl_jl * uyl_jl * self.hmf_Mz_mat
         fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
         fx = fx_intM * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
@@ -286,9 +293,10 @@ class get_power_BCMP:
         uyl_jl = self.uyl_mat[jl, ...]
         ukl_jl = self.ukappal_dmb_prefac_mat[jl, ...]
         
-        fx = uyl_jl * ukl_jl * self.p_logc_Mz
-        fx_intc = jsi.trapezoid(fx, x=self.logc_array)
-        fx = fx_intc * self.hmf_Mz_mat
+        # fx = uyl_jl * ukl_jl * self.p_logc_Mz
+        # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
+        # fx = fx_intc * self.hmf_Mz_mat
+        fx = uyl_jl * ukl_jl * self.hmf_Mz_mat
         fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
         fx = fx_intM * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
@@ -322,9 +330,10 @@ class get_power_BCMP:
 
         ukl_jl = self.ukappal_dmb_prefac_mat[jl]       
         
-        fx = ukl_jl * ukl_jl * self.p_logc_Mz
-        fx_intc = jsi.trapezoid(fx, x=self.logc_array)
-        fx = fx_intc * self.hmf_Mz_mat
+        # fx = ukl_jl * ukl_jl * self.p_logc_Mz
+        # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
+        # fx = fx_intc * self.hmf_Mz_mat
+        fx = ukl_jl * ukl_jl * self.hmf_Mz_mat
         fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
         fx = fx_intM * prefac_for_uk1 * prefac_for_uk2 * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
@@ -357,9 +366,10 @@ class get_power_BCMP:
 
         ukl_jl = self.ukappal_nfw_prefac_mat[jl]       
         
-        fx = ukl_jl * ukl_jl * self.p_logc_Mz
-        fx_intc = jsi.trapezoid(fx, x=self.logc_array)
-        fx = fx_intc * self.hmf_Mz_mat
+        # fx = ukl_jl * ukl_jl * self.p_logc_Mz
+        # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
+        # fx = fx_intc * self.hmf_Mz_mat
+        fx = ukl_jl * ukl_jl * self.hmf_Mz_mat
         fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
         fx = fx_intM * prefac_for_uk1 * prefac_for_uk2 * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jsi.trapezoid(fx, x=self.z_array)

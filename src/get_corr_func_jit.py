@@ -1,5 +1,6 @@
 import os
 from get_power_spectra_jit import get_power_BCMP
+from get_power_spectra_NO_CONC_jit import get_power_BCMP_NO_CONC
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 import numpy as np
@@ -79,10 +80,14 @@ class get_corrfunc_BCMP:
         #     wa=0.
         #     )
 
+        self.conc_dep_model = analysis_dict.get('conc_dep_model',False)
         if verbose_time:
             ti = time.time()
         if get_power_BCMP_obj is None:
-            get_power_BCMP_obj = get_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, num_points_trapz_int=num_points_trapz_int, setup_power_BCMP_obj=setup_power_BCMP_obj, verbose_time=verbose_time)
+            if self.conc_dep_model:
+                get_power_BCMP_obj = get_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, num_points_trapz_int=num_points_trapz_int, setup_power_BCMP_obj=setup_power_BCMP_obj, verbose_time=verbose_time)
+            else:
+                get_power_BCMP_obj = get_power_BCMP_NO_CONC(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, num_points_trapz_int=num_points_trapz_int, setup_power_BCMP_obj=setup_power_BCMP_obj, verbose_time=verbose_time)
         if verbose_time:
             print('Time for setup_power_BCMP: ', time.time() - ti)
             ti = time.time()
