@@ -97,9 +97,10 @@ class get_power_BCMP_NO_CONC:
             self.A_IA = other_params_dict['A_IA']
             self.eta_IA = other_params_dict['eta_IA']
             self.z0_IA = other_params_dict['z0_IA']
-            self.C1_bar = other_params_dict['C1_bar']
+            self.C1_bar = other_params_dict['C1_rhocrit']
             H0 = 100. * (u.km / (u.s * u.Mpc))
-            self.rho_m_bar = self.cosmo_params['Om0'] * ((3 * (H0**2) / (8 * np.pi * G_Mpc_s_units)).to(u.M_sun / (u.Mpc**3))).value
+            # self.rho_m_bar = self.cosmo_params['Om0'] * ((3 * (H0**2) / (8 * np.pi * G_Mpc_s_units)).to(u.M_sun / (u.Mpc**3))).value
+            self.C1_rho_m_bar = self.C1_bar * self.cosmo_params['Om0']
             self.Delta_z_bias_array = jnp.array(other_params_dict['Delta_z_bias_array'])
             self.mult_shear_bias_array = jnp.array(other_params_dict['mult_shear_bias_array'])
         else:
@@ -248,7 +249,8 @@ class get_power_BCMP_NO_CONC:
         """
         z = self.z_array[jz]
         Dz = self.growth_array[jz]
-        Az_IA = -1. * self.A_IA * self.rho_m_bar * self.C1_bar * (1. / Dz) * ((1. + z) / (1. + self.z0_IA))**self.eta_IA
+        # Az_IA = -1. * self.A_IA * self.rho_m_bar * self.C1_bar * (1. / Dz) * ((1. + z) / (1. + self.z0_IA))**self.eta_IA
+        Az_IA = -1. * self.A_IA * self.C1_rho_m_bar * (1. / Dz) * ((1. + z) / (1. + self.z0_IA))**self.eta_IA        
         # dchi_dz = (const.c.to(u.km / u.s)).value / (bkgrd.H(self.cosmo_jax, z2a(z)))
         dchi_dz = self.dchi_dz_array[jz]
         dndz = (jnp.interp(z, self.z_array_nz, self.pzs_inp_mat[jb, :]))
