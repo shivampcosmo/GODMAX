@@ -75,8 +75,13 @@ class setup_power_BCMP_NO_CONC:
         self.scale_fac_a_array = 1./(1. + self.z_array)
         # self.conc_array = BCMP_obj.conc_array
         self.nr, self.nM, self.nz = len(self.r_array), len(self.M_array), len(self.z_array)
-        ellmin, ellmax, nell = halo_params_dict['ellmin'], halo_params_dict['ellmax'], halo_params_dict['nell']
-        self.ell_array = jnp.logspace(jnp.log10(ellmin), jnp.log10(ellmax), nell)        
+        self.ell_array = halo_params_dict.get('ell_array',None)
+        if self.ell_array is None:
+            ellmin, ellmax, nell = halo_params_dict['ellmin'], halo_params_dict['ellmax'], halo_params_dict['nell']
+            self.ell_array = jnp.logspace(jnp.log10(ellmin), jnp.log10(ellmax), nell)        
+        else:            
+            ellmin, ellmax, nell = jnp.min(self.ell_array), jnp.max(self.ell_array), len(self.ell_array)
+        self.nell = len(self.ell_array)
         self.r200c_mat = BCMP_obj.r200c_mat
         self.rho_dmb_mat = BCMP_obj.rho_dmb_mat
         self.rho_nfw_mat = BCMP_obj.rho_nfw_mat

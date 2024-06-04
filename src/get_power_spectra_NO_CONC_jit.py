@@ -208,6 +208,11 @@ class get_power_BCMP_NO_CONC:
                     print('Total time for computing all Cls: ', time.time() - t0)
                     # ti = time.time()                
 
+        self.get_cov = analysis_dict.get('get_cov',False)  
+        if self.get_cov:
+            self.ukappa_l_for_cov = vmap(self.get_ukappa_l_forcov)(jnp.arange(self.nbins))
+
+
     @partial(jit, static_argnums=(0,))
     def get_photoz_biased_nz(self, jb):
         """
@@ -392,3 +397,10 @@ class get_power_BCMP_NO_CONC:
         fx = (bkl_jl**2) * prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
         return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
+    
+    @partial(jit, static_argnums=(0,))
+    def get_ukappa_l_forcov(self, jb):
+        Wk_jb = self.Wk_mat[jb,:]
+        prefac_for_uk = Wk_jb/(self.chi_array**2)
+        prefac_for_uk_tile = jnp.tile(prefac_for_uk[None,:,None], (self.ukappal_dmb_prefac_mat.shape[0], 1, self.ukappal_dmb_prefac_mat.shape[2]))
+        return prefac_for_uk_tile *  self.ukappal_dmb_prefac_mat
