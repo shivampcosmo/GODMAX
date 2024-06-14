@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/mnt/ceph/users/spandey/GODMAX/run_scripts/FI/sample_params.py", line 520, in <module>
+    import dill as dill
+ModuleNotFoundError: No module named 'dill'
+srun: error: workergpu070: task 0: Exited with exit code 1
+
+real	91m54.362s
+user	0m0.018s
+sys	0m0.005s
