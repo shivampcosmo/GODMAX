@@ -1,0 +1,249 @@
+  0%|          | 0/700 [00:00<?, ?it/s]2024-06-14 03:22:15.105624: W external/xla/xla/service/hlo_rematerialization.cc:2941] Can't reduce memory use below 71.43GiB (76696150560 bytes) by rematerialization; only reduced to 91.56GiB (98309547660 bytes), down from 91.67GiB (98435553284 bytes) originally
+2024-06-14 03:22:48.267094: W external/tsl/tsl/framework/bfc_allocator.cc:482] Allocator (GPU_0_bfc) ran out of memory trying to allocate 91.65GiB (rounded to 98412057856)requested by op 
+2024-06-14 03:22:48.267407: W external/tsl/tsl/framework/bfc_allocator.cc:494] *___________________________________________________________________________________________________
+E0614 03:22:48.278502 4109666 pjrt_stream_executor_client.cc:2804] Execution of replica 0 failed: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 98412057824 bytes.
+BufferAssignment OOM Debugging.
+BufferAssignment stats:
+             parameter allocation:    2.65MiB
+              constant allocation:    1.25MiB
+        maybe_live_out allocation:    2.65MiB
+     preallocated temp allocation:   91.65GiB
+  preallocated temp fragmentation:     2.7KiB (0.00%)
+                 total allocation:   91.66GiB
+              total fragmentation:    2.48MiB (0.00%)
+Peak buffers:
+	Buffer 1:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 2:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 3:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/transpose(jvp(vmap(vmap(vmap(jit(get_zeta))))))/vmap(jit(get_Mgas))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 4:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/transpose(jvp(vmap(vmap(vmap(jit(get_zeta))))))/vmap(jit(get_Mgas))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 5:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 6:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 7:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 8:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 9:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 10:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 11:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 12:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 13:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 14:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 15:
+		Size: 5.81GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/jit(trapezoid)/add" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=262
+		XLA Label: fusion
+		Shape: f64[31,32,24,32,32,32]
+		==========================
+
+
+  0%|          | 0/700 [01:37<?, ?it/s]
+Traceback (most recent call last):
+  File "/mnt/ceph/users/spandey/GODMAX/run_scripts/test_runs_v0/sample_params.py", line 472, in <module>
+    mcmc.run(jax.random.PRNGKey(42))
+  File "/mnt/home/spandey/venv_gm/lib/python3.12/site-packages/numpyro/infer/mcmc.py", line 643, in run
+    states, last_state = partial_map_fn(map_args)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/spandey/venv_gm/lib/python3.12/site-packages/numpyro/infer/mcmc.py", line 440, in _single_chain_mcmc
+    collect_vals = fori_collect(
+                   ^^^^^^^^^^^^^
+  File "/mnt/home/spandey/venv_gm/lib/python3.12/site-packages/numpyro/util.py", line 367, in fori_collect
+    vals = jit(_body_fn)(i, vals)
+           ^^^^^^^^^^^^^^^^^^^^^^
+jaxlib.xla_extension.XlaRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 98412057824 bytes.
+BufferAssignment OOM Debugging.
+BufferAssignment stats:
+             parameter allocation:    2.65MiB
+              constant allocation:    1.25MiB
+        maybe_live_out allocation:    2.65MiB
+     preallocated temp allocation:   91.65GiB
+  preallocated temp fragmentation:     2.7KiB (0.00%)
+                 total allocation:   91.66GiB
+              total fragmentation:    2.48MiB (0.00%)
+Peak buffers:
+	Buffer 1:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 2:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 3:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/transpose(jvp(vmap(vmap(vmap(jit(get_zeta))))))/vmap(jit(get_Mgas))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 4:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/transpose(jvp(vmap(vmap(vmap(jit(get_zeta))))))/vmap(jit(get_Mgas))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 5:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 6:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 7:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 8:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 9:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 10:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 11:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 12:
+		Size: 6.00GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/mul" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=261
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 13:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 14:
+		Size: 6.00GiB
+		XLA Label: fusion
+		Shape: f64[32,32,24,32,32,32]
+		==========================
+
+	Buffer 15:
+		Size: 5.81GiB
+		Operator: op_name="jit(_body_fn)/jit(main)/vmap(while)/body/while/body/jvp(vmap(vmap(vmap(jit(get_zeta)))))/vmap(jit(get_Mcga))/jit(trapezoid)/add" source_file="/mnt/ceph/users/spandey/GODMAX/src/get_BCMP_profile_NO_CONC_jit.py" source_line=262
+		XLA Label: fusion
+		Shape: f64[31,32,24,32,32,32]
+		==========================
+
+
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+srun: error: workergpu051: task 0: Exited with exit code 1
+
+real	5m4.465s
+user	0m0.023s
+sys	0m0.009s

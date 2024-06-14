@@ -448,14 +448,14 @@ observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 from numpyro.infer import HMC, HMCECS, MCMC, NUTS, SA, SVI, Trace_ELBO, init_to_value
 nuts_kernel = numpyro.infer.NUTS(observed_model_reparam,
-                            step_size=1e-1, 
+                            step_size=2e-1, 
                             init_strategy=numpyro.infer.init_to_median,
-                            dense_mass=False,
-                            max_tree_depth=4)
+                            dense_mass=True,
+                            max_tree_depth=5)
 
-num_warmup = 1500
-num_samples=20000
-num_chains=5
+num_warmup = 200
+num_samples = 500
+num_chains=32
 mcmc = numpyro.infer.MCMC(nuts_kernel, 
                           num_warmup=num_warmup, 
                           num_samples=num_samples,
@@ -475,4 +475,4 @@ s = mcmc.get_samples()
 # saved = {'samples':s}
 import pickle as pk
 save_chain_dir = abs_path_results + '/chains/'
-pk.dump(s, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains}.pkl', 'wb'))
+pk.dump(s, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains}_NUTS_update.pkl', 'wb'))

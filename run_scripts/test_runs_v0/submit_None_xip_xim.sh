@@ -2,10 +2,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=28:00:00
-#SBATCH --job-name=run_deproj_cib_1p7_dBeta_probe_xip+xim
+#SBATCH --job-name=NUTS2_UP_run_deproj_cib_1p7_dBeta_probe_xip+xim
 #SBATCH -p gpu
 #SBATCH -C a100-80gb,ib
-#SBATCH --gpus=1
+#SBATCH --gpus=4
 #SBATCH --output=/mnt/home/spandey/ceph/GODMAX/run_scripts/test_runs_v0/logs/%x.%j.out
 #SBATCH --error=/mnt/home/spandey/ceph/GODMAX/run_scripts/test_runs_v0/logs/%x.%j.err
 
