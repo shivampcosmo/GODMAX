@@ -355,6 +355,7 @@ class get_power_BCMP_NO_CONC:
         prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
         Wk_jb2 = self.Wk_mat[jb2]
         prefac_for_uk2 = Wk_jb2/(self.chi_array**2)
+        
         bkl_jl = self.bkl_dmb_mat[jl]
         
         fx = (bkl_jl**2) * prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]

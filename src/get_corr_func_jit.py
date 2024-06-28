@@ -145,8 +145,12 @@ class get_corrfunc_BCMP:
             self.gty_1h_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
             _, xi_out = (Hankel(self.ell_array, nu=2, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_y_2h, axis=1, extrap=False))
             self.gty_2h_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
-
-            self.gty_tot_mat = jnp.array(self.gty_1h_mat + self.gty_2h_mat)
+    
+            self.alpha_gty = analysis_dict.get('alpha_gty',1.0)
+            self.Cl_kappa_y_tot = (jnp.clip(self.Cl_kappa_y_1h, 0)**self.alpha_gty + jnp.clip(self.Cl_kappa_y_2h, 0)**self.alpha_gty)**(1/self.alpha_gty)
+            _, xi_out = (Hankel(self.ell_array, nu=2, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_y_tot, axis=1, extrap=False))
+            # self.gty_tot_mat = jnp.array((self.gty_1h_mat**self.alpha_gty + self.gty_2h_mat**self.alpha_gty)**(1/self.alpha_gty))
+            self.gty_tot_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
 
             vmap_func1 = vmap(self.interp_gty1h_theta, (0, None))
             vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -197,7 +201,12 @@ class get_corrfunc_BCMP:
             self.xip_1h_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
             _, xi_out = (Hankel(self.ell_array, nu=0, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_kappa_2h, axis=2, extrap=False))
             self.xip_2h_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
-            self.xip_tot_mat = jnp.array(self.xip_1h_mat + self.xip_2h_mat)
+
+            self.alpha_xip = analysis_dict.get('alpha_xip',1.0)         
+            self.Cl_kappa_kappa_tot = (jnp.clip(self.Cl_kappa_kappa_1h, 0)**self.alpha_xip + jnp.clip(self.Cl_kappa_kappa_2h, 0)**self.alpha_xip)**(1/self.alpha_xip)
+            _, xi_out = (Hankel(self.ell_array, nu=0, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_kappa_tot, axis=2, extrap=False))
+            self.xip_tot_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))   
+            # self.xip_tot_mat = jnp.array((self.xip_1h_mat**self.alpha_xip + self.xip_2h_mat**self.alpha_xip)**(1/self.alpha_xip))
 
             vmap_func1 = vmap(self.interp_xip1h_theta, (0, None))
             vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -226,7 +235,12 @@ class get_corrfunc_BCMP:
             self.xim_1h_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
             _, xi_out = (Hankel(self.ell_array, nu=4, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_kappa_2h, axis=2, extrap=False))
             self.xim_2h_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
-            self.xim_tot_mat = jnp.array(self.xim_1h_mat + self.xim_2h_mat)
+
+            self.alpha_xim = analysis_dict.get('alpha_xim',1.0)                        
+            self.Cl_kappa_kappa_tot = (jnp.clip(self.Cl_kappa_kappa_1h, 0)**self.alpha_xim + jnp.clip(self.Cl_kappa_kappa_2h, 0)**self.alpha_xim)**(1/self.alpha_xim)
+            _, xi_out = (Hankel(self.ell_array, nu=4, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_kappa_tot, axis=2, extrap=False))
+            self.xim_tot_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
+            # self.xim_tot_mat = jnp.array((self.xim_1h_mat**self.alpha_xim + self.xim_2h_mat**self.alpha_xim)**(1/self.alpha_xim))
 
             vmap_func1 = vmap(self.interp_xim1h_theta, (0, None))
             vmap_func2 = vmap(vmap_func1, (None, 0))
