@@ -1,0 +1,15 @@
+2024-06-28 09:51:57.989635: W external/xla/xla/service/gpu/nvptx_compiler.cc:765] The NVIDIA driver's CUDA version is 12.2 which is older than the ptxas CUDA version (12.5.40). Because the driver is older than the ptxas version, XLA is disabling parallel compilation, which may slow down compilation. You should update your NVIDIA driver or use the NVIDIA-provided CUDA forward compatibility packages.
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/global/cfs/cdirs/lsst/www/shivamp/GODMAX/run_scripts/perlmutter/sample_params_thetaco.py", line 546, in <module>
+    traces = pmap(do_mcmc)(rng_keys)
+TypeError: Value <numpyro.infer.mcmc.MCMC object at 0x7fa5605943d0> with type <class 'numpyro.infer.mcmc.MCMC'> is not a valid JAX type
+srun: error: nid002109: task 0: Exited with exit code 1
+srun: Terminating StepId=27290567.0
+
+real	4m42.554s
+user	0m0.051s
+sys	0m0.044s

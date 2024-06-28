@@ -217,6 +217,7 @@ save_DV_dir = os.path.abspath(abs_path_data + '/DESxACT/DV/')
 df_measure = pk.load(open(f'{save_DV_dir}/DESxACT_gty_xip_xim_DV_{true_y_file}.pk', 'rb'))
 cov_total = df_measure['cov_total']
 xi_all = df_measure['xi_all']
+theta_all = df_measure['theta_all']
 cov_total = jnp.array(cov_total)
 data_vec = jnp.array(xi_all)
 
@@ -230,6 +231,20 @@ if probe == 'xip_xim':
 elif probe == 'gty':
     cov_total = cov_total[:80, :80]
     data_vec = data_vec[:80]
+
+
+# scale cuts:
+# remove scales below 10arcmin for first two bins:
+indrm1 = np.where(theta_all[:20] < 10.0)[0]
+indrm2 = np.where(theta_all[20:40] < 10.0)[0]
+indrm = np.concatenate([indrm1, indrm2 + 20])
+indrm = jnp.array(indrm)
+
+if probe in ['gty', 'all']:
+    data_vec = jnp.delete(data_vec, indrm)
+    cov_total = jnp.delete(cov_total, indrm, axis=0)
+    cov_total = jnp.delete(cov_total, indrm, axis=1)
+
 
 P_total = jnp.linalg.inv(cov_total)
 
@@ -258,8 +273,10 @@ biny_vals = np.array([1,2,3,4])
 index_gty = []
 for js in range(80):
     # index_gty[js] = [js%20 ,js//20]
-    index_gty.append([js%20 ,js//20])
+    if js not in indrm:
+        index_gty.append([js%20 ,js//20])
 index_gty = jnp.array(index_gty)
+len_ind_gty = len(index_gty)
 # index_xip = {}
 index_xip = []
 for js in range(200):
@@ -424,7 +441,7 @@ def model():
         index_val = index_xim[index]
         return get_corrfunc_BCMP_test.xim_out_mat[index_val[0], index_val[1], index_val[2]]
 
-    gty_val = vmap(get_gty_from_index)(np.arange(80))
+    gty_val = vmap(get_gty_from_index)(np.arange(len_ind_gty))
     xip_val = vmap(get_xip_from_index)(np.arange(200))
     xim_val = vmap(get_xim_from_index)(np.arange(200))
 
@@ -462,8 +479,8 @@ observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 
 from numpyro.infer import HMC, HMCECS, MCMC, NUTS, SA, SVI, Trace_ELBO, init_to_value
-num_warmup = 4000
-num_samples = 5000
+num_warmup = 100
+num_samples = 100
 num_chains= 3
 
 def do_mcmc(rng_key, n_vectorized=num_chains):
@@ -489,8 +506,8 @@ def do_mcmc(rng_key, n_vectorized=num_chains):
         rng_key,
         extra_fields=("potential_energy",),
     )
-    return {**mcmc.get_samples(), **mcmc.get_extra_fields()}
-
+    # return {**mcmc.get_samples(), **mcmc.get_extra_fields()}
+    return mcmc
 
 # nuts_kernel = numpyro.infer.NUTS(observed_model_reparam,
 #                             step_size=2e-1, 
@@ -527,10 +544,16 @@ def do_mcmc(rng_key, n_vectorized=num_chains):
 n_parallel = jax.local_device_count()
 rng_keys = jax.random.split(jax.random.PRNGKey(42), n_parallel)
 traces = pmap(do_mcmc)(rng_keys)
-# concatenate traces along pmap'ed axis
-trace = {k: np.concatenate(v) for k, v in traces.items()}
 
 import dill as dill
 save_chain_dir = abs_path_results + '/chains/'
 dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_thetaco_NUTS_update.pkl', 'wb'))
+
+
+# concatenate traces along pmap'ed axis
+# trace = {k: np.concatenate(v) for k, v in traces.items()}
+
+# import dill as dill
+# save_chain_dir = abs_path_results + '/chains/'
+# dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_thetaco_NUTS_update.pkl', 'wb'))
 

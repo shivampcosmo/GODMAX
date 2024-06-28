@@ -1,0 +1,3 @@
+An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+slurmstepd: error: *** STEP 27290102.0 ON nid001109 CANCELLED AT 2024-06-28T16:46:02 ***
+slurmstepd: error: *** JOB 27290102 ON nid001109 CANCELLED AT 2024-06-28T16:46:02 ***

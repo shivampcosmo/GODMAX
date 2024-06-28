@@ -1,0 +1,11 @@
+An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+Traceback (most recent call last):
+  File "/global/cfs/cdirs/lsst/www/shivamp/GODMAX/run_scripts/perlmutter/sample_params_thetaco.py", line 22, in <module>
+    import numpyro
+ModuleNotFoundError: No module named 'numpyro'
+srun: error: nid001009: task 0: Exited with exit code 1
+srun: Terminating StepId=27289941.0
+
+real	0m27.488s
+user	0m0.055s
+sys	0m0.035s
