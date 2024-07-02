@@ -451,8 +451,8 @@ observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 from numpyro.infer import HMC, HMCECS, MCMC, NUTS, SA, SVI, Trace_ELBO, init_to_value
 num_warmup = 1000
-num_samples = 1000
-num_chains= 6
+num_samples = 2000
+num_chains= 4
 
 def do_mcmc(rng_key, n_vectorized=num_chains):
     # nuts_kernel = NUTS(model)
@@ -460,8 +460,9 @@ def do_mcmc(rng_key, n_vectorized=num_chains):
                                 step_size=2e-1, 
                                 init_strategy=numpyro.infer.init_to_sample,
                                 dense_mass=True,
-                                max_tree_depth=5,
-                                forward_mode_differentiation=True)
+                                max_tree_depth=5
+                                # forward_mode_differentiation=True
+                                )
 
     mcmc = numpyro.infer.MCMC(nuts_kernel, 
                             num_warmup=num_warmup, 

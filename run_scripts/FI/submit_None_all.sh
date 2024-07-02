@@ -8,7 +8,6 @@
 #SBATCH --output=/mnt/home/spandey/ceph/GODMAX/run_scripts/FI/logs/%x.%j.out
 #SBATCH --error=/mnt/home/spandey/ceph/GODMAX/run_scripts/FI/logs/%x.%j.err
 
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # module purge
 module load python
@@ -18,7 +17,6 @@ module load cudnn
 module load nccl
 module load modules/2.2-20230808
 source ~/miniconda3/bin/activate /mnt/home/spandey/venv_gm
-
 
 cd /mnt/home/spandey/ceph/GODMAX/run_scripts/FI/
 
