@@ -29,7 +29,7 @@ import pickle as pk
 import numpy as np
 import jax.numpy as jnp
 import colossus 
-from jax import vmap, pmap, grad
+from jax import vmap, grad, pmap
 import matplotlib.pyplot as pl
 pl.rc('text', usetex=True)
 # Palatino
@@ -49,12 +49,12 @@ sim_params_dict['delta_rhogas'] = 7.0
 # sim_params_dict['theta_ej'] = 1.0
 
 sim_params_dict['theta_co_0'] = 0.1
-sim_params_dict['log10_Mstar0_theta_co'] = 14.0
+sim_params_dict['log10_Mstar0_theta_co'] = 15.0
 sim_params_dict['nu_theta_co_M'] = 0.0
 sim_params_dict['nu_theta_co_z'] = 0.0
 
 sim_params_dict['theta_ej_0'] = 2.75
-sim_params_dict['log10_Mstar0_theta_ej'] = 14.0
+sim_params_dict['log10_Mstar0_theta_ej'] = 15.0
 sim_params_dict['nu_theta_ej_M'] = 0.0
 sim_params_dict['nu_theta_ej_z'] = 0.0
 
@@ -217,6 +217,7 @@ save_DV_dir = os.path.abspath(abs_path_data + '/DESxACT/DV/')
 df_measure = pk.load(open(f'{save_DV_dir}/DESxACT_gty_xip_xim_DV_{true_y_file}.pk', 'rb'))
 cov_total = df_measure['cov_total']
 xi_all = df_measure['xi_all']
+theta_all = df_measure['theta_all']
 cov_total = jnp.array(cov_total)
 data_vec = jnp.array(xi_all)
 
@@ -230,6 +231,20 @@ if probe == 'xip_xim':
 elif probe == 'gty':
     cov_total = cov_total[:80, :80]
     data_vec = data_vec[:80]
+
+
+# scale cuts:
+# remove scales below 10arcmin for first two bins:
+indrm1 = np.where(theta_all[:20] < 10.0)[0]
+indrm2 = np.where(theta_all[20:40] < 10.0)[0]
+indrm = np.concatenate([indrm1, indrm2 + 20])
+indrm = jnp.array(indrm)
+
+if probe in ['gty', 'all']:
+    data_vec = jnp.delete(data_vec, indrm)
+    cov_total = jnp.delete(cov_total, indrm, axis=0)
+    cov_total = jnp.delete(cov_total, indrm, axis=1)
+
 
 P_total = jnp.linalg.inv(cov_total)
 
@@ -258,8 +273,10 @@ biny_vals = np.array([1,2,3,4])
 index_gty = []
 for js in range(80):
     # index_gty[js] = [js%20 ,js//20]
-    index_gty.append([js%20 ,js//20])
+    if js not in indrm:
+        index_gty.append([js%20 ,js//20])
 index_gty = jnp.array(index_gty)
+len_ind_gty = len(index_gty)
 # index_xip = {}
 index_xip = []
 for js in range(200):
@@ -293,10 +310,20 @@ prior_max_all_dict['sigma8'] = 1.0
 
 prior_min_all_dict['theta_ej_0'] = 1.0
 prior_max_all_dict['theta_ej_0'] = 5.0
-# prior_min_all_dict['log10_Mc0'] = 13.0
-# prior_max_all_dict['log10_Mc0'] = 15.0
+prior_min_all_dict['log10_Mc0'] = 13.0
+prior_max_all_dict['log10_Mc0'] = 15.0
 prior_min_all_dict['nu_theta_ej_M'] = -3.0
-prior_max_all_dict['nu_theta_ej_M'] = 0.0
+prior_max_all_dict['nu_theta_ej_M'] = 0.1
+prior_min_all_dict['nu_z'] = -3.0
+prior_max_all_dict['nu_z'] = 3.0
+
+prior_min_all_dict['gamma_rhogas'] = 0.2
+prior_max_all_dict['gamma_rhogas'] = 4.0
+
+prior_min_all_dict['theta_co_0'] = 0.001
+prior_max_all_dict['theta_co_0'] = 0.5
+
+
 prior_min_all_dict['nu_theta_ej_z'] = -2.0
 prior_max_all_dict['nu_theta_ej_z'] = 2.0
 prior_min_all_dict['alpha_nt'] = 0.0
@@ -306,6 +333,13 @@ prior_min_all_dict['A_IA'] = -3.0
 prior_max_all_dict['A_IA'] = 3.0
 prior_min_all_dict['eta_IA'] = -2.0
 prior_max_all_dict['eta_IA'] = 2.0
+
+prior_min_all_dict['alpha_ky'] = 0.9
+prior_max_all_dict['alpha_ky'] = 1.1
+
+prior_min_all_dict['alpha_kk'] = 0.9
+prior_max_all_dict['alpha_kk'] = 1.1
+
 
 prior_mu_all_dict = {}
 prior_sig_all_dict = {}
@@ -341,12 +375,16 @@ prior_mult_shear_sig_all = jnp.array([prior_sig_all_dict['mult_shear_bias_bin1']
 
 # 'H0': 67.2, 'Om0': 0.29, 'Ob0': 0.049, 'sigma8': 0.783, 'ns': 0.95
 cosmo_params_vary_names = ['Om0', 'sigma8', 'Ob0', 'h', 'ns']
-sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'nu_theta_ej_z', 'alpha_nt']
+# sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'nu_theta_ej_z', 'alpha_nt']
+# sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'gamma_rhogas', 'nu_theta_ej_z', 'alpha_nt']
+sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'nu_theta_ej_z', 'alpha_nt']
 # sims_params_vary_names = []
 # cosmo_params_vary_names = []
 IA_params_vary_names = ['A_IA', 'eta_IA']
 # IA_params_vary_names = ['eta_IA']
 # IA_params_vary_names = []
+
+analysis_vary_names = ['alpha_ky', 'alpha_kk']
 
 mult_shear_vary_names = ['mult_shear_bias_bin1', 'mult_shear_bias_bin2', 'mult_shear_bias_bin3', 'mult_shear_bias_bin4'] 
 Delta_shear_vary_names = ['Delta_z_bias_bin1', 'Delta_z_bias_bin2', 'Delta_z_bias_bin3', 'Delta_z_bias_bin4']
@@ -364,7 +402,7 @@ import copy
 def model():
     sim_params_dict_vary = copy.deepcopy(sim_params_dict)
     other_params_dict_vary = copy.deepcopy(other_params_dict)
-
+    analysis_dict_vary = copy.deepcopy(analysis_dict)
     if len(cosmo_params_vary_names) > 0:
         for jp in range(len(cosmo_params_vary_names)):
             if cosmo_params_vary_names[jp] == 'h':
@@ -396,9 +434,14 @@ def model():
     if len(prior_mult_shear_mu_all) > 0:
         mult_shear_bias_array = numpyro.sample('mult_shear_bias_array', dist.Normal(prior_mult_shear_mu_all, prior_mult_shear_sig_all))
         other_params_dict_vary['mult_shear_bias_array'] = mult_shear_bias_array
-        
     
-    get_corrfunc_BCMP_test = get_corrfunc_BCMP(sim_params_dict_vary, halo_params_dict, analysis_dict, other_params_dict_vary, verbose_time=False, num_points_trapz_int=32)
+    if len(analysis_vary_names) > 0:
+        for jp in range(len(analysis_vary_names)):
+            prior_min_jp = prior_min_all_dict[analysis_vary_names[jp]]
+            prior_max_jp = prior_max_all_dict[analysis_vary_names[jp]]
+            analysis_dict_vary[analysis_vary_names[jp]] = Uniform(analysis_vary_names[jp], prior_min_jp, prior_max_jp)
+
+    get_corrfunc_BCMP_test = get_corrfunc_BCMP(sim_params_dict_vary, halo_params_dict, analysis_dict_vary, other_params_dict_vary, verbose_time=False, num_points_trapz_int=32)
 
     def get_gty_from_index(index):
         index_val = index_gty[index]
@@ -412,7 +455,7 @@ def model():
         index_val = index_xim[index]
         return get_corrfunc_BCMP_test.xim_out_mat[index_val[0], index_val[1], index_val[2]]
 
-    gty_val = vmap(get_gty_from_index)(np.arange(80))
+    gty_val = vmap(get_gty_from_index)(np.arange(len_ind_gty))
     xip_val = vmap(get_xip_from_index)(np.arange(200))
     xim_val = vmap(get_xim_from_index)(np.arange(200))
 
@@ -450,9 +493,9 @@ observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 
 from numpyro.infer import HMC, HMCECS, MCMC, NUTS, SA, SVI, Trace_ELBO, init_to_value
-num_warmup = 200
-num_samples = 200
-num_chains= 4
+num_warmup = 12000
+num_samples = 8000
+num_chains= 3
 
 def do_mcmc(rng_key, n_vectorized=num_chains):
     # nuts_kernel = NUTS(model)
@@ -460,8 +503,9 @@ def do_mcmc(rng_key, n_vectorized=num_chains):
                                 step_size=2e-1, 
                                 init_strategy=numpyro.infer.init_to_sample,
                                 dense_mass=True,
-                                max_tree_depth=5,
-                                forward_mode_differentiation=True)
+                                max_tree_depth=5
+                                # forward_mode_differentiation=True
+                                )
 
     mcmc = numpyro.infer.MCMC(nuts_kernel, 
                             num_warmup=num_warmup, 
@@ -477,7 +521,7 @@ def do_mcmc(rng_key, n_vectorized=num_chains):
         extra_fields=("potential_energy",),
     )
     return {**mcmc.get_samples(), **mcmc.get_extra_fields()}
-
+    # return mcmc
 
 # nuts_kernel = numpyro.infer.NUTS(observed_model_reparam,
 #                             step_size=2e-1, 
@@ -514,10 +558,16 @@ def do_mcmc(rng_key, n_vectorized=num_chains):
 n_parallel = jax.local_device_count()
 rng_keys = jax.random.split(jax.random.PRNGKey(42), n_parallel)
 traces = pmap(do_mcmc)(rng_keys)
+
+# import dill as dill
+# save_chain_dir = abs_path_results + '/chains/'
+# dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_thetaco_NUTS_update.pkl', 'wb'))
+
+
 # concatenate traces along pmap'ed axis
 trace = {k: np.concatenate(v) for k, v in traces.items()}
 
 import dill as dill
 save_chain_dir = abs_path_results + '/chains/'
-dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_NUTS_update.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_thetaco_NUTS_update.pkl', 'wb'))
 

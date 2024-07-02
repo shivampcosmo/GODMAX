@@ -388,7 +388,7 @@ class get_power_BCMP_NO_CONC:
         fx_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
         fx_2h = byl_jl * bkl_jl * self.Pklin_lz_mat[jl]
 
-        fx_tot = (jnp.clip(fx_1h, 0)**self.alpha_ky + jnp.clip(fx_2h, 0)**self.alpha_ky)**(1./self.alpha_ky)
+        fx_tot = (jnp.clip(fx_1h, 1e-20)**self.alpha_ky + jnp.clip(fx_2h, 1e-20)**self.alpha_ky)**(1./self.alpha_ky)
 
         fx = fx_tot * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
@@ -449,7 +449,7 @@ class get_power_BCMP_NO_CONC:
         fx_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))        
         fx_2h = (bkl_jl**2) * self.Pklin_lz_mat[jl]
 
-        fx_tot = (jnp.clip(fx_1h, 0)**self.alpha_kk + jnp.clip(fx_2h,0)**self.alpha_kk)**(1./self.alpha_kk)
+        fx_tot = (jnp.clip(fx_1h, 1e-20)**self.alpha_kk + jnp.clip(fx_2h,1e-20)**self.alpha_kk)**(1./self.alpha_kk)
 
         fx = fx_tot * prefac_for_uk1 * prefac_for_uk2 * (self.chi_array ** 2) * self.dchi_dz_array
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
