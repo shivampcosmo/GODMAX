@@ -90,7 +90,7 @@ class get_mock_map:
         self.rho_m_bar = self.cosmo_params['Om0'] * ((3 * (H0**2) / (8 * jnp.pi * G_new_rhom)).to(u.M_sun / (u.Mpc**3))).value
 
         # self.cmean_all_Mz = mock_params_dict['cmean_jM_jz']
-        self.c_array = BCMP_obj.conc_array
+        # self.c_array = BCMP_obj.conc_array
         self.M_array = BCMP_obj.M_array
         self.z_array = BCMP_obj.z_array
         self.r_array = BCMP_obj.r_array
@@ -100,9 +100,11 @@ class get_mock_map:
         self.Pe_mat_physical = BCMP_obj.Pe_mat_physical
         self.rho_dmb_mat_physical = BCMP_obj.rho_dmb_mat_physical
 
-        vmap_func1 = vmap(self.get_conc_Mz_Duffy08, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.conc_Mz_mat = vmap_func2(jnp.arange(len(self.z_array)), jnp.arange(len(self.M_array))).T
+        # vmap_func1 = vmap(self.get_conc_Mz_Duffy08, (0, None))
+        # vmap_func2 = vmap(vmap_func1, (None, 0))
+        # self.conc_Mz_mat = vmap_func2(jnp.arange(len(self.z_array)), jnp.arange(len(self.M_array))).T
+
+        self.conc_Mz_mat = BCMP_obj.conc_Mz_mat
 
         sigmat = const.sigma_T
         m_e = const.m_e
@@ -230,11 +232,11 @@ class get_mock_map:
 
     @partial(jit, static_argnums=(0,))        
     def get_y2D_phyical_proj(self, jrp, jz, jM, num_trapz_points=32):
-        cval_jM_jz = self.conc_Mz_mat[jz, jM]
-        jc = jnp.argmin(jnp.abs(self.c_array - cval_jM_jz))
+        # cval_jM_jz = self.conc_Mz_mat[jz, jM]
+        # jc = jnp.argmin(jnp.abs(self.c_array - cval_jM_jz))
         rp = self.rp_array[jrp]
         r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(jnp.max(self.r_array)), num_trapz_points))
-        Pe_rarray_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.Pe_mat_physical[:,jc, jz, jM])))
+        Pe_rarray_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.Pe_mat_physical[:,jz, jM])))
         num = r_array_here * Pe_rarray_here
         denom = jnp.sqrt(r_array_here ** 2 - rp ** 2)
         toint = num / denom
@@ -243,11 +245,11 @@ class get_mock_map:
 
     @partial(jit, static_argnums=(0,))        
     def get_rhodmb_phyical_proj(self, jrp, jz, jM, num_trapz_points=32):
-        cval_jM_jz = self.conc_Mz_mat[jz, jM]
-        jc = jnp.argmin(jnp.abs(self.c_array - cval_jM_jz))
+        # cval_jM_jz = self.conc_Mz_mat[jz, jM]
+        # jc = jnp.argmin(jnp.abs(self.c_array - cval_jM_jz))
         rp = self.rp_array[jrp]
         r_array_here = jnp.linspace(jnp.log(rp*1.01), jnp.log(jnp.max(self.r_array)), num_trapz_points)
-        rhodmb_rarray_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.rho_dmb_mat_physical[:,jc, jz, jM])))
+        rhodmb_rarray_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.rho_dmb_mat_physical[:,jz, jM])))
         num = r_array_here * rhodmb_rarray_here
         denom = np.sqrt(r_array_here ** 2 - rp ** 2)
         toint = num / denom

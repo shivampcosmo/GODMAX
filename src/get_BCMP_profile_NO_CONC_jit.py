@@ -117,7 +117,7 @@ class BCM_18_wP_NO_CONC:
         # self.nu_Mz_mat = constants.DELTA_COLLAPSE / self.sigma_Mz_mat
 
 
-        conc_model = halo_params_dict.get('conc_model','Prada12')
+        conc_model = halo_params_dict.get('conc_model','Duffy08')
         if conc_model == 'Prada12':
             vmap_func1 = vmap(self.get_conc_Mz_Prada12, (0, None))
         if conc_model == 'Duffy08':

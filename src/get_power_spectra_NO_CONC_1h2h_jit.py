@@ -135,8 +135,8 @@ class get_power_BCMP_NO_CONC:
         
         self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
 
-        self.alpha_ky = analysis_dict.get('alpha_ky',1.0)
-        self.alpha_kk = analysis_dict.get('alpha_kk',1.0)
+        self.alpha_ky = other_params_dict.get('alpha_ky',1.0)
+        self.alpha_kk = other_params_dict.get('alpha_kk',1.0)
 
         self.get_sep_1h2h = analysis_dict.get('get_sep_1h2h',False)
         # self.logc_array = jnp.log(self.conc_array)
