@@ -314,7 +314,7 @@ prior_max_all_dict['theta_ej_0'] = 5.0
 prior_min_all_dict['log10_Mc0'] = 13.0
 prior_max_all_dict['log10_Mc0'] = 15.0
 prior_min_all_dict['nu_theta_ej_M'] = -3.0
-prior_max_all_dict['nu_theta_ej_M'] = 0.1
+prior_max_all_dict['nu_theta_ej_M'] = 3.0
 prior_min_all_dict['nu_z'] = -3.0
 prior_max_all_dict['nu_z'] = 3.0
 
@@ -378,7 +378,8 @@ prior_mult_shear_sig_all = jnp.array([prior_sig_all_dict['mult_shear_bias_bin1']
 cosmo_params_vary_names = ['Om0', 'sigma8', 'Ob0', 'h', 'ns']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'nu_theta_ej_z', 'alpha_nt']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'gamma_rhogas', 'nu_theta_ej_z', 'alpha_nt']
-sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'nu_theta_ej_z', 'alpha_nt']
+# sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'nu_theta_ej_z', 'alpha_nt']
+sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'alpha_nt']
 
 # sims_params_vary_names = []
 # cosmo_params_vary_names = []
@@ -571,5 +572,5 @@ trace = {k: np.concatenate(v) for k, v in traces.items()}
 
 import dill as dill
 save_chain_dir = abs_path_results + '/chains/'
-dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_thetaco_NUTS_update.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_simple_wide_thetaejM_NUTS_update.pkl', 'wb'))
 
