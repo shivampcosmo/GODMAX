@@ -64,7 +64,7 @@ warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 
-cosmo_params_dict = {'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.0463, 'sigma8': 0.834, 'ns': 0.9624, 'w0':-1.0}
+cosmo_params_dict = {'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.049, 'sigma8': 0.834, 'ns': 0.9624, 'w0':-1.0}
 sim_params_dict = {}
 sim_params_dict['nfw_trunc'] = True
 sim_params_dict['gamma_rhogas'] = 5.0
