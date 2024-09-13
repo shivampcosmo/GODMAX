@@ -64,7 +64,7 @@ warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 
-cosmo_params_dict = {'flat': True, 'H0': 70.0, 'Om0': 0.2793, 'Ob0': 0.0463, 'sigma8': 0.821, 'ns': 0.972, 'w0':-1.0}
+cosmo_params_dict = {'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.0463, 'sigma8': 0.834, 'ns': 0.9624, 'w0':-1.0}
 sim_params_dict = {}
 sim_params_dict['nfw_trunc'] = True
 sim_params_dict['gamma_rhogas'] = 5.0
@@ -107,15 +107,15 @@ sim_params_dict['cosmo'] = cosmo_params_dict
 
 
 halo_params_dict = {}
-halo_params_dict['rmin'], halo_params_dict['rmax'], halo_params_dict['nr'] = 1e-3, 18, 128
+halo_params_dict['rmin'], halo_params_dict['rmax'], halo_params_dict['nr'] = 1e-3, 18, 96
 # halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.001, 0.002, 2
-# halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.001, 1.0, 10
-halo_params_dict['z_array'] = np.array([1e-3, 0.5, 1.0])
+halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.001, 3.0, 16
+# halo_params_dict['z_array'] = np.array([1e-3, 0.5, 1.0])
 # halo_params_dict['z_array'] = np.array([1e-3])
 # halo_params_dict['z_array'] = np.array([0.5])
 # halo_params_dict['z_array'] = np.array([1.0])
-halo_params_dict['nz'] = len(halo_params_dict['z_array'])
-halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM'] = 13.0, 14.5, 48
+# halo_params_dict['nz'] = len(halo_params_dict['z_array'])
+halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM'] = 12.0, 15.0, 48
 halo_params_dict['cmin'], halo_params_dict['cmax'], halo_params_dict['nc'] = 3, 7, 24
 halo_params_dict['ellmin'], halo_params_dict['ellmax'], halo_params_dict['nell'] = 8, 2**15, 64
 # try:
