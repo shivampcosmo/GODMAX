@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=10         # CPU cores per MPI process
 #SBATCH --mem=80G          # host memory per CPU core
 #SBATCH --time=0-23:59            # time (DD-HH:MM)
-#SBATCH --job-name=NUTS_UP_run_deproj_cib_1p7_dBeta_probe_xipxim
+#SBATCH --job-name=NUTS_UP_run_deproj_cib_1p7_dBeta_probe_gty
 #SBATCH --output=/project/def-lplevass/shivamp/GODMAX/run_scripts/narval/logs/%x.%j.out
 #SBATCH --error=/project/def-lplevass/shivamp/GODMAX/run_scripts/narval/logs/%x.%j.err
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -20,5 +20,5 @@ source /home/shivamp/godmax/bin/activate
 
 
 cd /project/def-lplevass/shivamp/GODMAX/run_scripts/narval/
-time srun python sample_params_simple.py cib_1p7_dBeta xip_xim
+time srun python sample_params_large.py cib_1p7_dBeta gty
 echo "done"

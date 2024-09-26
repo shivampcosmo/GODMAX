@@ -94,7 +94,7 @@ halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.0
 # halo_params_dict['z_array'] = np.array([1.0])
 # halo_params_dict['nz'] = len(halo_params_dict['z_array'])
 # halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM'] = 12.0, 15.5, 20
-halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM'] = 11.0, 16.0, 32
+halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM'] = 11.5, 15.0, 32
 halo_params_dict['cmin'], halo_params_dict['cmax'], halo_params_dict['nc'] = 2, 9, 16
 
 lmin = 1.0
@@ -385,7 +385,7 @@ cosmo_params_vary_names = ['Om0', 'sigma8', 'Ob0', 'h', 'ns']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'gamma_rhogas', 'nu_theta_ej_z', 'alpha_nt']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'nu_theta_ej_z', 'alpha_nt']
 # sims_params_vary_names = ['gamma_rhogas', 'nu_theta_ej_M','nu_theta_ej_z','nu_theta_co_z', 'alpha_nt']
-sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M','nu_theta_ej_z', 'alpha_nt']
+sims_params_vary_names = ['nu_theta_ej_M','nu_theta_ej_z','nu_theta_co_z', 'alpha_nt']
 
 # sims_params_vary_names = []
 # cosmo_params_vary_names = []
@@ -578,5 +578,5 @@ trace = {k: np.concatenate(v) for k, v in traces.items()}
 
 import dill as dill
 save_chain_dir = abs_path_results + '/chains/'
-dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_thetaej_zev_NUTS_update.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_sample_1pthetaej_zev_NUTS_update.pkl', 'wb'))
 
