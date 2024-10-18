@@ -67,18 +67,20 @@ class get_power_BCMP:
         self.dchi_dz_array = (const.c.value * 1e-3) / bkgrd.H(self.cosmo_jax, self.scale_fac_a_array)
         self.hmf_Mz_mat = setup_power_BCMP_obj.hmf_Mz_mat
         # self.uyl_mat = jnp.moveaxis(setup_power_BCMP_obj.uyl_mat, 1, 3)
-        self.uyl_mat = setup_power_BCMP_obj.uyl_mat
-        self.byl_mat = setup_power_BCMP_obj.byl_mat
+        # self.uyl_mat = setup_power_BCMP_obj.uyl_mat
+        # self.byl_mat = setup_power_BCMP_obj.byl_mat
         # self.ukappal_dmb_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_dmb_prefac_mat, 1, 3)
-        self.ukappal_dmb_prefac_mat = setup_power_BCMP_obj.ukappal_dmb_prefac_mat
-        self.bkl_dmb_mat = setup_power_BCMP_obj.bkl_dmb_mat        
-        if self.calc_nfw_only:
-            # self.ukappal_nfw_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_nfw_prefac_mat, 1, 3)        
-            self.ukappal_nfw_prefac_mat = setup_power_BCMP_obj.ukappal_nfw_prefac_mat
-            self.bkl_nfw_mat = setup_power_BCMP_obj.bkl_nfw_mat
+        # self.ukappal_dmb_prefac_mat = setup_power_BCMP_obj.ukappal_dmb_prefac_mat
+        # self.bkl_dmb_mat = setup_power_BCMP_obj.bkl_dmb_mat        
+        # if self.calc_nfw_only:
+        #     # self.ukappal_nfw_prefac_mat = jnp.moveaxis(setup_power_BCMP_obj.ukappal_nfw_prefac_mat, 1, 3)        
+        #     self.ukappal_nfw_prefac_mat = setup_power_BCMP_obj.ukappal_nfw_prefac_mat
+        #     self.bkl_nfw_mat = setup_power_BCMP_obj.bkl_nfw_mat
             
-        self.Pklin_lz_mat = setup_power_BCMP_obj.Pklin_lz_mat
-        self.Pknl_lz_mat = setup_power_BCMP_obj.Pknl_lz_mat
+        # self.Pklin_lz_mat = setup_power_BCMP_obj.Pklin_lz_mat
+        self.Pkmm_lz_mat = setup_power_BCMP_obj.Pkmm_lz_mat
+        self.Pkym_lz_mat = setup_power_BCMP_obj.Pkym_lz_mat
+
 
         self.ell_array = setup_power_BCMP_obj.ell_array
         self.nell = len(self.ell_array)
@@ -137,35 +139,44 @@ class get_power_BCMP:
         
         self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
 
-        if verbose_time:
-            print('Time for computing p_logc_Mz: ', time.time() - ti)
-            ti = time.time()
+        self.Wy_array = (1.0 / (1.0 + self.z_array))
+
+        # if verbose_time:
+        #     print('Time for computing p_logc_Mz: ', time.time() - ti)
+        #     ti = time.time()
 
         if analysis_dict['do_sheary']:
-            vmap_func1 = vmap(self.get_Cl_kappa_y_1h, (0, None))
+            # vmap_func1 = vmap(self.get_Cl_kappa_y_1h, (0, None))
+            # vmap_func2 = vmap(vmap_func1, (None, 0))
+            # self.Cl_kappa_y_1h_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nell)).T
+            # if verbose_time:
+            #     print('Time for computing Cl_kappa_y_1h_mat: ', time.time() - ti)
+            #     ti = time.time()
+
+            # vmap_func1 = vmap(self.get_Cl_kappa_y_2h, (0, None))
+            # vmap_func2 = vmap(vmap_func1, (None, 0))
+            # self.Cl_kappa_y_2h_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nell)).T
+            # if verbose_time:
+            #     print('Time for computing Cl_kappa_y_2h_mat: ', time.time() - ti)
+            #     ti = time.time()
+
+            vmap_func1 = vmap(self.get_Cl_kappa_y_tot, (0, None))
             vmap_func2 = vmap(vmap_func1, (None, 0))
-            self.Cl_kappa_y_1h_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nell)).T
+            self.Cl_kappa_y_tot_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nell)).T
             if verbose_time:
-                print('Time for computing Cl_kappa_y_1h_mat: ', time.time() - ti)
+                print('Time for computing Cl_kappa_y_tot_mat: ', time.time() - ti)
                 ti = time.time()
 
-            vmap_func1 = vmap(self.get_Cl_kappa_y_2h, (0, None))
-            vmap_func2 = vmap(vmap_func1, (None, 0))
-            self.Cl_kappa_y_2h_mat = vmap_func2(jnp.arange(self.nbins), jnp.arange(self.nell)).T
-            if verbose_time:
-                print('Time for computing Cl_kappa_y_2h_mat: ', time.time() - ti)
-                ti = time.time()
+        # if analysis_dict.get('do_yy', False):
+        #     self.Cl_y_y_1h_mat = vmap(self.get_Cl_y_y_1h)(jnp.arange(self.nell))
+        #     if verbose_time:
+        #         print('Time for computing Cl_y_y_1h_mat: ', time.time() - ti)
+        #         ti = time.time()
 
-        if analysis_dict.get('do_yy', False):
-            self.Cl_y_y_1h_mat = vmap(self.get_Cl_y_y_1h)(jnp.arange(self.nell))
-            if verbose_time:
-                print('Time for computing Cl_y_y_1h_mat: ', time.time() - ti)
-                ti = time.time()
-
-            self.Cl_y_y_2h_mat = vmap(self.get_Cl_y_y_2h)(jnp.arange(self.nell))
-            if verbose_time:
-                print('Time for computing Cl_y_y_2h_mat: ', time.time() - ti)
-                ti = time.time()
+        #     self.Cl_y_y_2h_mat = vmap(self.get_Cl_y_y_2h)(jnp.arange(self.nell))
+        #     if verbose_time:
+        #         print('Time for computing Cl_y_y_2h_mat: ', time.time() - ti)
+        #         ti = time.time()
 
         if analysis_dict['do_shear2pt']:             
             vmap_func1 = vmap(self.get_Cl_kappa_kappa_tot, (0, None, None))
@@ -232,67 +243,83 @@ class get_power_BCMP:
         value = Az_IA * dndz / dchi_dz
         return value        
 
-    @partial(jit, static_argnums=(0,))
-    def get_Cl_y_y_1h(self, jl):
-        """
-        Computes the 1-halo term of the auto-spectrum of the Compton-y map.
-        """
-        uyl_jl = self.uyl_mat[jl, ...]        
-        # fx = uyl_jl * uyl_jl * self.p_logc_Mz
-        # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
-        # fx = fx_intc * self.hmf_Mz_mat
-        fx =  uyl_jl * uyl_jl * self.hmf_Mz_mat
-        fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        fx = fx_intM * (self.chi_array ** 2) * self.dchi_dz_array
-        fx_intz = jsi.trapezoid(fx, x=self.z_array)
-        return fx_intz
+    # @partial(jit, static_argnums=(0,))
+    # def get_Cl_y_y_1h(self, jl):
+    #     """
+    #     Computes the 1-halo term of the auto-spectrum of the Compton-y map.
+    #     """
+    #     uyl_jl = self.uyl_mat[jl, ...]        
+    #     # fx = uyl_jl * uyl_jl * self.p_logc_Mz
+    #     # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
+    #     # fx = fx_intc * self.hmf_Mz_mat
+    #     fx =  uyl_jl * uyl_jl * self.hmf_Mz_mat
+    #     fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+    #     fx = fx_intM * (self.chi_array ** 2) * self.dchi_dz_array
+    #     fx_intz = jsi.trapezoid(fx, x=self.z_array)
+    #     return fx_intz
     
-    @partial(jit, static_argnums=(0,))
-    def get_Cl_y_y_2h(self, jl):
-        """
-        Computes the 2-halo term of the auto-spectrum of the Compton-y map.
-        """
-        byl_jl = self.byl_mat[jl]
+    # @partial(jit, static_argnums=(0,))
+    # def get_Cl_y_y_2h(self, jl):
+    #     """
+    #     Computes the 2-halo term of the auto-spectrum of the Compton-y map.
+    #     """
+    #     byl_jl = self.byl_mat[jl]
         
-        fx = byl_jl * byl_jl * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
-        fx_intz = jsi.trapezoid(fx, x=self.z_array)
-        return fx_intz
+    #     fx = byl_jl * byl_jl * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+    #     fx_intz = jsi.trapezoid(fx, x=self.z_array)
+    #     return fx_intz
 
 
     @partial(jit, static_argnums=(0,))
-    def get_Cl_kappa_y_1h(self, jb, jl):
+    def get_Cl_kappa_y_tot(self, jb, jl):
         """
-        Computes the 1-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
-        """
-        Wk_jb = self.Wk_mat[jb,:]
-        prefac_for_uk = Wk_jb/(self.chi_array**2)
-        uyl_jl = self.uyl_mat[jl, ...]
-        ukl_jl = self.ukappal_dmb_prefac_mat[jl, ...]
-        
-        # fx = uyl_jl * ukl_jl * self.p_logc_Mz
-        # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
-        # fx = fx_intc * self.hmf_Mz_mat
-        fx = uyl_jl * ukl_jl * self.hmf_Mz_mat
-        fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        fx = fx_intM * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array
-        fx_intz = jsi.trapezoid(fx, x=self.z_array)
-        return (1. + self.mult_shear_bias_array[jb]) * fx_intz
-
-    @partial(jit, static_argnums=(0,))
-    def get_Cl_kappa_y_2h(self, jb, jl):
-        """
-        Computes the 2-halo term of the cross-spectrum between the convergence and the
-        Compton-y map.
+        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
         """
         Wk_jb = self.Wk_mat[jb]
         prefac_for_uk = Wk_jb/(self.chi_array**2)
-        bkl_jl = self.bkl_dmb_mat[jl]
-        byl_jl = self.byl_mat[jl]
+        Wy = self.Wy_array
+        prefac_for_uy = Wy/(self.chi_array**2)
         
-        fx = byl_jl * bkl_jl * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+        fx = prefac_for_uk * prefac_for_uy  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pkym_lz_mat[jl]
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
         return (1. + self.mult_shear_bias_array[jb]) * fx_intz
+
+
+
+    # @partial(jit, static_argnums=(0,))
+    # def get_Cl_kappa_y_1h(self, jb, jl):
+    #     """
+    #     Computes the 1-halo term of the cross-spectrum between the convergence and the
+    #     Compton-y map.
+    #     """
+    #     Wk_jb = self.Wk_mat[jb,:]
+    #     prefac_for_uk = Wk_jb/(self.chi_array**2)
+    #     uyl_jl = self.uyl_mat[jl, ...]
+    #     ukl_jl = self.ukappal_dmb_prefac_mat[jl, ...]
+        
+    #     # fx = uyl_jl * ukl_jl * self.p_logc_Mz
+    #     # fx_intc = jsi.trapezoid(fx, x=self.logc_array)
+    #     # fx = fx_intc * self.hmf_Mz_mat
+    #     fx = uyl_jl * ukl_jl * self.hmf_Mz_mat
+    #     fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+    #     fx = fx_intM * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array
+    #     fx_intz = jsi.trapezoid(fx, x=self.z_array)
+    #     return (1. + self.mult_shear_bias_array[jb]) * fx_intz
+
+    # @partial(jit, static_argnums=(0,))
+    # def get_Cl_kappa_y_2h(self, jb, jl):
+    #     """
+    #     Computes the 2-halo term of the cross-spectrum between the convergence and the
+    #     Compton-y map.
+    #     """
+    #     Wk_jb = self.Wk_mat[jb]
+    #     prefac_for_uk = Wk_jb/(self.chi_array**2)
+    #     bkl_jl = self.bkl_dmb_mat[jl]
+    #     byl_jl = self.byl_mat[jl]
+        
+    #     fx = byl_jl * bkl_jl * prefac_for_uk  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+    #     fx_intz = jsi.trapezoid(fx, x=self.z_array)
+    #     return (1. + self.mult_shear_bias_array[jb]) * fx_intz
 
     @partial(jit, static_argnums=(0,))
     def get_Cl_kappa_kappa_tot(self, jb1, jb2, jl):
@@ -304,7 +331,7 @@ class get_power_BCMP:
         Wk_jb2 = self.Wk_mat[jb2]
         prefac_for_uk2 = Wk_jb2/(self.chi_array**2)
         
-        fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pknl_lz_mat[jl]
+        fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pkmm_lz_mat[jl]
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
         return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
 

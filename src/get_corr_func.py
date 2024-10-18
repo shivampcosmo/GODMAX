@@ -118,7 +118,8 @@ class get_corrfunc_BCMP:
                 self.gty_2h_out_mat = vmap_func2(jnp.arange(self.nt_out), jnp.arange(self.nbins)).T
 
             else:
-                self.Cl_kappa_y_tot = get_power_BCMP_obj.Cl_kappa_y_1h_mat + get_power_BCMP_obj.Cl_kappa_y_2h_mat
+                # self.Cl_kappa_y_tot = get_power_BCMP_obj.Cl_kappa_y_1h_mat + get_power_BCMP_obj.Cl_kappa_y_2h_mat
+                self.Cl_kappa_y_tot = get_power_BCMP_obj.Cl_kappa_y_tot_mat
                 theta_out, xi_out = (Hankel(self.ell_array, nu=2, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_y_tot, axis=1, extrap=False))
                 self.theta_out_arcmin = theta_out * (180. / jnp.pi) * 60.
                 self.gty_tot_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))

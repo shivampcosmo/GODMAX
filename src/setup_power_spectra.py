@@ -89,12 +89,24 @@ class setup_power_BCMP:
         self.beam_fwhm_arcmin = analysis_dict['beam_fwhm_arcmin']      
         self.calc_nfw_only = analysis_dict['calc_nfw_only']  
 
+        self.smooth_1h2h_mm_model = analysis_dict.get('smooth_1h2h_mm_model','response')
+        self.smooth_1h2h_ym_model = analysis_dict.get('smooth_1h2h_ym_model','response')        
+
+        if self.smooth_1h2h_mm_model == 'power_add':
+            self.alpha_1h2h_mm = analysis_dict.get('alpha_1h2h_mm',1.0)
+        else:
+            self.alpha_1h2h_mm = 1.
+
+        if self.smooth_1h2h_ym_model == 'power_add':
+            self.alpha_1h2h_ym = analysis_dict.get('alpha_1h2h_ym',1.0)
+        else:
+            self.alpha_1h2h_ym = 1.
+
+
         if verbose_time:
             ti_pk = time.time()
         self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(100), 64)
         self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
-        hfit_params = vmap(halofit_parameters,(None, 0))(self.cosmo_jax, self.scale_fac_a_array).T
-        self.phfit_kz_mat = vmap(nonlinear_matter_power,(None, None, 0, None, None, None))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array, self.plin_kz_mat, hfit_params, self.scale_fac_a_array).T
         
         if verbose_time:
             tf_pk = time.time()
@@ -136,15 +148,6 @@ class setup_power_BCMP:
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.bias_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
-        # conc_model = halo_params_dict.get('conc_model','Prada12')
-        # if conc_model == 'Prada12':
-        #     vmap_func1 = vmap(self.get_conc_Mz_Prada12, (0, None))
-        # if conc_model == 'Duffy08':
-        #     vmap_func1 = vmap(self.get_conc_Mz_Duffy08, (0, None))
-        # if conc_model == 'Diemer15':
-        #     vmap_func1 = vmap(self.get_conc_Mz_Diemer15, (0, None))    
-        # vmap_func2 = vmap(vmap_func1, (None, 0))
-        # self.conc_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.conc_Mz_mat = BCMP_obj.conc_Mz_mat
 
         if verbose_time:
@@ -156,25 +159,9 @@ class setup_power_BCMP:
             ti_uks = time.time()
         
         # if self.calc_nfw_only:
-        self.rho_nfw_normed_M = BCMP_obj.rho_nfw_mat/Mtot_rep
         self.rho_dmb_normed_M = BCMP_obj.rho_dmb_mat/Mtot_rep
-        # if we want the likelihood to be differentiable, need to do the normal integrals. Else do it with mcfit
-        # want_like_diff = analysis_dict['want_like_diff']
         self.k = jnp.array(self.kPk_array)
-        # if want_like_diff:            
-        #     if self.calc_nfw_only:
-        #         self.uk_nfw = vmap(self.get_uknfw_from_rho)(jnp.arange(len(self.kPk_array)))
-        #     self.uk_dmb = vmap(self.get_ukdmb_from_rho)(jnp.arange(len(self.kPk_array)))
-        # else:
-        # if self.calc_nfw_only:
-            # N = 2**(math.ceil(math.log2(halo_params_dict['nr'] * 2)))
-        self.k_mcfit, self.uk_nfw = (xi2P(BCMP_obj.r_array, nx=halo_params_dict['nr'], lowring=True)(self.rho_nfw_normed_M, axis=0, extrap=False))
-        self.uk_nfw_tointp = jnp.array(self.uk_nfw)
-        vmap_func1 = vmap(self.get_uknfw_interp_Pk, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.uk_nfw = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
-        # N = 2**(math.ceil(math.log2(halo_params_dict['nr'] * 2)))
         self.k_mcfit, self.uk_dmb = (xi2P(BCMP_obj.r_array, nx=halo_params_dict['nr'],lowring=True)(self.rho_dmb_normed_M, axis=0, extrap=False))
         self.uk_dmb_tointp = jnp.array(self.uk_dmb)
         vmap_func1 = vmap(self.get_ukdmb_interp_Pk, (0, None))
@@ -195,49 +182,57 @@ class setup_power_BCMP:
             self.bm_largescales_2h_mat_lt_Mmin = 1. - self.bm_largescales_2h_mat
             self.bm_dmb_kz_mat = self.bm_dmb_2h + self.bm_largescales_2h_mat_lt_Mmin
 
-            # if self.calc_nfw_only:
-            vmap_func1 = vmap(self.get_bm_nfw_2h, (0, None))
-            vmap_func2 = vmap(vmap_func1, (None, 0))
-            self.bm_nfw_2h = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-            self.bm_nfw_kz_mat = self.bm_nfw_2h + self.bm_largescales_2h_mat_lt_Mmin
-        
         else:
             self.bm_dmb_kz_mat = jnp.ones((len(self.kPk_array), self.nz))
-            # if self.calc_nfw_only:
-            self.bm_nfw_kz_mat = jnp.ones((len(self.kPk_array), self.nz))
 
-        # if self.calc_nfw_only:
+
         vmap_func1 = vmap(self.get_Pmm_dmb_1h, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pmm_dmb_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-
-        vmap_func1 = vmap(self.get_Pmm_nfw_1h, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Pmm_nfw_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-
-        self.Pmm_dmb_tot_mat = self.Pmm_dmb_1h_mat + (self.bm_dmb_kz_mat)**2 * self.plin_kz_mat
-        self.Pmm_nfw_tot_mat = self.Pmm_nfw_1h_mat + (self.bm_nfw_kz_mat)**2 * self.plin_kz_mat
-        self.Pmm_sup_tot_mat = self.Pmm_dmb_tot_mat / self.Pmm_nfw_tot_mat
-        self.pnl_kz_mat = self.phfit_kz_mat * self.Pmm_sup_tot_mat
+        self.Pmm_dmb_tot_mat = ((self.Pmm_dmb_1h_mat)**(self.alpha_1h2h_mm) + ((self.bm_dmb_kz_mat)**2 * self.plin_kz_mat)**(self.alpha_1h2h_mm))**(1/self.alpha_1h2h_mm)
 
 
-        if verbose_time:
-            tf_uks = time.time()
-            print('Time taken to setup uks and bks: ', tf_uks - ti_uks)                
+        if (self.smooth_1h2h_mm_model == 'response') or (self.smooth_1h2h_ym_model == 'response'):
 
-        vmap_func1 = vmap(self.get_bkl_dmb, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.bkl_dmb_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+            hfit_params = vmap(halofit_parameters,(None, 0))(self.cosmo_jax, self.scale_fac_a_array).T
+            self.phfit_kz_mat = vmap(nonlinear_matter_power,(None, None, 0, None, None, None))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array, self.plin_kz_mat, hfit_params, self.scale_fac_a_array).T
 
-        if self.calc_nfw_only:
-            vmap_func1 = vmap(self.get_bkl_nfw, (0, None))
+            self.rho_nfw_normed_M = BCMP_obj.rho_nfw_mat/Mtot_rep
+
+            self.k_mcfit, self.uk_nfw = (xi2P(BCMP_obj.r_array, nx=halo_params_dict['nr'], lowring=True)(self.rho_nfw_normed_M, axis=0, extrap=False))
+            self.uk_nfw_tointp = jnp.array(self.uk_nfw)
+            vmap_func1 = vmap(self.get_uknfw_interp_Pk, (0, None))
             vmap_func2 = vmap(vmap_func1, (None, 0))
-            self.bkl_nfw_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+            self.uk_nfw = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+
+            if do_corr_2h_mm:
+                vmap_func1 = vmap(self.get_bm_nfw_2h, (0, None))
+                vmap_func2 = vmap(vmap_func1, (None, 0))
+                self.bm_nfw_2h = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
+                self.bm_nfw_kz_mat = self.bm_nfw_2h + self.bm_largescales_2h_mat_lt_Mmin            
+            else:
+                self.bm_nfw_kz_mat = jnp.ones((len(self.kPk_array), self.nz))
 
 
+            vmap_func1 = vmap(self.get_Pmm_nfw_1h, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pmm_nfw_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
 
-        if verbose_time:
-            ti_uls = time.time()
+            self.Pmm_nfw_tot_mat = self.Pmm_nfw_1h_mat + (self.bm_nfw_kz_mat)**2 * self.plin_kz_mat
+            self.Pmm_sup_tot_mat = self.phfit_kz_mat / self.Pmm_nfw_tot_mat
+
+        if (self.smooth_1h2h_mm_model == 'response'):
+            self.Pmm_tot_kz_mat = self.Pmm_dmb_tot_mat * self.Pmm_sup_tot_mat
+        else:
+            self.Pmm_tot_kz_mat = self.Pmm_dmb_tot_mat
+
+
+        # if verbose_time:
+        #     tf_uks = time.time()
+        #     print('Time taken to setup uks and bks: ', tf_uks - ti_uks)                
+
+        # if verbose_time:
+        #     ti_uls = time.time()
 
         sigmat = const.sigma_T
         m_e = const.m_e
@@ -256,35 +251,62 @@ class setup_power_BCMP:
         self.y3d_mat = const_coeff * BCMP_obj.Pe_mat_physical
 
 
+        self.k_mcfit, self.uk_y = (xi2P(BCMP_obj.r_array, nx=halo_params_dict['nr'], lowring=True)(self.y3d_mat, axis=0, extrap=False))
+        self.uk_y_tointp = jnp.array(self.uk_y)
+        vmap_func1 = vmap(self.get_uky_interp_Pk, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.uk_y = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+
+        vmap_func1 = vmap(self.get_bk_y_2h, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.by_kz_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
+
+        vmap_func1 = vmap(self.get_Pym_dmb_1h, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Pym_dmb_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
+
+        self.Pym_dmb_tot_mat = ((self.Pym_dmb_1h_mat)**(self.alpha_1h2h_ym) + ((self.by_kz_mat) * (self.bm_dmb_kz_mat) * self.plin_kz_mat)**(self.alpha_1h2h_ym))**(1/self.alpha_1h2h_ym)
+
+        if (self.smooth_1h2h_ym_model == 'response'):
+            self.Pym_tot_kz_mat = self.Pym_dmb_tot_mat * self.Pmm_sup_tot_mat
+        else:
+            self.Pym_tot_kz_mat = self.Pym_dmb_tot_mat
+
+
+
         self.sig_beam = self.beam_fwhm_arcmin * (1. / 60.) * (jnp.pi / 180.) * (1. / jnp.sqrt(8. * jnp.log(2)))
 
-        vmap_func1 = vmap(self.get_Pklin_lz, (0, None))
+        # vmap_func1 = vmap(self.get_Pklin_lz, (0, None))
+        # vmap_func2 = vmap(vmap_func1, (None, 0))
+        # self.Pklin_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+
+        vmap_func1 = vmap(self.get_Pkmm_lz, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Pklin_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+        self.Pkmm_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
 
-        vmap_func1 = vmap(self.get_Pknl_lz, (0, None))
+        vmap_func1 = vmap(self.get_Pkym_lz, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Pknl_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+        self.Pkym_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
 
 
-        # if want_like_diff:
-        #     vmap_func1 = vmap(self.get_uyl, (0, None, None, None))
-        # else:
-        #     vmap_func1 = vmap(self.get_uyl_mcfit, (0, None, None, None))
-        vmap_func1 = vmap(self.get_uyl, (0, None, None))
-        # vmap_func1 = vmap(self.get_uyl_mcfit, (0, None, None, None))        
-        vmap_func2 = vmap(vmap_func1, (None, 0, None))
-        vmap_func3 = vmap(vmap_func2, (None, None, 0))
-        self.uyl_mat = vmap_func3(jnp.arange(nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
+        # # if want_like_diff:
+        # #     vmap_func1 = vmap(self.get_uyl, (0, None, None, None))
+        # # else:
+        # #     vmap_func1 = vmap(self.get_uyl_mcfit, (0, None, None, None))
+        # vmap_func1 = vmap(self.get_uyl, (0, None, None))
+        # # vmap_func1 = vmap(self.get_uyl_mcfit, (0, None, None, None))        
+        # vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        # vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        # self.uyl_mat = vmap_func3(jnp.arange(nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
         
-        vmap_func1 = vmap(self.get_byl, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.byl_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+        # vmap_func1 = vmap(self.get_byl, (0, None))
+        # vmap_func2 = vmap(vmap_func1, (None, 0))
+        # self.byl_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
 
-        vmap_func1 = vmap(self.get_ukappal_dmb_prefac, (0, None, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0, None))
-        vmap_func3 = vmap(vmap_func2, (None, None, 0))
-        self.ukappal_dmb_prefac_mat = vmap_func3(jnp.arange(nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
+        # vmap_func1 = vmap(self.get_ukappal_dmb_prefac, (0, None, None))
+        # vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        # vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        # self.ukappal_dmb_prefac_mat = vmap_func3(jnp.arange(nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
         # if self.calc_nfw_only:
         #     vmap_func1 = vmap(self.get_ukappal_nfw_prefac, (0, None, None))
@@ -293,13 +315,13 @@ class setup_power_BCMP:
         #     self.ukappal_nfw_prefac_mat = vmap_func3(jnp.arange(nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
 
-        if verbose_time:
-            tf_uls = time.time()
-            print('Time taken to setup uls and bls: ', tf_uls - ti_uls)
+        # if verbose_time:
+        #     tf_uls = time.time()
+        #     print('Time taken to setup uls and bls: ', tf_uls - ti_uls)
 
-        if verbose_time:
-            tf = time.time()
-            print('Time taken to setup power spectra: ', tf - ti)
+        # if verbose_time:
+        #     tf = time.time()
+        #     print('Time taken to setup power spectra: ', tf - ti)
 
 
 
@@ -331,6 +353,13 @@ class setup_power_BCMP:
         uk = jsi.trapezoid(prefac_repeat_shape * self.rho_dmb_normed_M, jnp.log(self.r_array), axis=0)
         return uk
 
+    @partial(jit, static_argnums=(0,))        
+    def get_uky_from_P(self, jk):
+        k = self.kPk_array[jk]
+        prefac = 4 * jnp.pi * (self.r_array**3) * (jnp.sin(k*self.r_array) / (k*self.r_array))
+        prefac_repeat_shape = jnp.tile(prefac.reshape(self.nr,1,1,1), (1,self.nc,self.nz,self.nM))
+        uk = jsi.trapezoid(prefac_repeat_shape * self.y3d_mat, jnp.log(self.r_array), axis=0)
+        return uk
 
     @partial(jit, static_argnums=(0,))        
     def get_lgsigma_z(self, jz, lgM, kmin=0.0001, kmax=1000.0):
@@ -506,6 +535,144 @@ class setup_power_BCMP:
         return c
 
 
+    
+    @partial(jit, static_argnums=(0,))
+    def get_ukdmb_interp_Pk(self, jz, jM):
+        ukdmb_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_dmb_tointp[:,jz, jM])))
+        return ukdmb_array_kPk
+
+    @partial(jit, static_argnums=(0,))
+    def get_uknfw_interp_Pk(self, jz, jM):
+        uknfw_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_nfw_tointp[:,jz, jM])))
+        return uknfw_array_kPk
+
+    @partial(jit, static_argnums=(0,))
+    def get_uky_interp_Pk(self, jz, jM):
+        uky_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_y_tointp[:,jz, jM])))
+        return uky_array_kPk
+
+    @partial(jit, static_argnums=(0,))
+    def get_bm_dmb_2h(self, jk, jz):
+        '''Function getting the 2halo effective bias of the matter fields'''
+        ukz_intc = self.Mtot_mat[jz, :] *  self.uk_dmb[jk,jz,:]
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        # rhom_z = self.get_rho_m(self.z_array[jz])
+        rhom_z = self.get_rho_m(0.0)
+        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
+        bmm_2h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return bmm_2h
+
+    @partial(jit, static_argnums=(0,))
+    def get_bm_largescales_2h(self, jz):
+        '''Get the large scale limit of the above 2halo integral'''
+        ukz_intc = self.Mtot_mat[jz, :]
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
+        bmm_2h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return bmm_2h
+
+    @partial(jit, static_argnums=(0,))
+    def get_bm_nfw_2h(self, jk, jz):
+        '''Function getting the 2halo effective bias of the matter fields'''
+        ukz_intc = self.Mtot_mat[jz, :] *  self.uk_nfw[jk,jz,:]
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
+        bmm_2h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return bmm_2h
+
+    @partial(jit, static_argnums=(0,))
+    def get_bk_y_2h(self, jk, jz):
+        '''Function getting the 2halo effective bias of the matter fields'''
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        fx = self.uk_y[jk,jz,:] * dndlnM_z * self.bias_Mz_mat[jz,:]
+        by_2h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return by_2h
+
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pmm_dmb_1h(self, jk, jz):
+        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_dmb[jk,jz,:])**2        
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
+        Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return Pmm_1h
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pmm_nfw_1h(self, jk, jz):
+        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_nfw[jk,jz,:])**2
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
+        Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return Pmm_1h
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pym_dmb_1h(self, jk, jz):
+        ukm = (self.Mtot_mat[jz, :] *  self.uk_dmb[jk,jz,:])
+        uym = self.uk_y[jk,jz,:]
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukm * uym * dndlnM_z * ((1/rhom_z))
+        Pym_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return Pym_1h
+
+    # @partial(jit, static_argnums=(0,))
+    # def get_Pklin_lz(self, jl, jz):
+    #     ell = self.ell_array[jl]
+    #     chi_z = self.chi_array[jz]
+    #     k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+    #     Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:,jz])))
+    #     return Pkz_ell
+
+    # @partial(jit, static_argnums=(0,))
+    # def get_Pknl_lz(self, jl, jz):
+    #     ell = self.ell_array[jl]
+    #     chi_z = self.chi_array[jz]
+    #     k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+    #     Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.pnl_kz_mat[:,jz])))
+    #     return Pkz_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pkmm_lz(self, jl, jz):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pmm_tot_kz_mat[:,jz])))
+        return Pkz_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pkym_lz(self, jl, jz):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pym_tot_kz_mat[:,jz])))
+        return Bl*Pkz_ell
+
+
+    @partial(jit, static_argnums=(0,))
+    def get_dPmm_dmb_dlnM_1h(self, jk, jz):
+        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_dmb[jk,jz,:])**2
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
+        # Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return fx
+
+    @partial(jit, static_argnums=(0,))
+    def get_dPmm_nfw_dlnM_1h(self, jk, jz):
+        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_nfw[jk,jz,:])**2
+        dndlnM_z = self.hmf_Mz_mat[jz, :]     
+        rhom_z = self.get_rho_m(0.0) #want comoving density
+        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
+        # Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return fx
+
+
+
     # @partial(jit, static_argnums=(0,))
     # def get_uyl(self, jl, jc, jz, jM, xmin=0.01, xmax=4, num_points_trapz_int=64):
     #     r200c = self.r200c_mat[jz, jM]
@@ -530,261 +697,107 @@ class setup_power_BCMP:
     #     Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
     #     return uyl * Bl
     
-    @partial(jit, static_argnums=(0,))
-    def get_uyl(self, jl, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=4000):
-        chiz = jnp.clip(self.chi_array[jz], 1.0)
-        az = 1.0 / (1.0 + self.z_array[jz])
-        prefac = az/(chiz**2)
-        rmin = xmin * self.r200c_mat[jz, jM]
-        rmax = xmax * self.r200c_mat[jz, jM]
-        logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
-        r_array_int = jnp.exp(logr_array_int)
-
-        y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jz, jM]))
-        y3d_clipped = jnp.clip(self.y3d_mat[:,jz, jM], y3d_min + 1e-30)
-        y3d_rarray = jnp.exp(jnp.interp(logr_array_int, jnp.log(self.r_array), jnp.log(y3d_clipped)))        
-        ell = self.ell_array[jl]
-        sin_fac = (jnp.sin((ell + 0.5)*r_array_int/chiz))/(((ell + 0.5)*r_array_int/chiz))
-
-        fx = y3d_rarray * sin_fac * (4*jnp.pi*r_array_int**2) * r_array_int
-        uyl = prefac * jsi.trapezoid(fx, x=logr_array_int) 
-        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
-        return uyl * Bl
-
     # @partial(jit, static_argnums=(0,))
-    # def get_uyl_mcfit(self, jl, jc, jz, jM, xmin=0.01, xmax=3, num_points_trapz_int=128):
+    # def get_uyl(self, jl, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=4000):
     #     chiz = jnp.clip(self.chi_array[jz], 1.0)
     #     az = 1.0 / (1.0 + self.z_array[jz])
     #     prefac = az/(chiz**2)
     #     rmin = xmin * self.r200c_mat[jz, jM]
-    #     rmax = xmax * self.r200c_mat[jz, jM]        
+    #     rmax = xmax * self.r200c_mat[jz, jM]
+    #     logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
+    #     r_array_int = jnp.exp(logr_array_int)
 
-    #     y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jc, jz, jM]))
-    #     y3d_clipped = jnp.clip(self.y3d_mat[:,jc, jz, jM], y3d_min + 1e-30)
-    #     # logr_array_mcfit = jnp.linspace(jnp.log(jnp.min(self.r_array/chiz)), jnp.log(jnp.max(self.r_array/chiz)), num_points_trapz_int)
-    #     logr_array_mcfit = logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
-    #     r_array_mcfit = jnp.exp(logr_array_mcfit)
-    #     # y3d_array = jnp.exp(jnp.interp(jnp.log(r_array_mcfit), jnp.log(self.r_array/chiz), jnp.log(y3d_clipped)))
+    #     y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jz, jM]))
+    #     y3d_clipped = jnp.clip(self.y3d_mat[:,jz, jM], y3d_min + 1e-30)
     #     y3d_rarray = jnp.exp(jnp.interp(logr_array_int, jnp.log(self.r_array), jnp.log(y3d_clipped)))        
-    #     k_mcfit, uy_mcfit = (xi2P(jnp.array(r_array_mcfit), nx=num_points_trapz_int,lowring=True)(jnp.array(y3d_rarray),  extrap=False))
-    #     uy_mcfit = jnp.array(uy_mcfit)
     #     ell = self.ell_array[jl]
-    #     uyl = prefac *  (chiz**3) * jnp.exp(jnp.interp(jnp.log(ell), jnp.log(k_mcfit), jnp.log(uy_mcfit)))
-    #     Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.) 
-    #     return uyl * Bl     
+    #     sin_fac = (jnp.sin((ell + 0.5)*r_array_int/chiz))/(((ell + 0.5)*r_array_int/chiz))
+
+    #     fx = y3d_rarray * sin_fac * (4*jnp.pi*r_array_int**2) * r_array_int
+    #     uyl = prefac * jsi.trapezoid(fx, x=logr_array_int) 
+    #     Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+    #     return uyl * Bl
+
+    # # @partial(jit, static_argnums=(0,))
+    # # def get_uyl_mcfit(self, jl, jc, jz, jM, xmin=0.01, xmax=3, num_points_trapz_int=128):
+    # #     chiz = jnp.clip(self.chi_array[jz], 1.0)
+    # #     az = 1.0 / (1.0 + self.z_array[jz])
+    # #     prefac = az/(chiz**2)
+    # #     rmin = xmin * self.r200c_mat[jz, jM]
+    # #     rmax = xmax * self.r200c_mat[jz, jM]        
+
+    # #     y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jc, jz, jM]))
+    # #     y3d_clipped = jnp.clip(self.y3d_mat[:,jc, jz, jM], y3d_min + 1e-30)
+    # #     # logr_array_mcfit = jnp.linspace(jnp.log(jnp.min(self.r_array/chiz)), jnp.log(jnp.max(self.r_array/chiz)), num_points_trapz_int)
+    # #     logr_array_mcfit = logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
+    # #     r_array_mcfit = jnp.exp(logr_array_mcfit)
+    # #     # y3d_array = jnp.exp(jnp.interp(jnp.log(r_array_mcfit), jnp.log(self.r_array/chiz), jnp.log(y3d_clipped)))
+    # #     y3d_rarray = jnp.exp(jnp.interp(logr_array_int, jnp.log(self.r_array), jnp.log(y3d_clipped)))        
+    # #     k_mcfit, uy_mcfit = (xi2P(jnp.array(r_array_mcfit), nx=num_points_trapz_int,lowring=True)(jnp.array(y3d_rarray),  extrap=False))
+    # #     uy_mcfit = jnp.array(uy_mcfit)
+    # #     ell = self.ell_array[jl]
+    # #     uyl = prefac *  (chiz**3) * jnp.exp(jnp.interp(jnp.log(ell), jnp.log(k_mcfit), jnp.log(uy_mcfit)))
+    # #     Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.) 
+    # #     return uyl * Bl     
 
 
-    @partial(jit, static_argnums=(0,))
-    def get_byl(self, jl, jz):
-        # uyl_jl_jz = self.uyl_mat[jl, :, jz, :]
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
-        # fx = uyl_jl_jz.T * p_logc_Mz
-        # uyl_intc = jsi.trapezoid(fx, x=logc_array)
-        uyl_intc = self.uyl_mat[jl, jz, :]     
+    # @partial(jit, static_argnums=(0,))
+    # def get_byl(self, jl, jz):
+    #     # uyl_jl_jz = self.uyl_mat[jl, :, jz, :]
+    #     # cmean_jz = self.conc_Mz_mat[jz, :]
+    #     # logc_array = jnp.log(self.conc_array)
+    #     # sig_logc = self.sig_logc_z_array[jz]
+    #     # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
+    #     # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
+    #     # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
+    #     # fx = uyl_jl_jz.T * p_logc_Mz
+    #     # uyl_intc = jsi.trapezoid(fx, x=logc_array)
+    #     uyl_intc = self.uyl_mat[jl, jz, :]     
 
-        dndlnM_z = self.hmf_Mz_mat[jz, :]
-        bM_z = self.bias_Mz_mat[jz, :]
-        fx = uyl_intc * dndlnM_z * bM_z
-        byl = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return byl
+    #     dndlnM_z = self.hmf_Mz_mat[jz, :]
+    #     bM_z = self.bias_Mz_mat[jz, :]
+    #     fx = uyl_intc * dndlnM_z * bM_z
+    #     byl = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+    #     return byl
 
-    @partial(jit, static_argnums=(0,))
-    def get_Pklin_lz(self, jl, jz):
-        ell = self.ell_array[jl]
-        chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
-        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:,jz])))
-        return Pkz_ell
+    # @partial(jit, static_argnums=(0,))
+    # def get_ukappal_dmb_prefac(self, jl, jz, jM):
+    #     ell = self.ell_array[jl]
+    #     chi_z = self.chi_array[jz]
+    #     k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+    #     # uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_dmb[:,jc, jz, jM])))
+    #     uk_min = jnp.min(jnp.absolute(self.uk_dmb[:,jz, jM]))
+    #     # uk_clipped = jnp.clip(self.uk_dmb[:,jc, jz, jM], uk_min + 1e-25) * self.M_array[jM]/self.rho_m_bar
+    #     uk_clipped = jnp.clip(self.uk_dmb[:,jz, jM], uk_min + 1e-25) * self.Mtot_mat[jz, jM]/self.rho_m_bar        
+    #     uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(uk_clipped)))        
+    #     return uk_dmb_ell
 
-    @partial(jit, static_argnums=(0,))
-    def get_Pknl_lz(self, jl, jz):
-        ell = self.ell_array[jl]
-        chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
-        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.pnl_kz_mat[:,jz])))
-        return Pkz_ell
-
-    @partial(jit, static_argnums=(0,))
-    def get_ukappal_dmb_prefac(self, jl, jz, jM):
-        ell = self.ell_array[jl]
-        chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
-        # uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_dmb[:,jc, jz, jM])))
-        uk_min = jnp.min(jnp.absolute(self.uk_dmb[:,jz, jM]))
-        # uk_clipped = jnp.clip(self.uk_dmb[:,jc, jz, jM], uk_min + 1e-25) * self.M_array[jM]/self.rho_m_bar
-        uk_clipped = jnp.clip(self.uk_dmb[:,jz, jM], uk_min + 1e-25) * self.Mtot_mat[jz, jM]/self.rho_m_bar        
-        uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(uk_clipped)))        
-        return uk_dmb_ell
-
-    @partial(jit, static_argnums=(0,))
-    def get_ukappal_nfw_prefac(self, jl, jz, jM):
-        ell = self.ell_array[jl]
-        chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
-        # uk_nfw_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_nfw[:,jc, jz, jM])))
-        uk_min = jnp.min(jnp.absolute(self.uk_nfw[:,jz, jM]))
-        # uk_clipped = jnp.clip(self.uk_nfw[:,jc, jz, jM], uk_min + 1e-25) * self.M_array[jM]/self.rho_m_bar
-        uk_clipped = jnp.clip(self.uk_nfw[:,jz, jM], uk_min + 1e-25) * self.Mtot_mat[jz, jM]/self.rho_m_bar        
-        uk_nfw_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(uk_clipped)))        
-        return uk_nfw_ell
-    
-    @partial(jit, static_argnums=(0,))
-    def get_ukdmb_interp_Pk(self, jz, jM):
-        ukdmb_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_dmb_tointp[:,jz, jM])))
-        return ukdmb_array_kPk
-
-    @partial(jit, static_argnums=(0,))
-    def get_uknfw_interp_Pk(self, jz, jM):
-        uknfw_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_nfw_tointp[:,jz, jM])))
-        return uknfw_array_kPk
-
-    @partial(jit, static_argnums=(0,))
-    def get_bm_dmb_2h(self, jk, jz):
-        '''Function getting the 2halo effective bias of the matter fields'''
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
-        
-        # fx = ((self.Mtot_mat[:, jz, :] *  self.uk_dmb[jk,:,jz,:])).T * p_logc_Mz
-        # ukz_intc = jsi.trapezoid(fx, x=logc_array)
-        ukz_intc = self.Mtot_mat[jz, :] *  self.uk_dmb[jk,jz,:]
-        dndlnM_z = self.hmf_Mz_mat[jz, :]     
-        # rhom_z = self.get_rho_m(self.z_array[jz])
-        rhom_z = self.get_rho_m(0.0)
-        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
-        bmm_2h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return bmm_2h
-
-    @partial(jit, static_argnums=(0,))
-    def get_bm_largescales_2h(self, jz):
-        '''Get the large scale limit of the above 2halo integral'''
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
-        
-        # fx = ((self.Mtot_mat[:, jz, :])).T * p_logc_Mz
-        # ukz_intc = jsi.trapezoid(fx, x=logc_array)
-        ukz_intc = self.Mtot_mat[jz, :]
-        dndlnM_z = self.hmf_Mz_mat[jz, :]     
-        rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
-        bmm_2h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return bmm_2h
-
-    @partial(jit, static_argnums=(0,))
-    def get_bm_nfw_2h(self, jk, jz):
-        '''Function getting the 2halo effective bias of the matter fields'''
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
-        
-        # fx = ((self.Mtot_mat[:, jz, :] *  self.uk_nfw[jk,:,jz,:])).T * p_logc_Mz
-        # ukz_intc = jsi.trapezoid(fx, x=logc_array)
-        ukz_intc = self.Mtot_mat[jz, :] *  self.uk_nfw[jk,jz,:]
-        dndlnM_z = self.hmf_Mz_mat[jz, :]     
-        rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * self.bias_Mz_mat[jz,:] * ((1/rhom_z))
-        bmm_2h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return bmm_2h
+    # @partial(jit, static_argnums=(0,))
+    # def get_ukappal_nfw_prefac(self, jl, jz, jM):
+    #     ell = self.ell_array[jl]
+    #     chi_z = self.chi_array[jz]
+    #     k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+    #     # uk_nfw_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.uk_nfw[:,jc, jz, jM])))
+    #     uk_min = jnp.min(jnp.absolute(self.uk_nfw[:,jz, jM]))
+    #     # uk_clipped = jnp.clip(self.uk_nfw[:,jc, jz, jM], uk_min + 1e-25) * self.M_array[jM]/self.rho_m_bar
+    #     uk_clipped = jnp.clip(self.uk_nfw[:,jz, jM], uk_min + 1e-25) * self.Mtot_mat[jz, jM]/self.rho_m_bar        
+    #     uk_nfw_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(uk_clipped)))        
+    #     return uk_nfw_ell
 
 
-    @partial(jit, static_argnums=(0,))
-    def get_bkl_dmb(self, jl, jz):
-        ell = self.ell_array[jl]
-        chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
-        bkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.bm_dmb_kz_mat[:,jz])))
-        return bkz_ell
+    # @partial(jit, static_argnums=(0,))
+    # def get_bkl_dmb(self, jl, jz):
+    #     ell = self.ell_array[jl]
+    #     chi_z = self.chi_array[jz]
+    #     k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+    #     bkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.bm_dmb_kz_mat[:,jz])))
+    #     return bkz_ell
 
-    @partial(jit, static_argnums=(0,))
-    def get_bkl_nfw(self, jl, jz):
-        ell = self.ell_array[jl]
-        chi_z = self.chi_array[jz]
-        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
-        bkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.bm_nfw_kz_mat[:,jz])))
-        return bkz_ell
-
-
-    @partial(jit, static_argnums=(0,))
-    def get_Pmm_dmb_1h(self, jk, jz):
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
-        # fx = ((self.Mtot_mat[:, jz, :] *  self.uk_dmb[jk,:,jz,:])**2).T * p_logc_Mz
-        # ukz_intc = jsi.trapezoid(fx, x=logc_array)
-        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_dmb[jk,jz,:])**2        
-        dndlnM_z = self.hmf_Mz_mat[jz, :]     
-        rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
-        Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return Pmm_1h
-
-    @partial(jit, static_argnums=(0,))
-    def get_Pmm_nfw_1h(self, jk, jz):
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))        
-        # fx = ((self.Mtot_mat[:, jz, :] *  self.uk_nfw[jk,:,jz,:])**2).T * p_logc_Mz
-        # ukz_intc = jsi.trapezoid(fx, x=logc_array)
-        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_nfw[jk,jz,:])**2
-        dndlnM_z = self.hmf_Mz_mat[jz, :]     
-        rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
-        Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return Pmm_1h
-
-
-    @partial(jit, static_argnums=(0,))
-    def get_dPmm_dmb_dlnM_1h(self, jk, jz):
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))        
-        # fx = ((self.Mtot_mat[:, jz, :] *  self.uk_dmb[jk,:,jz,:])**2).T * p_logc_Mz
-        # ukz_intc = jsi.trapezoid(fx, x=logc_array)
-        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_dmb[jk,jz,:])**2
-        dndlnM_z = self.hmf_Mz_mat[jz, :]     
-        rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
-        # Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return fx
-
-    @partial(jit, static_argnums=(0,))
-    def get_dPmm_nfw_dlnM_1h(self, jk, jz):
-        # cmean_jz = self.conc_Mz_mat[jz, :]
-        # logc_array = jnp.log(self.conc_array)
-        # sig_logc = self.sig_logc_z_array[jz]
-        # conc_mat = jnp.tile(self.conc_array, (self.nM, 1))
-        # cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-        # p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))        
-        # fx = ((self.Mtot_mat[:, jz, :] *  self.uk_nfw[jk,:,jz,:])**2).T * p_logc_Mz
-        # ukz_intc = jsi.trapezoid(fx, x=logc_array)
-        ukz_intc = (self.Mtot_mat[jz, :] *  self.uk_nfw[jk,jz,:])**2
-        dndlnM_z = self.hmf_Mz_mat[jz, :]     
-        rhom_z = self.get_rho_m(0.0) #want comoving density
-        fx = ukz_intc * dndlnM_z * ((1/rhom_z)**2)
-        # Pmm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
-        return fx
+    # @partial(jit, static_argnums=(0,))
+    # def get_bkl_nfw(self, jl, jz):
+    #     ell = self.ell_array[jl]
+    #     chi_z = self.chi_array[jz]
+    #     k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+    #     bkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.k), jnp.log(self.bm_nfw_kz_mat[:,jz])))
+    #     return bkz_ell
 
