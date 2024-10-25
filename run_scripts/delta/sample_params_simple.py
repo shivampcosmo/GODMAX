@@ -43,29 +43,29 @@ probe = sys.argv[2]
 cosmo_params_dict = {'flat': True, 'H0': 67.2, 'Om0': 0.29, 'Ob0': 0.049, 'sigma8': 0.783, 'ns': 0.95, 'w0':-1.0}
 sim_params_dict = {}
 sim_params_dict['nfw_trunc'] = True
-sim_params_dict['gamma_rhogas'] = 2.0
+sim_params_dict['gamma_rhogas'] = 2.5
 sim_params_dict['delta_rhogas'] = 7.0
 # sim_params_dict['theta_co'] = 0.01
 # sim_params_dict['theta_ej'] = 1.0
 
-sim_params_dict['theta_co_0'] = 0.01
+sim_params_dict['theta_co_0'] = 0.1
 sim_params_dict['log10_Mstar0_theta_co'] = 15.0
-sim_params_dict['nu_theta_co_M'] = 0.0
-sim_params_dict['nu_theta_co_z'] = 0.0
+sim_params_dict['nu_theta_co_M'] = -0.25
+sim_params_dict['nu_theta_co_z'] = -0.5
 
-sim_params_dict['theta_ej_0'] = 1.3
+sim_params_dict['theta_ej_0'] = 1.25
 sim_params_dict['log10_Mstar0_theta_ej'] = 15.0
-sim_params_dict['nu_theta_ej_M'] = -0.5
+sim_params_dict['nu_theta_ej_M'] = 0.0
 sim_params_dict['nu_theta_ej_z'] = 1.0
 
-sim_params_dict['log10_Mc0'] = 14.83
-sim_params_dict['log10_Mstar0'] = 14.0
+sim_params_dict['log10_Mc0'] = 13.0
+sim_params_dict['log10_Mstar0'] = 15.0
 sim_params_dict['mu_beta'] = 0.21
-sim_params_dict['nu_z'] = 0.0
-sim_params_dict['nu_M'] = 0.0
+sim_params_dict['nu_z'] = 0.1
+sim_params_dict['nu_M'] = 0.1
 
 sim_params_dict['eta_star'] = 0.3
-sim_params_dict['eta_cga'] = 0.6
+sim_params_dict['eta_cga'] = 0.4
 
 
 sim_params_dict['neg_bhse_plus_1'] = 0.833
@@ -313,6 +313,12 @@ prior_min_all_dict['theta_ej_0'] = 1.0
 prior_max_all_dict['theta_ej_0'] = 5.0
 prior_min_all_dict['log10_Mc0'] = 13.0
 prior_max_all_dict['log10_Mc0'] = 15.0
+
+prior_min_all_dict['mu_beta'] = 0.05
+prior_max_all_dict['mu_beta'] = 1.5
+
+# mu_beta
+
 prior_min_all_dict['nu_theta_ej_M'] = -3.0
 prior_max_all_dict['nu_theta_ej_M'] = 0.0
 prior_min_all_dict['nu_theta_ej_z'] = -1.0
@@ -386,7 +392,7 @@ cosmo_params_vary_names = ['Om0', 'sigma8', 'Ob0', 'h', 'ns']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'nu_theta_ej_z', 'alpha_nt']
 # sims_params_vary_names = ['gamma_rhogas', 'nu_theta_ej_M','nu_theta_ej_z','nu_theta_co_z', 'alpha_nt']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M','nu_theta_ej_z', 'alpha_nt']
-sims_params_vary_names = ['nu_theta_ej_M','nu_theta_ej_z', 'gamma_rhogas', 'alpha_nt']
+sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_z', 'mu_beta', 'alpha_nt']
 
 # sims_params_vary_names = []
 # cosmo_params_vary_names = []
@@ -580,5 +586,6 @@ trace = {k: np.concatenate(v) for k, v in traces.items()}
 
 import dill as dill
 save_chain_dir = abs_path_results + '/chains/'
-dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_fix_thetaej_zev_NUTS_update.pkl', 'wb'))
+print(save_chain_dir)
+dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_thetaej_mubeta_zev_NUTS_update.pkl', 'wb'))
 

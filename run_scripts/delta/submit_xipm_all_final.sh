@@ -9,7 +9,7 @@
 #SBATCH --exclusive  # dedicated node for this job
 #SBATCH --mem=80G          # host memory per CPU core
 #SBATCH --time=1-2:00            # time (DD-HH:MM)
-#SBATCH --job-name=test_fid_all_final
+#SBATCH --job-name=test_fid_xipm_final
 #SBATCH --output=/projects/bdne/spandey3/GODMAX/run_scripts/delta/logs/%x.%j.out
 #SBATCH --error=/projects/bdne/spandey3/GODMAX/run_scripts/delta/logs/%x.%j.err
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -34,5 +34,5 @@ unset __conda_setup
 module load cuda/12.3.0
 conda activate /projects/bdne/spandey3/envs/charm
 which python
-time srun --export=ALL python /projects/bdne/spandey3/GODMAX/run_scripts/delta/sample_params_simple.py cib_1p7_dBeta all
+time srun --export=ALL python /projects/bdne/spandey3/GODMAX/run_scripts/delta/sample_params_simple.py cib_1p7_dBeta xip_xim
 echo "done"

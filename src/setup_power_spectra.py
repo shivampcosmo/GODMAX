@@ -105,7 +105,7 @@ class setup_power_BCMP:
 
         if verbose_time:
             ti_pk = time.time()
-        self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(100), 64)
+        self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(100), 196)
         self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
         
         if verbose_time:
@@ -221,7 +221,7 @@ class setup_power_BCMP:
             self.Pmm_nfw_tot_mat = self.Pmm_nfw_1h_mat + (self.bm_nfw_kz_mat)**2 * self.plin_kz_mat
             self.Pmm_sup_tot_mat = self.phfit_kz_mat / self.Pmm_nfw_tot_mat
 
-        if (self.smooth_1h2h_mm_model == 'response'):
+        # if (self.smooth_1h2h_mm_model == 'response'):
             self.Pmm_tot_kz_mat = self.Pmm_dmb_tot_mat * self.Pmm_sup_tot_mat
         else:
             self.Pmm_tot_kz_mat = self.Pmm_dmb_tot_mat

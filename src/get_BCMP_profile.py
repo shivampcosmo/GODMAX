@@ -126,6 +126,11 @@ class BCM_18_wP:
         vmap_func1 = vmap(self.get_M_to_R, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.r200c_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
+
+        vmap_func1 = vmap(self.get_M_to_R500c, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.r500c_mat = vmap_func2(jnp.arange(nM), jnp.arange(nz)).T
+
         # add a concentration axis to r200c_mat as the first axis. i.e. repeat along the first axis:
         # self.r200c_mat_repeat = jnp.repeat(self.r200c_mat[None, :, :], nc, axis=0)
 
@@ -265,6 +270,16 @@ class BCM_18_wP:
         # convert to comoving coordinates
         R *= (1 + self.z_array[jz])
         return R
+
+    @partial(jit, static_argnums=(0,))
+    def get_M_to_R500c(self, jM, jz, mdef_delta=500):
+        rho_c_z = constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(self.cosmo_jax,self.scale_fac_a_array[jz]) * 1e9
+        rho_treshold = mdef_delta * rho_c_z
+        R = (self.M_array[jM] * 3.0 / 4.0 / jnp.pi / rho_treshold)**(1.0 / 3.0)
+        # convert to comoving coordinates
+        R *= (1 + self.z_array[jz])
+        return R
+
 
     @partial(jit, static_argnums=(0,))
     def get_Mc(self, jM, jz):
@@ -619,6 +634,15 @@ class BCM_18_wP:
     
     @partial(jit, static_argnums=(0,))
     def get_Mdmb_r200(self, jz, jM):
+        '''This is the mass inside some radius for the full dmb profile'''
+        r = self.r200c_mat[jM, jz]
+        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jM, jz])        
+        logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
+        Mdmb = self.logspace_trapezoidal_integral(self.get_rho_dmb, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
+        return Mdmb
+
+    @partial(jit, static_argnums=(0,))
+    def get_r500_z0_wMdmb(self, jz, jM):
         '''This is the mass inside some radius for the full dmb profile'''
         r = self.r200c_mat[jM, jz]
         minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jM, jz])        
