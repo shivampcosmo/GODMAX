@@ -6,6 +6,13 @@ __pycache__/
 data/
 logs/
 results/
+*.npy
+*.pdf
+*.pkl
+*.pk
+*.png
+*.txt
+*.fits
 
 # C extensions
 *.so
