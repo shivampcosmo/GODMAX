@@ -200,6 +200,11 @@ class BCM_18_wP:
         vmap_func3 = vmap(vmap_func2, (None, None, 0))
         self.Mclm_mat = vmap_func3(jnp.arange(nr), jnp.arange(nz), jnp.arange(nM)).T        
 
+        vmap_func1 = vmap(self.get_Mgas, (0, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        self.Mgas_mat = vmap_func3(jnp.arange(nr), jnp.arange(nz), jnp.arange(nM)).T        
+
 
         vmap_func1 = vmap(self.get_rho_clm, (0, None, None))
         vmap_func2 = vmap(vmap_func1, (None, 0, None))
@@ -252,6 +257,9 @@ class BCM_18_wP:
         h = cosmo_params['H0'] / 100.
         self.ne_mat_physical = self.rho_gas_mat_physical/(mue*mp*(Mpc_to_cm**3)/(h**2)) # in cm**-3
 
+
+        self.ne_mat = self.rho_gas_mat/(mue*mp*(Mpc_to_cm**3)/(h**2)) # in cm**-3
+        self.ne_mat_norm = self.Mgas_mat/(mue*mp*(Mpc_to_cm**3)/(h**2)) # in cm**-3
         if verbose_time:
             tf = time.time()
             print('Time taken to calculate BCMP profile: ', tf-ti, ' seconds')
