@@ -56,6 +56,8 @@ sim_params_dict = {}
 sim_params_dict['nfw_trunc'] = True
 sim_params_dict['gamma_rhogas'] = 2.5
 sim_params_dict['delta_rhogas'] = 7.0
+# sim_params_dict['theta_co'] = 0.01
+# sim_params_dict['theta_ej'] = 1.0
 
 sim_params_dict['theta_co_0'] = 0.1
 sim_params_dict['log10_Mstar0_theta_co'] = 15.0
@@ -70,7 +72,7 @@ sim_params_dict['nu_theta_ej_z'] = 1.2
 sim_params_dict['log10_Mc0'] = 14.0
 sim_params_dict['log10_Mstar0'] = 15.0
 sim_params_dict['mu_beta'] = 1.0
-sim_params_dict['nu_z'] = 1.5
+sim_params_dict['nu_z'] = 0.1
 sim_params_dict['nu_M'] = 0.1
 
 sim_params_dict['eta_star'] = 0.3
@@ -96,12 +98,22 @@ sim_params_dict['alpha_1h2h_ym'] = 1.0
 
 halo_params_dict = {}
 halo_params_dict['rmin'], halo_params_dict['rmax'], halo_params_dict['nr'] = 1e-2, 8, 32
-halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.01, 1.6, 22
+# halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.001, 0.002, 2
+# halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.001, 1.0, 10
+# halo_params_dict['z_array'] = np.array([1e-3, 0.5, 1.0])
+# halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.01, 3.0, 20
+halo_params_dict['zmin'], halo_params_dict['zmax'], halo_params_dict['nz'] = 0.01, 3.0, 22
+# halo_params_dict['z_array'] = np.array([1e-3])
+# halo_params_dict['z_array'] = np.array([0.5])
+# halo_params_dict['z_array'] = np.array([1.0])
+# halo_params_dict['nz'] = len(halo_params_dict['z_array'])
+# halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM'] = 12.0, 15.5, 20
 halo_params_dict['lg10_Mmin'], halo_params_dict['lg10_Mmax'], halo_params_dict['nM'] = 11.5, 15.5, 24
+halo_params_dict['cmin'], halo_params_dict['cmax'], halo_params_dict['nc'] = 2, 9, 16
 
-lmin = 1.
-lmax = 80000.0
-fac = 2.0
+lmin = 1.0
+lmax = 100000.0
+fac = 4
 dl_log_array = 0.23025851 / fac
 # dl_log_array = 0.1
 l_array_all = np.exp(np.arange(np.log(lmin), np.log(lmax), dl_log_array))
@@ -129,17 +141,16 @@ z_array = df['nz_source'].data['Z_MID']
 nz_info_dict = {}
 nz_info_dict['z_array'] = z_array
 nz_info_dict['nbins'] = 4
-for jb in range(nz_info_dict['nbins']):
-    nz_file = np.clip(df['nz_source'].data[f'BIN{jb+1}'], 1e-8, None)
-    nzfile = nz_file / np.trapz(nz_file, z_array)
-    nz_info_dict[f'nz{jb}'] = jnp.array(nzfile)
-
+nz_info_dict['nz0'] = np.maximum(df['nz_source'].data['BIN1'], 1e-4)
+nz_info_dict['nz1'] = np.maximum(df['nz_source'].data['BIN2'], 1e-4)
+nz_info_dict['nz2'] = np.maximum(df['nz_source'].data['BIN3'], 1e-4)
+nz_info_dict['nz3'] = np.maximum(df['nz_source'].data['BIN4'], 1e-4)
+# nz_info_dict['nz4'] = np.maximum(df['nz_source'].data['BIN5'], 1e-4)
 analysis_dict = {}
 analysis_dict['nz_info_dict'] = nz_info_dict
 analysis_dict['do_sheary'] = True
 analysis_dict['do_shear2pt'] = True
 analysis_dict['do_yy'] = True
-analysis_dict['zmin_pk'], halo_params_dict['zmax_pk'], halo_params_dict['nz_pk'] = 0.01, 1.6, 128
 
 analysis_dict['fsky_yy'] = 0.1
 analysis_dict['fsky_ky'] = 0.1
@@ -147,9 +158,11 @@ analysis_dict['fsky_kk'] = 0.1
 analysis_dict['fac_ell_hres'] = fac
 analysis_dict['smooth_1h2h_ymm_model'] = smooth_mm_model
 analysis_dict['smooth_1h2h_ym_model'] = smooth_ym_model
-
+# df_data = fits.open('/mnt/home/spandey/ceph/GODMAX/data/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate.fits')
+# df_data = fits.open('/mnt/home/spandey/ceph/GODMAX/data/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate.fits')
 theta_data = df['xip'].data['ANG'][0:20]
 
+# analysis_dict['ellmin_transf'], analysis_dict['ellmax_transf'], analysis_dict['nell_transf'] = 8, 2**15, 16384
 analysis_dict['angles_data_array'] = jnp.array(theta_data)
 analysis_dict['beam_fwhm_arcmin'] = 1.6
 analysis_dict['want_like_diff'] = True
@@ -158,11 +171,17 @@ analysis_dict['conc_dep_model'] = False
 
 
 analysis_dict['get_cov'] = False
+# analysis_dict['stats_for_cov'] = ['ky']
 analysis_dict['stats_for_cov'] = ['ky', 'kk']
 analysis_dict['analysis_coords'] = 'real'
+# l_array_survey = np.logspace(np.log10(lmin), np.log10(lmax), int((lmax-lmin)/dl_log_array)+1)
 analysis_dict['l_array_survey'] = jnp.array(l_array_survey)
 analysis_dict['dl_array_survey'] = jnp.array(dl_array)
+# analysis_dict['yy_total_ell_fname'] = '/Users/shivam/Downloads/ACT_Cls/Cls_ilc_SZ_deproj_cib_cibdBeta_1.7_10.7_yy_apod10arcmin_21Mar24.txt'
+# analysis_dict['yy_total_ell_fname'] = '/Users/shivam/Downloads/ACT_Cls/Cls_ilc_SZ_yy_apod10arcmin_21Mar24.txt'
 analysis_dict['yy_total_ell_fname'] = os.path.abspath(abs_path_data + '/DESxACT/ACT_Cls/Cls_ilc_SZ_yy_apod10arcmin_21Mar24.txt')
+# analysis_dict['sigma_epsilon_SN_bins'] = [0.2724, 0.2724, 0.2724, 0.2724]
+# analysis_dict['neff_arcmin2_SN_bins'] = [1.7971, 1.5521, 1.5967, 1.0979]
 
 analysis_dict['sigma_epsilon_SN_bins'] = [0.243, 0.262, 0.259, 0.301]
 analysis_dict['neff_arcmin2_SN_bins'] = [1.476, 1.479, 1.484, 1.461]
@@ -174,8 +193,6 @@ other_params_dict['z0_IA'] = 0.62
 other_params_dict['C1_rhocrit'] = 0.0134
 other_params_dict['Delta_z_bias_array'] = np.zeros(nz_info_dict['nbins'])
 other_params_dict['mult_shear_bias_array'] = np.zeros(nz_info_dict['nbins'])
-
-
 
 
 # other_params_dict['alpha_ky'] = 1.0
@@ -391,7 +408,8 @@ cosmo_params_vary_names = ['Om0', 'sigma8', 'Ob0', 'h', 'ns']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'nu_theta_ej_z', 'alpha_nt']
 # sims_params_vary_names = ['gamma_rhogas', 'nu_theta_ej_M','nu_theta_ej_z','nu_theta_co_z', 'alpha_nt']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M','nu_theta_ej_z', 'alpha_nt']
-sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_z', 'mu_beta', 'alpha_nt']
+# sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_z', 'mu_beta', 'alpha_nt']
+sims_params_vary_names = ['theta_ej_0']
 
 if smooth_mm_model == 'power_add':
     sims_params_vary_names.append('alpha_1h2h_mm')
@@ -592,7 +610,7 @@ trace['prior_min'] = prior_min_all_dict
 trace['prior_min'] = prior_max_all_dict
 trace['fiducial_sims_params'] = sim_params_dict
 import dill as dill
-save_chain_dir = abs_path_results + '/chains_final_Nov/'
+save_chain_dir = abs_path_results + '/chains/'
 print(save_chain_dir)
-dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_narrowpriorfinal_thetaej_zev_mubeta_smoothing_mmym_{smooth_mm_model}_{smooth_ym_model}.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_narrowpriorfinal_thetaej_smoothing_mmym_{smooth_mm_model}_{smooth_ym_model}.pkl', 'wb'))
 

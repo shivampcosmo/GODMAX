@@ -12,6 +12,7 @@ from astropy import constants as const
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_Mpc_s_units = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
 import time
+import interpax
 import jax_cosmo.background as bkgrd
 from jax_cosmo.scipy.integrate import simps
 from jax_cosmo.utils import z2a
@@ -59,13 +60,17 @@ class get_power_BCMP:
         self.calc_nfw_only = analysis_dict['calc_nfw_only']
         self.r_array = setup_power_BCMP_obj.r_array
         self.M_array = setup_power_BCMP_obj.M_array
-        self.z_array = setup_power_BCMP_obj.z_array
-        self.scale_fac_a_array = 1./(1. + self.z_array)
+        z_array_orig = setup_power_BCMP_obj.z_array
+        scale_fac_a_array_orig = 1./(1. + z_array_orig)
         # self.conc_array = setup_power_BCMP_obj.conc_array
-        self.nM, self.nz = len(self.M_array), len(self.z_array)
-        self.chi_array = setup_power_BCMP_obj.chi_array
-        self.dchi_dz_array = (const.c.value * 1e-3) / bkgrd.H(self.cosmo_jax, self.scale_fac_a_array)
-        self.hmf_Mz_mat = setup_power_BCMP_obj.hmf_Mz_mat
+        self.nM, nz_orig = len(self.M_array), len(z_array_orig)
+        chi_array = setup_power_BCMP_obj.chi_array
+        dchi_dz_array = (const.c.value * 1e-3) / bkgrd.H(self.cosmo_jax, scale_fac_a_array_orig)
+        growth_array = setup_power_BCMP_obj.growth_array
+
+        self.ell_array = setup_power_BCMP_obj.ell_array
+
+        # self.hmf_Mz_mat = setup_power_BCMP_obj.hmf_Mz_mat
         # self.uyl_mat = jnp.moveaxis(setup_power_BCMP_obj.uyl_mat, 1, 3)
         # self.uyl_mat = setup_power_BCMP_obj.uyl_mat
         # self.byl_mat = setup_power_BCMP_obj.byl_mat
@@ -78,15 +83,38 @@ class get_power_BCMP:
         #     self.bkl_nfw_mat = setup_power_BCMP_obj.bkl_nfw_mat
             
         # self.Pklin_lz_mat = setup_power_BCMP_obj.Pklin_lz_mat
-        self.Pkmm_lz_mat = setup_power_BCMP_obj.Pkmm_lz_mat
-        self.Pkym_lz_mat = setup_power_BCMP_obj.Pkym_lz_mat
+        # Pkmm_lz_mat = 
+        self.logPkmmlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkmm_lz_mat), extrap=True)        
+        self.logPkymlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkym_lz_mat), extrap=True)                
+
+        # self.Pkym_lz_mat = 
 
 
-        self.ell_array = setup_power_BCMP_obj.ell_array
+
+
         self.nell = len(self.ell_array)
-        self.growth_array = setup_power_BCMP_obj.growth_array
-        self.dchi_dz_array = (const.c.to(u.km / u.s)).value / (bkgrd.H(self.cosmo_jax, setup_power_BCMP_obj.scale_fac_a_array))
+        # self.dchi_dz_array = (const.c.to(u.km / u.s)).value / (bkgrd.H(self.cosmo_jax, setup_power_BCMP_obj.scale_fac_a_array))
 
+        self.zmin_pk = analysis_dict.get('zmin_pk', 0.01)
+        self.zmax_pk = analysis_dict.get('zmax_pk', 1.6)
+        self.nz = analysis_dict.get('nz_pk', 128)
+        self.z_array = jnp.linspace(self.zmin_pk, self.zmax_pk, self.nz)
+        self.scale_fac_a_array = 1./(1. + self.z_array)
+        self.chi_array = jnp.exp(jnp.interp(self.z_array, z_array_orig, jnp.log(chi_array)))
+        self.dchi_dz_array = jnp.exp(jnp.interp(self.z_array, z_array_orig, jnp.log(dchi_dz_array)))
+        self.growth_array = jnp.exp(jnp.interp(self.z_array, z_array_orig, jnp.log(growth_array)))
+
+        vmap_func1 = vmap(self.get_Pmm_interp, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Pkmm_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
+
+        vmap_func1 = vmap(self.get_Pym_interp, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Pkym_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
+
+
+        # self.Pkmm_lz_mat = jnp.exp(logPkmmlz_2d_interp(jnp.log(self.ell_array), self.z_array))
+        # self.Pkym_lz_mat = jnp.exp(logPkymlz_2d_interp(jnp.log(self.ell_array), self.z_array))
         
         nz_info_dict = analysis_dict['nz_info_dict']
         self.nbins = nz_info_dict['nbins']
@@ -219,7 +247,7 @@ class get_power_BCMP:
         def integrand(z_prime):
             chi_prime = jnp.exp(jnp.interp(z_prime, self.z_array, jnp.log(self.chi_array)))
             dndz = (jnp.interp(z_prime, self.z_array_nz, self.pzs_inp_mat[jb, :]))
-            return dndz * jnp.clip(chi_prime - chi, 0) / jnp.clip(chi_prime, 1.0)
+            return dndz * jnp.clip(chi_prime - chi, 0) / jnp.clip(chi_prime, 0.1)
 
         radial_kernel = simps(integrand, z, self.zmax, 128) * (1.0 + z) * chi
 
@@ -242,6 +270,16 @@ class get_power_BCMP:
         dndz = (jnp.interp(z, self.z_array_nz, self.pzs_inp_mat[jb, :]))
         value = Az_IA * dndz / dchi_dz
         return value        
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pmm_interp(self, jl, jz):
+        value = jnp.exp(self.logPkmmlz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
+        return value  
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pym_interp(self, jl, jz):
+        value = jnp.exp(self.logPkymlz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
+        return value  
 
     # @partial(jit, static_argnums=(0,))
     # def get_Cl_y_y_1h(self, jl):

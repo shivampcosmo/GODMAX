@@ -318,8 +318,8 @@ prior_max_all_dict['mu_beta'] = 1.2
 
 # mu_beta
 
-prior_min_all_dict['nu_theta_ej_M'] = -3.0
-prior_max_all_dict['nu_theta_ej_M'] = 0.0
+prior_min_all_dict['nu_theta_ej_M'] = -1.0
+prior_max_all_dict['nu_theta_ej_M'] = 0.5
 prior_min_all_dict['nu_theta_ej_z'] = 0.0
 prior_max_all_dict['nu_theta_ej_z'] = 1.5
 
@@ -391,7 +391,7 @@ cosmo_params_vary_names = ['Om0', 'sigma8', 'Ob0', 'h', 'ns']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M', 'theta_co_0', 'nu_theta_ej_z', 'alpha_nt']
 # sims_params_vary_names = ['gamma_rhogas', 'nu_theta_ej_M','nu_theta_ej_z','nu_theta_co_z', 'alpha_nt']
 # sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M','nu_theta_ej_z', 'alpha_nt']
-sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_z', 'mu_beta', 'alpha_nt']
+sims_params_vary_names = ['theta_ej_0', 'nu_theta_ej_M','nu_theta_ej_z', 'mu_beta', 'alpha_nt']
 
 if smooth_mm_model == 'power_add':
     sims_params_vary_names.append('alpha_1h2h_mm')
@@ -594,5 +594,5 @@ trace['fiducial_sims_params'] = sim_params_dict
 import dill as dill
 save_chain_dir = abs_path_results + '/chains_final_Nov/'
 print(save_chain_dir)
-dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_narrowpriorfinal_thetaej_zev_mubeta_smoothing_mmym_{smooth_mm_model}_{smooth_ym_model}.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}_narrowpriorfinal_thetaej_zev_Mev_mubeta_smoothing_mmym_{smooth_mm_model}_{smooth_ym_model}.pkl', 'wb'))
 

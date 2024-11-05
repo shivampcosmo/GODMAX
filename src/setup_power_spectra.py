@@ -18,6 +18,7 @@ RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
 import constants
+import interpax
 # from mcfit import xi2P
 # sys.path.append('/mnt/home/spandey/ceph/GODMAX/src/mcfit_jax')
 # from cosmology_jax import xi2P
@@ -68,6 +69,7 @@ class setup_power_BCMP:
             ti = time.time()
 
         self.Mtot_mat = BCMP_obj.Mtot_mat
+        # self.Mdmb_mat = BCMP_obj.Mdmb_mat
         Mtot_rep = jnp.repeat(self.Mtot_mat[None, :, :], len(BCMP_obj.r_array), axis=0)
         self.r_array = BCMP_obj.r_array
         self.M_array = BCMP_obj.M_array
@@ -90,22 +92,25 @@ class setup_power_BCMP:
         self.calc_nfw_only = analysis_dict['calc_nfw_only']  
 
         self.smooth_1h2h_mm_model = analysis_dict.get('smooth_1h2h_mm_model','response')
-        self.smooth_1h2h_ym_model = analysis_dict.get('smooth_1h2h_ym_model','response')        
+        self.smooth_1h2h_ym_model = analysis_dict.get('smooth_1h2h_ym_model','response')  
+
+        self.only_halofit_mm_model = analysis_dict.get('only_halofit_mm_model',False)              
 
         if self.smooth_1h2h_mm_model == 'power_add':
-            self.alpha_1h2h_mm = analysis_dict.get('alpha_1h2h_mm',1.0)
+            self.alpha_1h2h_mm = sim_params_dict.get('alpha_1h2h_mm',1.0)
         else:
             self.alpha_1h2h_mm = 1.
 
         if self.smooth_1h2h_ym_model == 'power_add':
-            self.alpha_1h2h_ym = analysis_dict.get('alpha_1h2h_ym',1.0)
+            self.alpha_1h2h_ym = sim_params_dict.get('alpha_1h2h_ym',1.0)
         else:
             self.alpha_1h2h_ym = 1.
 
+        # print(self.alpha_1h2h_ym)
 
         if verbose_time:
             ti_pk = time.time()
-        self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(100), 196)
+        self.kPk_array = jnp.logspace(jnp.log10(1E-3), jnp.log10(200), 96)
         self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
         
         if verbose_time:
@@ -159,6 +164,9 @@ class setup_power_BCMP:
             ti_uks = time.time()
         
         # if self.calc_nfw_only:
+
+        # self.Mtot_mat = BCMP_obj.Mtot_mat
+        # Mtot_rep = jnp.repeat(self.Mdmb_mat[-1, :, :][None,:,:], len(BCMP_obj.r_array), axis=0)
         self.rho_dmb_normed_M = BCMP_obj.rho_dmb_mat/Mtot_rep
         self.k = jnp.array(self.kPk_array)
 
@@ -189,7 +197,9 @@ class setup_power_BCMP:
         vmap_func1 = vmap(self.get_Pmm_dmb_1h, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pmm_dmb_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-        self.Pmm_dmb_tot_mat = ((self.Pmm_dmb_1h_mat)**(self.alpha_1h2h_mm) + ((self.bm_dmb_kz_mat)**2 * self.plin_kz_mat)**(self.alpha_1h2h_mm))**(1/self.alpha_1h2h_mm)
+        self.Pmm_dmb_1h_mat = jnp.clip(self.Pmm_dmb_1h_mat, 1e-20, None)
+        # self.Pmm_dmb_2h_mat = 
+        self.Pmm_dmb_tot_mat = ((self.Pmm_dmb_1h_mat)**(self.alpha_1h2h_mm) + (jnp.clip((self.bm_dmb_kz_mat)**2 * self.plin_kz_mat, 0, None))**(self.alpha_1h2h_mm))**(1/self.alpha_1h2h_mm)
 
 
         if (self.smooth_1h2h_mm_model == 'response') or (self.smooth_1h2h_ym_model == 'response'):
@@ -197,6 +207,7 @@ class setup_power_BCMP:
             hfit_params = vmap(halofit_parameters,(None, 0))(self.cosmo_jax, self.scale_fac_a_array).T
             self.phfit_kz_mat = vmap(nonlinear_matter_power,(None, None, 0, None, None, None))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array, self.plin_kz_mat, hfit_params, self.scale_fac_a_array).T
 
+            Mtot_rep = jnp.repeat(self.Mtot_mat[None, :, :], len(BCMP_obj.r_array), axis=0)
             self.rho_nfw_normed_M = BCMP_obj.rho_nfw_mat/Mtot_rep
 
             self.k_mcfit, self.uk_nfw = (xi2P(BCMP_obj.r_array, nx=halo_params_dict['nr'], lowring=True)(self.rho_nfw_normed_M, axis=0, extrap=False))
@@ -217,12 +228,17 @@ class setup_power_BCMP:
             vmap_func1 = vmap(self.get_Pmm_nfw_1h, (0, None))
             vmap_func2 = vmap(vmap_func1, (None, 0))
             self.Pmm_nfw_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-
-            self.Pmm_nfw_tot_mat = self.Pmm_nfw_1h_mat + (self.bm_nfw_kz_mat)**2 * self.plin_kz_mat
+            # self.Pmm_nfw_2h_mat = 
+            self.Pmm_nfw_tot_mat = self.Pmm_nfw_1h_mat + jnp.clip((self.bm_nfw_kz_mat)**2 * self.plin_kz_mat, 1e-20, None)
             self.Pmm_sup_tot_mat = self.phfit_kz_mat / self.Pmm_nfw_tot_mat
 
         # if (self.smooth_1h2h_mm_model == 'response'):
             self.Pmm_tot_kz_mat = self.Pmm_dmb_tot_mat * self.Pmm_sup_tot_mat
+            if self.only_halofit_mm_model:
+                print('WARNING: Using only halofit for matter power spectrum')
+                self.Pmm_tot_kz_mat = self.phfit_kz_mat
+    
+
         else:
             self.Pmm_tot_kz_mat = self.Pmm_dmb_tot_mat
 
@@ -264,9 +280,9 @@ class setup_power_BCMP:
         vmap_func1 = vmap(self.get_Pym_dmb_1h, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pym_dmb_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
-
-        self.Pym_dmb_tot_mat = ((self.Pym_dmb_1h_mat)**(self.alpha_1h2h_ym) + ((self.by_kz_mat) * (self.bm_dmb_kz_mat) * self.plin_kz_mat)**(self.alpha_1h2h_ym))**(1/self.alpha_1h2h_ym)
-
+        self.Pym_dmb_1h_mat = jnp.clip(self.Pym_dmb_1h_mat, 0, None)
+        # self.Pym_dmb_2h_mat = 
+        self.Pym_dmb_tot_mat = ((self.Pym_dmb_1h_mat)**(self.alpha_1h2h_ym) + (jnp.clip((self.by_kz_mat) * (self.bm_dmb_kz_mat) * self.plin_kz_mat, 0, None))**(self.alpha_1h2h_ym))**(1/self.alpha_1h2h_ym)
         if (self.smooth_1h2h_ym_model == 'response'):
             self.Pym_tot_kz_mat = self.Pym_dmb_tot_mat * self.Pmm_sup_tot_mat
         else:
@@ -279,6 +295,9 @@ class setup_power_BCMP:
         # vmap_func1 = vmap(self.get_Pklin_lz, (0, None))
         # vmap_func2 = vmap(vmap_func1, (None, 0))
         # self.Pklin_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+
+        # self.logPkym_2d_interp = interpax.Interpolator2D(jnp.log(self.k), self.z_array, jnp.log(jnp.clip(self.Pym_tot_kz_mat, 1e-20, None)), extrap=True)
+        # self.logPkmm_2d_interp = interpax.Interpolator2D(jnp.log(self.k), self.z_array, jnp.log(jnp.clip(self.Pmm_tot_kz_mat, 1e-20, None)), extrap=True)
 
         vmap_func1 = vmap(self.get_Pkmm_lz, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -640,6 +659,7 @@ class setup_power_BCMP:
         ell = self.ell_array[jl]
         chi_z = self.chi_array[jz]
         k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        # Pkz_ell = jnp.exp(self.logPkmm_2d_interp(jnp.log(k_ell), self.z_array[jz]))        
         Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pmm_tot_kz_mat[:,jz])))
         return Pkz_ell
 
@@ -649,6 +669,7 @@ class setup_power_BCMP:
         chi_z = self.chi_array[jz]
         Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
         k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        # Pkz_ell = jnp.exp(self.logPkym_2d_interp(jnp.log(k_ell), self.z_array[jz]))        
         Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pym_tot_kz_mat[:,jz])))
         return Bl*Pkz_ell
 
