@@ -77,6 +77,7 @@ class get_power_BCMP:
 
         self.nell = len(self.ell_array)
 
+        self.k_array_survey = analysis_dict.get('k_array_survey', setup_power_BCMP_obj.k)
         self.zmin_pk = analysis_dict.get('zmin_pk', 0.01)
         self.zmax_pk = analysis_dict.get('zmax_pk', 1.6)
         self.nz = analysis_dict.get('nz_pk', 128)
@@ -223,7 +224,8 @@ class get_power_BCMP:
                 ti = time.time()
 
         if analysis_dict['do_ge']:
-            self.Pge_tot_array = vmap(self.get_Pge_tot)(jnp.arange(self.nbins_lens))
+            self.Pge_tot_array_orig = vmap(self.get_Pge_tot)(jnp.arange(self.nbins_lens))
+            self.Pge_tot_mat = vmap(self.get_Pge_tot_ks)(jnp.arange(self.nbins_lens))
 
         self.get_cov = analysis_dict.get('get_cov',False)  
         if self.get_cov:
@@ -448,6 +450,15 @@ class get_power_BCMP:
         fx = self.Pge_zarray * Wk_jb
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
         return fx_intz
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pge_tot_ks(self, jb):
+        """
+        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
+        """
+        value = jnp.exp(jnp.interp(jnp.log(self.k_array_survey), jnp.log(self.k_array), jnp.log(self.Pge_tot_array_orig[jb,:] + 1e-40)))
+        return value
+
 
     @partial(jit, static_argnums=(0,))
     def get_ukl_interp(self, jl, jM):

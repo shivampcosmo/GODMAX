@@ -187,7 +187,7 @@ class setup_power_BCMP:
         self.nbarz = jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen + self.Nsat), jnp.log(self.M_array), axis=-1)
 
         self.ukg_cross = (self.Ncen[None,None,:] + self.Nsat[None,None,:] * self.uk_clm)/self.nbarz[None,:,None]
-        self.ukg_auto = jnp.sqrt(2 * self.Ncen[None,None,:] * self.Nsat[None,None,:] * self.uk_clm + (self.Nsat[None,None,:] * self.uk_clm)**2)/self.nbarz[None,:,None]
+        self.ukg_auto = jnp.sqrt(jnp.abs(2 * self.Ncen[None,None,:] * self.Nsat[None,None,:] * self.uk_clm + (self.Nsat[None,None,:] * self.uk_clm)**2))/self.nbarz[None,:,None]
 
         ne_norm_rep = jnp.repeat(BCMP_obj.ne_mat_norm[-1, :, :][None,:,:], len(BCMP_obj.r_array), axis=0)
         self.ne_mat_normed = BCMP_obj.ne_mat/ne_norm_rep
@@ -483,9 +483,11 @@ class setup_power_BCMP:
         if self.hod_type == 'Zheng05':
             Ncen = 0.5 * (1.0 + jnp.tanh((jnp.log10(self.M_array) - self.hod_params['logMmin']) / self.hod_params['sigma_logM']))
             Nsat = jnp.zeros_like(Ncen)
-            indsel = jnp.where(self.M_array > 10**self.hod_params['logM0'])
-            Nsat_gt0 = Ncen[indsel] * ((self.M_array[indsel] - 10**self.hod_params['logM0']) / 10**self.hod_params['logM1'])**self.hod_params['alpha']
-            Nsat = Nsat.at[indsel].set(Nsat_gt0)
+            # indsel = jnp.where(self.M_array > 10**self.hod_params['logM0'])
+            value = Ncen * (jnp.abs(self.M_array - 10**self.hod_params['logM0']) / 10**self.hod_params['logM1'])**self.hod_params['alpha']
+            Nsat = jnp.where(self.M_array > 10**self.hod_params['logM0'], value, 1e-30)            
+            # Nsat_gt0 = Ncen[indsel] * ((self.M_array[indsel] - 10**self.hod_params['logM0']) / 10**self.hod_params['logM1'])**self.hod_params['alpha']
+            # Nsat = Nsat.at[indsel].set(Nsat_gt0)
 
         return Ncen, Nsat
 
@@ -664,17 +666,20 @@ class setup_power_BCMP:
 
     @partial(jit, static_argnums=(0,))
     def get_ukdmb_interp_Pk(self, jz, jM):
-        ukdmb_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_dmb_tointp[:,jz, jM])))
+        ukdmb_val = jnp.clip(self.uk_dmb_tointp[:,jz, jM], 1e-30, 1)
+        ukdmb_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(ukdmb_val)))
         return ukdmb_array_kPk
 
     @partial(jit, static_argnums=(0,))
     def get_ukclm_interp_Pk(self, jz, jM):
-        ukclm_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_clm_tointp[:,jz, jM])))
+        ukclm_val = jnp.clip(self.uk_clm_tointp[:,jz, jM], 1e-30, 1)
+        ukclm_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(ukclm_val)))
         return ukclm_array_kPk
 
     @partial(jit, static_argnums=(0,))
     def get_uknfw_interp_Pk(self, jz, jM):
-        uknfw_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(self.uk_nfw_tointp[:,jz, jM])))
+        uknfw_val = jnp.clip(self.uk_nfw_tointp[:,jz, jM], 1e-30, 1)
+        uknfw_array_kPk = jnp.exp(jnp.interp(jnp.log(self.kPk_array), jnp.log(self.k_mcfit), jnp.log(uknfw_val)))
         return uknfw_array_kPk
 
     @partial(jit, static_argnums=(0,))

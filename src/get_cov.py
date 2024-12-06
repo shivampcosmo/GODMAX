@@ -83,10 +83,10 @@ class get_cov:
             'yk': analysis_dict.get('fsky_ky',0.1),
             'ky': analysis_dict.get('fsky_ky',0.1),
             'kk': analysis_dict.get('fsky_kk',0.1),
-            'gk': analysis_dict.get('fsky_gk',0.1),
+            'gk': analysis_dict.get('fsky_kg',0.1),
             'kg': analysis_dict.get('fsky_kg',0.1),
             'gg': analysis_dict.get('fsky_gg',0.1),
-            'gy': analysis_dict.get('fsky_gy',0.1),
+            'gy': analysis_dict.get('fsky_yg',0.1),
             'yg': analysis_dict.get('fsky_yg',0.1),
             }
 
