@@ -189,9 +189,12 @@ class Battaglia_12_16:
 
         a = self.scale_fac_a_array[jz]
         x = a * self.r_array[jr] / (self.r200c_mat[jM, jz])
+        # rho_fit = rho0_density * ((x / xc_density)**gamma_density) * (
+        #     1 + (x / xc_density)**alpha_density
+        #     )**(-(beta_density - gamma_density) / alpha_density)
         rho_fit = rho0_density * ((x / xc_density)**gamma_density) * (
             1 + (x / xc_density)**alpha_density
-            )**(-(beta_density - gamma_density) / alpha_density)
+            )**(-(beta_density))
         return rho_fit
 
     @partial(jit, static_argnums=(0))
@@ -211,7 +214,7 @@ class Battaglia_12_16:
     def get_rho_gas(self, jr, jz, jM):
         rho_fit = self.get_rho_fit(jr, jz, jM)
         rho_c_z = constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(self.cosmo_jax,self.scale_fac_a_array[jz]) * 1e9 * self.h**2
-        return rho_c_z * rho_fit
+        return self.fb * rho_c_z * rho_fit
 
     @partial(jit, static_argnums=(0))
     def get_Pth(self, jr, jz, jM):

@@ -205,7 +205,7 @@ class get_mock_map:
         zval = prop_jpix[1]
         tau = self.tau_interp(zval)
         fac = jnp.exp(-tau)
-        ksz_jpix = fac * prop_jpix[3] * jnp.exp(self.log_ne2D_interp(prop_jpix[0], prop_jpix[1], prop_jpix[2]))        
+        ksz_jpix = -1 * fac * prop_jpix[3] * jnp.exp(self.log_ne2D_interp(prop_jpix[0], prop_jpix[1], prop_jpix[2]))        
         return ksz_jpix
 
  
