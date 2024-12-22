@@ -194,7 +194,7 @@ class Battaglia_12_16:
         #     )**(-(beta_density - gamma_density) / alpha_density)
         rho_fit = rho0_density * ((x / xc_density)**gamma_density) * (
             1 + (x / xc_density)**alpha_density
-            )**(-(beta_density))
+            )**(-(beta_density + gamma_density) / alpha_density)
         return rho_fit
 
     @partial(jit, static_argnums=(0))
