@@ -4,6 +4,7 @@ import numpy as np
 from jaxopt import Bisection
 from functools import partial
 import constants
+import jax
 import astropy.units as u
 from astropy import constants as const
 import jax.scipy.integrate as jsi
@@ -20,6 +21,9 @@ import time
 from jax_cosmo import Cosmology
 from jax_cosmo.scipy.integrate import romb
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
+from jax_cosmo_power import linear_matter_power, halofit_parameters, nonlinear_matter_power
+from jax_cosmo.background import angular_diameter_distance, radial_comoving_distance
+import jax_cosmo.transfer as tklib
 
 
 class BCM_18_wP:
@@ -47,6 +51,8 @@ class BCM_18_wP:
             w0=cosmo_params['w0'],
             wa=0.
             )
+        self.h = cosmo_params['H0'] / 100.
+        self.Om0 = cosmo_params['Om0']
 
         self.nfw_trunc = sim_params_dict.get('nfw_trunc',True)
         self.conc_dep_model = analysis_dict.get('conc_dep_model',False)
@@ -65,11 +71,11 @@ class BCM_18_wP:
 
         self.neg_bhse_plus_1=sim_params_dict.get('neg_bhse_plus_1',0.833)
         self.mu_beta=sim_params_dict.get('mu_beta',0.21)
-        self.eta_star=sim_params_dict.get('eta_star',0.3)
-        self.eta_cga=sim_params_dict.get('eta_cga',0.6)
-        self.A_starcga=sim_params_dict.get('A_starcga',0.09)
-        log10_M1_starcga=sim_params_dict.get('log10_M1_starcga',11.4)
-        self.M1_starcga=10**log10_M1_starcga
+        # self.eta_star=sim_params_dict.get('eta_star',0.3)
+        # self.eta_cga=sim_params_dict.get('eta_cga',0.6)
+        # self.A_starcga=sim_params_dict.get('A_starcga',0.09)
+        # log10_M1_starcga=sim_params_dict.get('log10_M1_starcga',11.4)
+        # self.M1_starcga=10**log10_M1_starcga
         self.epsilon_rt=sim_params_dict.get('epsilon_rt',4.0)
         log10_Mc0 = sim_params_dict.get('log10_Mc0',14.83)
         self.Mc0 = 10**log10_Mc0
@@ -84,6 +90,26 @@ class BCM_18_wP:
         self.n_nt = sim_params_dict.get('n_nt',0.3)
         self.gamma_rhogas = sim_params_dict.get('gamma_rhogas', 2.)
         self.delta_rhogas = sim_params_dict.get('delta_rhogas', 7.)
+
+
+        self.log10M1_fshmr = sim_params_dict.get('log10M1_fshmr', 12.35)
+        self.log10M1_a_fshmr = sim_params_dict.get('log10M1_a_fshmr', 0.28)        
+        self.log10Mstar0_fshmr = sim_params_dict.get('log10Mstar0_fshmr', 10.72)
+        self.log10Mstar0_a_fshmr = sim_params_dict.get('log10Mstar0_a_fshmr', 0.55)        
+        self.beta_fshmr = sim_params_dict.get('beta_fshmr', 0.44)        
+        self.beta_a_fshmr = sim_params_dict.get('beta_a_fshmr', 0.18)        
+        self.delta_fshmr = sim_params_dict.get('delta_fshmr', 0.57)        
+        self.delta_a_fshmr = sim_params_dict.get('delta_a_fshmr', 0.17)                
+        self.gamma_fshmr = sim_params_dict.get('gamma_fshmr', 1.56)        
+        self.gamma_a_fshmr = sim_params_dict.get('gamma_a_fshmr', 2.51)                
+        self.siglogMstar_Ncen = sim_params_dict.get('siglogMstar_Ncen', 0.25)                
+        self.alphasat_Nsat = sim_params_dict.get('alphasat_Nsat', 1.0)                
+        self.Bcut_Nsat = sim_params_dict.get('Bcut_Nsat', 1.69)                        
+        self.Bsat_Nsat = sim_params_dict.get('Bsat_Nsat', 9.01)                                
+        self.betacut_Nsat = sim_params_dict.get('betacut_Nsat', 0.6)                                
+        self.betasat_Nsat = sim_params_dict.get('betasat_Nsat', 0.74)    
+        self.nbar_gal_comoving_z_array = sim_params_dict.get('nbar_gal_comoving_zarray', jnp.linspace(0.01, 2.0, 64))                            
+        self.nbar_gal_comoving_val_array = sim_params_dict.get('nbar_gal_comoving_val', 5e-4*jnp.ones_like(self.nbar_gal_comoving_z_array))                            
 
         self.num_points_trapz_int = num_points_trapz_int
 
@@ -104,6 +130,8 @@ class BCM_18_wP:
         self.M_array = jnp.logspace(lg10_Mmin, lg10_Mmax, nM)
         self.nM, self.nz = nM, nz
 
+        self.nbar_gal_comoving_array = jnp.interp(self.z_array, self.nbar_gal_comoving_z_array, self.nbar_gal_comoving_val_array)
+
         # if verbose_time:
         #     ti_hmf = time.time()
         # vmap_func1 = vmap(self.get_sigma_Mz, (0, None))
@@ -121,6 +149,43 @@ class BCM_18_wP:
             vmap_func1 = vmap(self.get_conc_Mz_Diemer15, (0, None))    
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.conc_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+
+
+        self.kPk_array = jnp.logspace(jnp.log10(7E-4), jnp.log10(150), 128)
+        self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
+
+        self.chi_array = radial_comoving_distance(self.cosmo_jax, self.scale_fac_a_array)
+        self.DA_array = angular_diameter_distance(self.cosmo_jax, self.scale_fac_a_array)
+        self.growth_array = bkgrd.growth_factor(self.cosmo_jax, self.scale_fac_a_array)
+
+
+        if verbose_time:
+            ti_hmf = time.time()
+        vmap_func1 = vmap(self.get_sigma_Mz, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.sigma_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        self.nu_Mz_mat = constants.DELTA_COLLAPSE / self.sigma_Mz_mat
+
+        grad_lgsigma = grad(self.get_lgsigma_z, argnums=1)
+        vmap_func1 = vmap(grad_lgsigma, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.dlgsig_dlnM_mat = vmap_func2(jnp.arange(self.nz), jnp.log(self.M_array)).T
+
+        # rhom_z_array = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * (1.0 + self.z_array)**3) * 1E9
+        rhom_z_array = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * jnp.ones_like(self.z_array)) * 1E9
+        rhom_z_mat = jnp.repeat(rhom_z_array[None, :], self.nM, axis=0)
+        M_z_mat = jnp.repeat(self.M_array[:, None], self.nz, axis=1)
+        
+        hmf_model = halo_params_dict['hmf_model']
+        if hmf_model == 'T08':
+            vmap_func1 = vmap(self.get_fsigma_Mz_T08, (0, None))
+        elif hmf_model == 'T10':
+            vmap_func1 = vmap(self.get_fsigma_Mz_T10, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.fsigma_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+
+        self.hmf_Mz_mat = -1 * self.fsigma_Mz_mat * (rhom_z_mat/M_z_mat).T * self.dlgsig_dlnM_mat
+
 
         
         vmap_func1 = vmap(self.get_M_to_R, (0, None))
@@ -155,12 +220,25 @@ class BCM_18_wP:
 
         self.r_co_mat = self.theta_co * self.r200c_mat
         self.r_ej_mat = self.theta_ej * self.r200c_mat
-        self.fstar_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_star)
-        self.fgas_array = (cosmo_params['Ob0'] / cosmo_params['Om0']) - self.fstar_array
-        self.fcga_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_cga)
-        self.fclm_array = (1 - cosmo_params['Ob0'] / cosmo_params['Om0']) + self.fstar_array - self.fcga_array
-        self.Rh_mat = 0.015 * self.r200c_mat
-        
+
+        # self.fstar_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_star)
+        # self.fcga_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_cga)
+        # self.fsga_array = self.fstar_array  - self.fcga_array
+
+        # self.fstar_array = 0.018 * jnp.ones_like(self.M_array)
+        # self.fcga_array = 0.09 * jnp.ones_like(self.M_array)
+        # self.fsga_array = self.fstar_array  - self.fcga_array
+
+        self.Mthresh_array = vmap(self.get_Mthresh)(jnp.arange(nz))
+
+        vmap_func1 = vmap(self.get_Ncen, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Ncen_mat = vmap_func2(jnp.arange(nz), jnp.arange(nM)).T
+
+        vmap_func1 = vmap(self.get_Nsat, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Nsat_mat = vmap_func2(jnp.arange(nz), jnp.arange(nM)).T
+
         vmap_func1 = vmap(self.get_rho_nfw_unnorm, (0, None, None))
         vmap_func2 = vmap(vmap_func1, (None, 0, None))
         vmap_func3 = vmap(vmap_func2, (None, None, 0))
@@ -178,6 +256,22 @@ class BCM_18_wP:
         vmap_func1 = vmap(self.get_Mtot, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Mtot_mat = vmap_func2(jnp.arange(nz), jnp.arange(nM)).T
+
+        vmap_func1 = vmap(self.get_fstar_cen, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.fstar_cen_mat = vmap_func2(jnp.arange(nz), jnp.arange(nM)).T
+
+        vmap_func1 = vmap(self.get_fstar_sat, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.fstar_sat_mat = vmap_func2(jnp.arange(nz), jnp.arange(nM)).T
+
+        self.fstar_tot_mat = self.fstar_cen_mat + self.fstar_sat_mat
+
+        self.fgas_mat = (cosmo_params['Ob0'] / cosmo_params['Om0']) - self.fstar_tot_mat
+        self.fclm_mat = (1 - cosmo_params['Ob0'] / cosmo_params['Om0']) + self.fstar_sat_mat
+
+        self.Rh_mat = 0.015 * self.r200c_mat
+
 
         vmap_func1 = vmap(self.get_rho_gas_norm, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -288,6 +382,107 @@ class BCM_18_wP:
         R *= (1 + self.z_array[jz])
         return R
 
+    def get_rho_m(self, z):
+        return (constants.RHO_CRIT_0_KPC3 * self.Om0 * (1.0 + z)**3) * 1E9
+
+    def get_Ez(self, z):
+        zp1 = (1.0 + z)
+        t = (self.Om0) * zp1**3 + (1 - self.Om0)
+        E = jnp.sqrt(t)        
+        return E
+
+    def get_rho_c(self, z):
+        return constants.RHO_CRIT_0_KPC3 * self.get_Ez(z)**2  * 1E9    
+
+    @partial(jit, static_argnums=(0,))        
+    def get_lgsigma_z(self, jz, lgM, kmin=0.0001, kmax=1000.0):
+        M = jnp.exp(lgM)
+        R = (3.0 * M / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
+        def int_sigma(logk):
+            k = jnp.exp(logk)
+            x = k * R
+            w = 3.0 * (jnp.sin(x) - x * jnp.cos(x)) / (x * x * x)
+            pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:, jz])))
+            return k * (k * w) ** 2 * pkz
+
+        y = romb(int_sigma, jnp.log10(kmin), jnp.log10(kmax), divmax=7)
+        return jnp.log(jnp.sqrt(y / (2.0 * jnp.pi**2.0)))
+
+        
+    @partial(jit, static_argnums=(0,))        
+    def get_sigma_Mz(self, jz, jM, kmin=0.0001, kmax=1000.0):
+        R = (3.0 * self.M_array[jM] / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
+
+        def int_sigma(logk):
+            k = jnp.exp(logk)
+            x = k * R
+            w = 3.0 * (jnp.sin(x) - x * jnp.cos(x)) / (x * x * x)
+            pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:, jz])))
+            return k * (k * w) ** 2 * pkz
+
+        y = romb(int_sigma, jnp.log10(kmin), jnp.log10(kmax), divmax=7)
+        return jnp.sqrt(y / (2.0 * jnp.pi**2.0))
+
+
+    @partial(jit, static_argnums=(0,))
+    def get_fsigma_Mz_T08(self, jz, jM, mdef_delta=200):
+        '''Tinker 2008 mass function'''
+        sigma = self.sigma_Mz_mat[jz, jM]
+        z = self.z_array[jz]
+        rho_treshold = mdef_delta * self.get_rho_c(z)
+        Delta_m = round(rho_treshold / self.get_rho_m(z))
+
+        fit_Delta = jnp.array([200, 300, 400, 600, 800, 1200, 1600, 2400, 3200])
+        fit_A0 = jnp.array([0.186, 0.200, 0.212, 0.218, 0.248, 0.255, 0.260, 0.260, 0.260])
+        fit_a0 = jnp.array([1.47, 1.52, 1.56, 1.61, 1.87, 2.13, 2.30, 2.53, 2.66])
+        fit_b0 = jnp.array([2.57, 2.25, 2.05, 1.87, 1.59, 1.51, 1.46, 1.44, 1.41])
+        fit_c0 = jnp.array([1.19, 1.27, 1.34, 1.45, 1.58, 1.80, 1.97, 2.24, 2.44])
+            
+        
+        A0 = jnp.interp(Delta_m, fit_Delta, fit_A0)
+        a0 = jnp.interp(Delta_m, fit_Delta, fit_a0)
+        b0 = jnp.interp(Delta_m, fit_Delta, fit_b0)
+        c0 = jnp.interp(Delta_m, fit_Delta, fit_c0)
+        
+        alpha = 10**(-(0.75 / jnp.log10(Delta_m / 75.0))**1.2)
+        A = A0 * (1.0 + z)**-0.14
+        a = a0 * (1.0 + z)**-0.06
+        b = b0 * (1.0 + z)**-alpha
+        c = c0
+        f = A * ((sigma / b)**-a + 1.0) * jnp.exp(-c / sigma**2)
+        
+        return f
+
+    @partial(jit, static_argnums=(0,))
+    def get_fsigma_Mz_T10(self, jz, jM, mdef_delta=200):
+        '''Tinker 2010 mass function. Thanks to chto for the code'''
+        sigma = self.sigma_Mz_mat[jz, jM]
+        delta_c = constants.DELTA_COLLAPSE
+        nu = delta_c / sigma
+        z = self.z_array[jz]
+        rho_treshold = mdef_delta * self.get_rho_c(z)
+        Delta_m = round(rho_treshold / self.get_rho_m(z))
+        fit_Delta = jnp.array([200, 300, 400, 600, 800, 1200, 1600, 2400, 3200])
+        fit_alpha = jnp.array([0.368, 0.363, 0.385, 0.389, 0.393, 0.365, 0.379, 0.355, 0.327])
+        fit_beta = jnp.array([0.589, 0.585, 0.544, 0.543, 0.564, 0.623, 0.637, 0.673, 0.702])
+        fit_gamma =  jnp.array([0.864, 0.922, 0.987, 1.09, 1.20, 1.34, 1.50, 1.68, 1.81])
+        fit_phi = jnp.array([-0.729, -0.789, -0.910, -1.05, -1.20, -1.26, -1.45, -1.50, -1.49])
+        fit_eta = jnp.array([-0.243, -0.261, -0.261, -0.273, -0.278, -0.301, -0.301, -0.319, -0.336])
+        alpha = jnp.interp(Delta_m, fit_Delta, fit_alpha)
+        beta = jnp.interp(Delta_m, fit_Delta, fit_beta)
+        gamma = jnp.interp(Delta_m, fit_Delta, fit_gamma)
+        phi = jnp.interp(Delta_m, fit_Delta, fit_phi)
+        eta = jnp.interp(Delta_m, fit_Delta, fit_eta)
+
+
+        beta = beta*(1+z)**0.2
+        phi = phi*(1+z)**(-0.08)
+        eta = eta*(1+z)**0.27
+        gamma = gamma*(1+z)**(-0.01)
+        fnu= alpha*(1+(beta*nu)**(-2.0*phi))*nu**(2*eta)*jnp.exp(-gamma*nu**2/2)
+        return nu*fnu        
+    
+
 
     @partial(jit, static_argnums=(0,))
     def get_Mc(self, jM, jz):
@@ -306,7 +501,7 @@ class BCM_18_wP:
 
     @partial(jit, static_argnums=(0,))        
     def get_sigma_Mz(self, jz, jM, kmin=0.0001, kmax=1000.0):
-        R = (3.0 * self.M_array[jM] / 4.0 / np.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
+        R = (3.0 * self.M_array[jM] / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
 
         def int_sigma(logk):
             k = jnp.exp(logk)
@@ -361,8 +556,8 @@ class BCM_18_wP:
         DIEMER15_KAPPA = 1.00
         # R = peaks.lagrangianR(M)
         rho_m = (constants.RHO_CRIT_0_KPC3 * self.Om0) * 1E9
-        R = (3.0 * M / 4.0 / np.pi / rho_m )**(1.0 / 3.0)
-        k_R = 2.0 * np.pi / R * DIEMER15_KAPPA        
+        R = (3.0 * M / 4.0 / jnp.pi / rho_m )**(1.0 / 3.0)
+        k_R = 2.0 * jnp.pi / R * DIEMER15_KAPPA        
 
         interp = InterpolatedUnivariateSpline(jnp.log10(self.kPk_array), jnp.log10(self.plin_kz_mat[:, 0]))
         n = interp.derivative(jnp.log10(k_R), n = 1)
@@ -478,13 +673,152 @@ class BCM_18_wP:
         return Mnfw
 
     @partial(jit, static_argnums=(0,))
+    def get_Mh_Mstar(self, jz, jM, Mstar_array=None): 
+        aval = self.scale_fac_a_array[jz]
+        log10M1 = self.log10M1_fshmr + self.log10M1_a_fshmr * (aval - 1)
+        Mstar0 = 10**(self.log10Mstar0_fshmr + self.log10Mstar0_a_fshmr * (aval - 1))
+        beta = self.beta_fshmr + self.beta_a_fshmr * (aval - 1)
+        delta = self.delta_fshmr + self.delta_a_fshmr * (aval - 1)
+        gamma = self.gamma_fshmr + self.gamma_a_fshmr * (aval - 1)
+
+        if Mstar_array is None:
+            Mstar_array = jnp.logspace(8, 14, 32)
+        log10Mh = log10M1 + beta * jnp.log10(Mstar_array / Mstar0) + ((Mstar_array/Mstar0)**delta)/(1 + (Mstar_array/Mstar0)**(-gamma)) - 0.5
+        return 10**log10Mh
+
+
+    @partial(jit, static_argnums=(0,))
+    def get_Mstar_Mh(self, jz, jM): 
+        Mval = self.M_array[jM]
+        Mval_no_h = Mval/self.h
+        Mstar_array = jnp.logspace(8, 14, 32)
+        log10Mh = jnp.log10(self.get_Mh_Mstar(jz, jM))
+        log10Mstar_Mh = jnp.interp(jnp.log10(Mval_no_h),log10Mh,jnp.log10(Mstar_array))
+        Mstar_Mh = 10**log10Mstar_Mh
+        Mstar_wh = Mstar_Mh * self.h
+        return Mstar_wh
+
+    @partial(jit, static_argnums=(0,))
+    def get_Ncen(self, jz, jM):
+        log10mthresh = jnp.log10(self.Mthresh_array[jz])
+        log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
+        num = log10mthresh - log10Mstar
+        denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+        val = 0.5 * (1 - jax.lax.erf(num / denom))
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_Nsat(self, jz, jM):
+        log10mthresh = jnp.log10(self.Mthresh_array[jz])
+        Mval = self.M_array[jM]
+        Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh)
+        Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
+        Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
+        Ncen = self.get_Ncen(jz, jM)
+        val = Ncen * ((Mval / Msat)**self.alphasat_Nsat) * jnp.exp(-(Mcut / Mval))
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_Mthresh(self, jz):
+
+        nbar_inp = self.nbar_gal_comoving_array[jz]
+
+        def get_Ncen(jz, jM, log10mthresh):
+            log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
+            num = log10mthresh - log10Mstar
+            denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+            val = 0.5 * (1 - jax.lax.erf(num / denom))
+            return val
+
+        def get_Nsat(jz, jM, log10mthresh):
+            Mval = self.M_array[jM]
+            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh)
+            Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
+            Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
+            Ncen = get_Ncen(jz, jM, log10mthresh)
+            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat) * jnp.exp(-(Mcut / Mval))
+            return val
+
+        Mthresh_array = jnp.logspace(9, 13, 32)
+        vmap_func1 = vmap(get_Ncen, (0, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        Ncen_mat = vmap_func3(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
+
+        vmap_func1 = vmap(get_Nsat, (0, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        Nsat_mat = vmap_func3(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
+
+        Ntot_mat = (Ncen_mat + Nsat_mat)[0,...]
+        dndlogM = self.hmf_Mz_mat[jz,:][:, None]
+        nbar = jsi.trapezoid(dndlogM * Ntot_mat, x=jnp.log(self.M_array), axis=0)
+
+        func = nbar_inp - nbar
+        log10Mthresh = jnp.interp(0, func, jnp.log10(Mthresh_array))
+        return 10**log10Mthresh
+
+    @partial(jit, static_argnums=(0,))
+    def get_fstar_cen(self, jz, jM):
+        def get_Ncen(jz, jM, log10mthresh):
+            log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
+            num = log10mthresh - log10Mstar
+            denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+            val = 0.5 * (1 - jax.lax.erf(num / denom))
+            return val
+
+        log10mthresh = jnp.log10(self.Mthresh_array[jz])
+        Mthresh_array = jnp.logspace(log10mthresh, 14, 32)
+        vmap_func1 = vmap(get_Ncen, (0, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        Ncen_mat = vmap_func3(jnp.array([jz]), jnp.array([jM]), jnp.log10(Mthresh_array)).T
+
+        val1 = (Ncen_mat[0,0,-1]*Mthresh_array[-1] - Ncen_mat[0,0,0]*Mthresh_array[0])
+        val2 = jsi.trapezoid(Ncen_mat[0,0,:]*Mthresh_array, x=jnp.log10(Mthresh_array))
+        Mstar_cen = val2 - val1
+        Mtot = self.Mtot_mat[jz, jM]
+        return Mstar_cen / Mtot
+
+    @partial(jit, static_argnums=(0,))
+    def get_fstar_sat(self, jz, jM):
+        def get_Ncen(jz, jM, log10mthresh):
+            log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
+            num = log10mthresh - log10Mstar
+            denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+            val = 0.5 * (1 - jax.lax.erf(num / denom))
+            return val
+
+        def get_Nsat(jz, jM, log10mthresh):
+            Mval = self.M_array[jM]
+            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh)
+            Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
+            Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
+            Ncen = get_Ncen(jz, jM, log10mthresh)
+            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat) * jnp.exp(-(Mcut / Mval))
+            return val
+
+        log10mthresh = jnp.log10(self.Mthresh_array[jz])
+        Mthresh_array = jnp.logspace(log10mthresh, 14, 32)
+        vmap_func1 = vmap(get_Nsat, (0, None, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0, None))
+        vmap_func3 = vmap(vmap_func2, (None, None, 0))
+        Nsat_mat = vmap_func3(jnp.array([jz]), jnp.array([jM]), jnp.log10(Mthresh_array)).T
+
+        val1 = (Nsat_mat[0,0,-1]*Mthresh_array[-1] - Nsat_mat[0,0,0]*Mthresh_array[0])
+        val2 = jsi.trapezoid(Nsat_mat[0,0,:]*Mthresh_array, x=jnp.log10(Mthresh_array))
+        Mstar_sat = val2 - val1
+        Mtot = self.Mtot_mat[jz, jM]
+        return Mstar_sat / Mtot
+
+    @partial(jit, static_argnums=(0,))
     def get_rho_cga(self, jr, jz, jM, r_array_here=None):
         ''' This is central galaxy profile (Eq.2.10)'''
         if r_array_here is None:
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        rho_cga = (self.fcga_array[jM] * self.Mtot_mat[jz, jM]) / (4 * (jnp.pi**1.5) * self.Rh_mat[jM, jz] * r**2) * jnp.exp(-(0.5 * r / self.Rh_mat[jM, jz])**2)
+        rho_cga = (self.fstar_cen_mat[jz, jM] * self.Mtot_mat[jz, jM]) / (4 * (jnp.pi**1.5) * self.Rh_mat[jM, jz] * r**2) * jnp.exp(-(0.5 * r / self.Rh_mat[jM, jz])**2)
         return rho_cga
 
     @partial(jit, static_argnums=(0,))
@@ -535,7 +869,7 @@ class BCM_18_wP:
         logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
         # logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(self.r_array[-1]), self.num_points_trapz_int)        
         int_unnorm_prof = self.logspace_trapezoidal_integral(self.get_rho_gas_unnorm, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
-        rho_gas_norm = self.fgas_array[jM] * self.Mtot_mat[jz, jM] / int_unnorm_prof
+        rho_gas_norm = self.fgas_mat[jz, jM] * self.Mtot_mat[jz, jM] / int_unnorm_prof
         return rho_gas_norm
 
 
@@ -583,7 +917,7 @@ class BCM_18_wP:
 
         def zeta_equation(zeta):
             rf = zeta * ri
-            Mf = self.fclm_array[jM] * Mi + self.get_Mcga(0, jz, jM, r_array_here=jnp.array([rf])) + self.get_Mgas(0, jz, jM, r_array_here=jnp.array([rf]))
+            Mf = self.fclm_mat[jz, jM] * Mi + self.get_Mcga(0, jz, jM, r_array_here=jnp.array([rf])) + self.get_Mgas(0, jz, jM, r_array_here=jnp.array([rf]))
             return ((rf / ri - 1) - self.a_zeta * ((Mi / Mf)**self.n_zeta - 1))
         zeta_array = jnp.linspace(0.5, 1.5, 32)
         value_out = vmap(zeta_equation)(zeta_array)
@@ -602,7 +936,7 @@ class BCM_18_wP:
             r_array_new = r_array_here/zeta
         
         rho_nfw = self.get_rho_nfw_normed(jr, jz, jM, r_array_new)
-        rho_clm = (self.fclm_array[jM] / (zeta**3)) * rho_nfw
+        rho_clm = (self.fclm_mat[jz, jM] / (zeta**3)) * rho_nfw
         return rho_clm
 
 
@@ -616,7 +950,7 @@ class BCM_18_wP:
         else:
             r_array_new = r_array_here/zeta
 
-        M_clm = self.fclm_array[jM] * self.get_Mnfw(jr, jz, jM, r_array_new)
+        M_clm = self.fclm_mat[jz, jM] * self.get_Mnfw(jr, jz, jM, r_array_new)
         return M_clm
 
 

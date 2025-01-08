@@ -3,7 +3,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --job-name=NUTS2_UP_run_deproj_cib_1p7_dBeta_probe_gty
 #SBATCH -p gpu
-#SBATCH -C a100-80gb,ib
+#SBATCH -C a100-80gb
 #SBATCH --gpus=4
 #SBATCH --output=/mnt/home/spandey/ceph/GODMAX/run_scripts/FI/logs/%x.%j.out
 #SBATCH --error=/mnt/home/spandey/ceph/GODMAX/run_scripts/FI/logs/%x.%j.err

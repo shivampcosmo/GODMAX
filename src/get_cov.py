@@ -574,11 +574,11 @@ class get_cov:
             self.dndlnM_z.reshape(1, 1, self.nz, self.nM), (nl, nl, 1, 1)
             )
         toint_M = (uAl1_uBl1_mat * uCl2_uDl2_mat) * dndlnm_array_mat
-        val_z = sp.integrate.simpson(toint_M, np.log(self.M_array))
+        val_z = sp.integrate.simpson(toint_M, x=np.log(self.M_array))
         chi2_array_mat = np.tile((self.chi_array**2).reshape(1, 1, self.nz), (nl, nl, 1))
         dchi_dz_array_mat = np.tile(self.dchi_dz_array.reshape(1, 1, self.nz), (nl, nl, 1))
         toint_z = val_z * chi2_array_mat * dchi_dz_array_mat
-        val = sp.integrate.simpson(toint_z, self.z_array)
+        val = sp.integrate.simpson(toint_z, x=self.z_array)
 
         return val    
     

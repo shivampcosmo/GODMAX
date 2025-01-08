@@ -5,6 +5,7 @@ from jax import grad, jit, vmap
 import numpy as np
 from jax import vmap, grad
 import math
+import jax
 from jax_cosmo import Cosmology
 from functools import partial
 # from jax_cosmo.power import linear_matter_power
@@ -112,44 +113,54 @@ class setup_power_BCMP:
 
         if verbose_time:
             ti_pk = time.time()
-        self.kPk_array = jnp.logspace(jnp.log10(7E-4), jnp.log10(150), 128)
-        self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
-        
+        # self.kPk_array = jnp.logspace(jnp.log10(7E-4), jnp.log10(150), 128)
+        # self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
+        self.kPk_array = BCMP_obj.kPk_array
+        self.plin_kz_mat = BCMP_obj.plin_kz_mat
+        self.chi_array = BCMP_obj.chi_array
+        self.DA_array = BCMP_obj.DA_array
+        self.growth_array = BCMP_obj.growth_array
+
         if verbose_time:
             tf_pk = time.time()
             print('Time taken to setup Pk: ', tf_pk - ti_pk)
 
-        self.chi_array = radial_comoving_distance(self.cosmo_jax, self.scale_fac_a_array)
-        self.DA_array = angular_diameter_distance(self.cosmo_jax, self.scale_fac_a_array)
-        self.growth_array = bkgrd.growth_factor(self.cosmo_jax, self.scale_fac_a_array)
+        # self.chi_array = radial_comoving_distance(self.cosmo_jax, self.scale_fac_a_array)
+        # self.DA_array = angular_diameter_distance(self.cosmo_jax, self.scale_fac_a_array)
+        # self.growth_array = bkgrd.growth_factor(self.cosmo_jax, self.scale_fac_a_array)
 
 
-        if verbose_time:
-            ti_hmf = time.time()
-        vmap_func1 = vmap(self.get_sigma_Mz, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.sigma_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
-        self.nu_Mz_mat = constants.DELTA_COLLAPSE / self.sigma_Mz_mat
+        # if verbose_time:
+        #     ti_hmf = time.time()
+        # vmap_func1 = vmap(self.get_sigma_Mz, (0, None))
+        # vmap_func2 = vmap(vmap_func1, (None, 0))
+        # self.sigma_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        # self.nu_Mz_mat = constants.DELTA_COLLAPSE / self.sigma_Mz_mat
 
-        grad_lgsigma = grad(self.get_lgsigma_z, argnums=1)
-        vmap_func1 = vmap(grad_lgsigma, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.dlgsig_dlnM_mat = vmap_func2(jnp.arange(self.nz), jnp.log(self.M_array)).T
+        # grad_lgsigma = grad(self.get_lgsigma_z, argnums=1)
+        # vmap_func1 = vmap(grad_lgsigma, (0, None))
+        # vmap_func2 = vmap(vmap_func1, (None, 0))
+        # self.dlgsig_dlnM_mat = vmap_func2(jnp.arange(self.nz), jnp.log(self.M_array)).T
 
-        # rhom_z_array = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * (1.0 + self.z_array)**3) * 1E9
-        rhom_z_array = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * jnp.ones_like(self.z_array)) * 1E9
-        rhom_z_mat = jnp.repeat(rhom_z_array[None, :], self.nM, axis=0)
-        M_z_mat = jnp.repeat(self.M_array[:, None], self.nz, axis=1)
+        # # rhom_z_array = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * (1.0 + self.z_array)**3) * 1E9
+        # rhom_z_array = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * jnp.ones_like(self.z_array)) * 1E9
+        # rhom_z_mat = jnp.repeat(rhom_z_array[None, :], self.nM, axis=0)
+        # M_z_mat = jnp.repeat(self.M_array[:, None], self.nz, axis=1)
         
-        hmf_model = halo_params_dict['hmf_model']
-        if hmf_model == 'T08':
-            vmap_func1 = vmap(self.get_fsigma_Mz_T08, (0, None))
-        elif hmf_model == 'T10':
-            vmap_func1 = vmap(self.get_fsigma_Mz_T10, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.fsigma_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        # hmf_model = halo_params_dict['hmf_model']
+        # if hmf_model == 'T08':
+        #     vmap_func1 = vmap(self.get_fsigma_Mz_T08, (0, None))
+        # elif hmf_model == 'T10':
+        #     vmap_func1 = vmap(self.get_fsigma_Mz_T10, (0, None))
+        # vmap_func2 = vmap(vmap_func1, (None, 0))
+        # self.fsigma_Mz_mat = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
-        self.hmf_Mz_mat = -1 * self.fsigma_Mz_mat * (rhom_z_mat/M_z_mat).T * self.dlgsig_dlnM_mat
+        # self.hmf_Mz_mat = -1 * self.fsigma_Mz_mat * (rhom_z_mat/M_z_mat).T * self.dlgsig_dlnM_mat
+        
+        self.sigma_Mz_mat = BCMP_obj.sigma_Mz_mat
+        self.nu_Mz_mat = BCMP_obj.nu_Mz_mat
+        self.fsigma_Mz_mat = BCMP_obj.fsigma_Mz_mat
+        self.hmf_Mz_mat = BCMP_obj.hmf_Mz_mat
 
         vmap_func1 = vmap(self.get_bias_Mz, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -183,11 +194,15 @@ class setup_power_BCMP:
         vmap_func1 = vmap(self.get_ukclm_interp_Pk, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.uk_clm = vmap_func2(jnp.arange(self.nz), jnp.arange(self.nM)).T
-        self.Ncen, self.Nsat = self.get_Ncen_Nsat()
+        # self.Ncen, self.Nsat = self.get_Ncen_Nsat()
+        self.Ncen = BCMP_obj.Ncen_mat
+        self.Nsat = BCMP_obj.Nsat_mat
         self.nbarz = jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen + self.Nsat), jnp.log(self.M_array), axis=-1)
 
-        self.ukg_cross = (self.Ncen[None,None,:] + self.Nsat[None,None,:] * self.uk_clm)/self.nbarz[None,:,None]
-        self.ukg_auto = jnp.sqrt(jnp.abs(2 * self.Ncen[None,None,:] * self.Nsat[None,None,:] * self.uk_clm + (self.Nsat[None,None,:] * self.uk_clm)**2))/self.nbarz[None,:,None]
+        self.ukg_cross = (self.Ncen[None,:,:] + self.Nsat[None,:,:] * self.uk_clm)/self.nbarz[None,:,None]
+        ukg_auto_arg = jnp.clip(jnp.nan_to_num(2 * self.Ncen[None,:,:] * self.Nsat[None,:,:] * self.uk_clm + (self.Nsat[None,:,:] * self.uk_clm)**2), 1e-10, 2e4)
+        # self.ukg_auto = jnp.sqrt(jnp.abs(2 * self.Ncen[None,:,:] * self.Nsat[None,:,:] * self.uk_clm + (self.Nsat[None,:,:] * self.uk_clm)**2))/self.nbarz[None,:,None]
+        self.ukg_auto_sqr = (ukg_auto_arg)/(self.nbarz[None,:,None] ** 2)
 
         ne_norm_rep = jnp.repeat(BCMP_obj.ne_mat_norm[-1, :, :][None,:,:], len(BCMP_obj.r_array), axis=0)
         self.ne_mat_normed = BCMP_obj.ne_mat/ne_norm_rep
@@ -336,6 +351,16 @@ class setup_power_BCMP:
         if (self.smooth_1h2h_gm_model == 'response'):
             self.Pgm_tot_kz_mat = self.Pgm_tot_kz_mat * self.Pmm_sup_tot_mat
 
+        
+        if self.calc_nfw_only:
+            vmap_func1 = vmap(self.get_Pgm_nfw_1h, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pgm_nfw_1h_mat = vmap_func2(jnp.arange(len(self.kPk_array)), jnp.arange(self.nz)).T
+            self.Pgm_nfw_2h_mat = self.bg_kz_mat * (self.bm_nfw_kz_mat) * self.plin_kz_mat
+            self.Pgm_nfw_tot_kz_mat = self.Pgm_nfw_1h_mat + self.Pgm_nfw_2h_mat
+            if (self.smooth_1h2h_gm_model == 'response'):
+                self.Pgm_nfw_tot_kz_mat = self.Pgm_nfw_tot_kz_mat * self.Pmm_sup_tot_mat
+
 
         vmap_func1 = vmap(self.get_Pgy_1h, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -363,13 +388,23 @@ class setup_power_BCMP:
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pkmm_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
 
+        vmap_func1 = vmap(self.get_Pkgm_lz, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Pkgm_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+
+        if self.calc_nfw_only:
+            vmap_func1 = vmap(self.get_Pkmm_halofit_lz, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pkmm_nfw_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
+
+            vmap_func1 = vmap(self.get_Pkgm_nfw_lz, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pkgm_nfw_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T            
+
         vmap_func1 = vmap(self.get_Pkym_lz, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pkym_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
 
-        vmap_func1 = vmap(self.get_Pkgm_lz, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Pkgm_lz_mat = vmap_func2(jnp.arange(nell), jnp.arange(self.nz)).T
 
         vmap_func1 = vmap(self.get_Pkgy_lz, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -799,6 +834,16 @@ class setup_power_BCMP:
         return Pgm_1h
 
     @partial(jit, static_argnums=(0,))
+    def get_Pgm_nfw_1h(self, jk, jz):
+        ukg = self.ukg_cross[jk,jz,:]
+        ukm = (self.Mtot_mat[jz, :] *  self.uk_nfw[jk,jz,:])
+        dndlnM_z = self.hmf_Mz_mat[jz, :]   
+        rhom_z = self.get_rho_m(0.0) #want comoving density  
+        fx = ukg * ukm * dndlnM_z * (1/rhom_z)
+        Pgm_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return Pgm_1h    
+
+    @partial(jit, static_argnums=(0,))
     def get_Pgy_1h(self, jk, jz):
         ukg = self.ukg_cross[jk,jz,:]
         uym = self.uk_y[jk,jz,:]
@@ -818,9 +863,11 @@ class setup_power_BCMP:
 
     @partial(jit, static_argnums=(0,))
     def get_Pgg_1h(self, jk, jz):
-        ukg = self.ukg_auto[jk,jz,:]
+        # ukg = self.ukg_auto[jk,jz,:]
+        ukg_sqr = self.ukg_auto_sqr[jk,jz,:]
         dndlnM_z = self.hmf_Mz_mat[jz, :]   
-        fx = ukg * ukg * dndlnM_z
+        # fx = ukg * ukg * dndlnM_z
+        fx = ukg_sqr * dndlnM_z
         Pgg_1h = jsi.trapezoid(fx, x=jnp.log(self.M_array))
         return Pgg_1h
 
@@ -832,6 +879,14 @@ class setup_power_BCMP:
         k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
         Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pmm_tot_kz_mat[:,jz])))
         return Pkz_ell
+    
+    @partial(jit, static_argnums=(0,))
+    def get_Pkmm_halofit_lz(self, jl, jz):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.phfit_kz_mat[:,jz])))
+        return Pkz_ell    
 
     @partial(jit, static_argnums=(0,))
     def get_Pkgm_lz(self, jl, jz):
@@ -840,6 +895,15 @@ class setup_power_BCMP:
         k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
         Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pgm_tot_kz_mat[:,jz])))
         return Pkz_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pkgm_nfw_lz(self, jl, jz):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pgm_nfw_tot_kz_mat[:,jz])))
+        return Pkz_ell
+
 
     @partial(jit, static_argnums=(0,))
     def get_Pkgg_lz(self, jl, jz):

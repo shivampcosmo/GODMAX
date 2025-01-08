@@ -70,10 +70,15 @@ class get_power_BCMP:
         self.ell_array = setup_power_BCMP_obj.ell_array
 
         self.logPkmmlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkmm_lz_mat), extrap=True)        
+        self.logPkgmlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkgm_lz_mat), extrap=True)        
         self.logPkymlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkym_lz_mat), extrap=True)                
         self.logPkgglz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkgg_lz_mat), extrap=True)        
-        self.logPkgmlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkgm_lz_mat), extrap=True)        
-        self.logPkgylz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkgy_lz_mat), extrap=True)                
+        self.logPkgylz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkgy_lz_mat), extrap=True)         
+
+        if self.calc_nfw_only:
+            self.logPkmm_nfw_lz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkmm_nfw_lz_mat), extrap=True)        
+            self.logPkgm_nfw_lz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), z_array_orig, jnp.log(setup_power_BCMP_obj.Pkgm_nfw_lz_mat), extrap=True)        
+
 
         self.nell = len(self.ell_array)
 
@@ -97,6 +102,20 @@ class get_power_BCMP:
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pkmm_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
 
+        vmap_func1 = vmap(self.get_Pgm_interp, (0, None))
+        vmap_func2 = vmap(vmap_func1, (None, 0))
+        self.Pkgm_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
+
+        if self.calc_nfw_only:
+            vmap_func1 = vmap(self.get_Pmm_nfw_interp, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pkmm_nfw_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
+
+            vmap_func1 = vmap(self.get_Pgm_nfw_interp, (0, None))
+            vmap_func2 = vmap(vmap_func1, (None, 0))
+            self.Pkgm_nfw_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
+
+
         vmap_func1 = vmap(self.get_Pym_interp, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pkym_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
@@ -105,9 +124,6 @@ class get_power_BCMP:
         vmap_func2 = vmap(vmap_func1, (None, 0))
         self.Pkgg_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
 
-        vmap_func1 = vmap(self.get_Pgm_interp, (0, None))
-        vmap_func2 = vmap(vmap_func1, (None, 0))
-        self.Pkgm_lz_mat = vmap_func2(jnp.arange(self.nell), jnp.arange(self.nz)).T
 
         vmap_func1 = vmap(self.get_Pgy_interp, (0, None))
         vmap_func2 = vmap(vmap_func1, (None, 0))
@@ -193,6 +209,14 @@ class get_power_BCMP:
             vmap_func2 = vmap(vmap_func1, (None, 0, None))
             vmap_func3 = vmap(vmap_func2, (None, None, 0))
             self.Cl_kappa_kappa_tot_mat = vmap_func3(jnp.arange(self.nbins), jnp.arange(self.nbins), jnp.arange(self.nell)).T
+
+            if self.calc_nfw_only:
+                vmap_func1 = vmap(self.get_Cl_kappa_kappa_nfw_tot, (0, None, None))
+                vmap_func2 = vmap(vmap_func1, (None, 0, None))
+                vmap_func3 = vmap(vmap_func2, (None, None, 0))
+                self.Cl_kappa_kappa_nfw_tot_mat = vmap_func3(jnp.arange(self.nbins), jnp.arange(self.nbins), jnp.arange(self.nell)).T
+
+
             if verbose_time:
                 print('Time for computing Cl_kappa_kappa_mat: ', time.time() - ti)
                 ti = time.time()                
@@ -211,6 +235,14 @@ class get_power_BCMP:
             vmap_func2 = vmap(vmap_func1, (None, 0, None))
             vmap_func3 = vmap(vmap_func2, (None, None, 0))
             self.Cl_gal_kappa_tot_mat = vmap_func3(jnp.arange(self.nbins_lens), jnp.arange(self.nbins), jnp.arange(self.nell)).T
+
+            if self.calc_nfw_only:
+                vmap_func1 = vmap(self.get_Cl_gal_kappa_nfw_tot, (0, None, None))
+                vmap_func2 = vmap(vmap_func1, (None, 0, None))
+                vmap_func3 = vmap(vmap_func2, (None, None, 0))
+                self.Cl_gal_kappa_nfw_tot_mat = vmap_func3(jnp.arange(self.nbins_lens), jnp.arange(self.nbins), jnp.arange(self.nell)).T
+
+
             if verbose_time:
                 print('Time for computing Cl_gk_mat: ', time.time() - ti)
                 ti = time.time()  
@@ -333,6 +365,22 @@ class get_power_BCMP:
         return value  
 
     @partial(jit, static_argnums=(0,))
+    def get_Pgm_interp(self, jl, jz):
+        value = jnp.exp(self.logPkgmlz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
+        return value  
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pmm_nfw_interp(self, jl, jz):
+        value = jnp.exp(self.logPkmm_nfw_lz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
+        return value  
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pgm_nfw_interp(self, jl, jz):
+        value = jnp.exp(self.logPkgm_nfw_lz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
+        return value  
+
+
+    @partial(jit, static_argnums=(0,))
     def get_Pym_interp(self, jl, jz):
         value = jnp.exp(self.logPkymlz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
         return value  
@@ -342,10 +390,6 @@ class get_power_BCMP:
         value = jnp.exp(self.logPkgglz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
         return value  
 
-    @partial(jit, static_argnums=(0,))
-    def get_Pgm_interp(self, jl, jz):
-        value = jnp.exp(self.logPkgmlz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
-        return value  
 
     @partial(jit, static_argnums=(0,))
     def get_Pgy_interp(self, jl, jz):
@@ -414,6 +458,21 @@ class get_power_BCMP:
         return (1. + self.mult_shear_bias_array[jb2]) * fx_intz
 
     @partial(jit, static_argnums=(0,))
+    def get_Cl_gal_kappa_nfw_tot(self, jb1, jb2, jl):
+        """
+        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
+        """
+        Wk_jb1 = self.Wg_mat[jb1]
+        prefac_for_uk1 = Wk_jb1/(self.dchi_dz_array * self.chi_array**2)
+        Wk_jb2 = self.Wk_mat[jb2]
+        prefac_for_uk2 = Wk_jb2/(self.chi_array**2)
+        
+        fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pkgm_nfw_lz_mat[jl]
+        fx_intz = jsi.trapezoid(fx, x=self.z_array)
+        return (1. + self.mult_shear_bias_array[jb2]) * fx_intz
+
+
+    @partial(jit, static_argnums=(0,))
     def get_Cl_gal_gal_tot(self, jb1, jb2, jl):
         """
         Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
@@ -440,6 +499,21 @@ class get_power_BCMP:
         fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pkmm_lz_mat[jl]
         fx_intz = jsi.trapezoid(fx, x=self.z_array)
         return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
+
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_kappa_kappa_nfw_tot(self, jb1, jb2, jl):
+        """
+        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
+        """
+        Wk_jb1 = self.Wk_mat[jb1]
+        prefac_for_uk1 = Wk_jb1/(self.chi_array**2)
+        Wk_jb2 = self.Wk_mat[jb2]
+        prefac_for_uk2 = Wk_jb2/(self.chi_array**2)
+        
+        fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array ** 2) * self.dchi_dz_array * self.Pkmm_nfw_lz_mat[jl]
+        fx_intz = jsi.trapezoid(fx, x=self.z_array)
+        return (1. + self.mult_shear_bias_array[jb1]) * (1. + self.mult_shear_bias_array[jb2]) * fx_intz
+
 
     @partial(jit, static_argnums=(0,))
     def get_Pge_tot(self, jb):
