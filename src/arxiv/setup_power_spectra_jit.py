@@ -16,7 +16,7 @@ import jax.scipy.integrate as jsi
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
-import constants
+import helpers.constants as constants
 # from mcfit import xi2P
 # sys.path.append('/mnt/home/spandey/ceph/GODMAX/src/mcfit_jax')
 # from cosmology_jax import xi2P

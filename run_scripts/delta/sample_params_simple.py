@@ -412,7 +412,7 @@ Delta_shear_vary_names = ['Delta_z_bias_bin1', 'Delta_z_bias_bin2', 'Delta_z_bia
 # prior_mult_shear_mu_all = []
 # prior_mult_shear_sig_all = []
 
-from get_corr_func import get_corrfunc_BCMP
+from get_Xis import get_corrfunc_BCMP
 import numpyro
 import copy
 

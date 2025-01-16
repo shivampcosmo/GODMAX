@@ -314,7 +314,7 @@ bin_comb_all_wprobe = df['bin_comb_all_wprobe']
 
 import copy
 from tqdm import tqdm
-from get_power_spectra import get_power_BCMP
+from arxiv.get_power_spectra import get_power_BCMP
 get_power_BCMP_test = get_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, verbose_time=False)
 
 nell = len(ell_array)
@@ -345,7 +345,7 @@ Cl_all_fid = copy.deepcopy(Cl_all)
 
 import copy
 from tqdm import tqdm
-from get_power_spectra import get_power_BCMP
+from arxiv.get_power_spectra import get_power_BCMP
 analysis_dict_vary = copy.deepcopy(analysis_dict)
 analysis_dict_vary['calc_nfw_only'] = True
 get_power_BCMP_test = get_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict_vary, other_params_dict, verbose_time=False)

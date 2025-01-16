@@ -3,7 +3,7 @@ from jax import grad, jit, vmap
 import numpy as np
 from jaxopt import Bisection
 from functools import partial
-import constants
+import helpers.constants as constants
 import astropy.units as u
 from astropy import constants as const
 import jax.scipy.integrate as jsi
@@ -14,7 +14,7 @@ mp = (1.6726219e-27*u.kg).to(u.Msun).value
 mue = 1.14
 Mpc_to_cm = 3.086e24
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
-import constants
+import helpers.constants as constants
 import jax_cosmo.background as bkgrd
 import time
 from jax_cosmo import Cosmology

@@ -15,7 +15,7 @@ import astropy.units as u
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
-import constants
+import helpers.constants as constants
 
 mp = (1.6726219e-27*u.kg).to(u.Msun).value
 mue = 1.14

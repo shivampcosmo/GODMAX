@@ -1,6 +1,6 @@
 import os
-from get_power_spectra import get_power_BCMP
-from setup_power_spectra import setup_power_BCMP
+from base_class import get_vmapped_func, get_vmapped_func_warg
+from get_Cls import get_Cl
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 import numpy as np
@@ -11,42 +11,58 @@ import astropy.units as u
 from astropy import constants as const
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.eV / u.cm**3)).value
-# from transforms import Hankel
-# from mcfit import Hankel
 from mcfitjax.transforms import Hankel
 import time
-from twobessel import *
+from helpers.twobessel import *
 import interpax
 import scipy as sp
 import math
 
-class get_cov:
-    def __init__(self,
-                sim_params_dict,
-                halo_params_dict,
-                analysis_dict,
-                other_params_dict=None,
-                num_points_trapz_int=64,
-                setup_power_BCMP_obj=None,
-                get_power_BCMP_obj=None,
-                verbose_time=False
+class get_cov(get_Cl):
+    def __init__(
+                self,
+                sim_params_dict: dict,
+                halo_params_dict: dict,
+                analysis_dict: dict,     
+                other_params_dict: dict,
+                Cl_obj=None
                 ):
 
-        self.verbose = verbose_time
-        if verbose_time:
-            t0 = time.time()
+        if Cl_obj is None:
+            super().__init__(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
+        else:
+            self.__dict__.update(Cl_obj.__dict__)
 
-        self.cosmo_params = sim_params_dict['cosmo']
+        self.uyl_mat_tointp = get_vmapped_func(self.get_uyl, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
+        self.ukappal_dmb_prefac_mat_tointp = get_vmapped_func(self.get_ukappal_dmb_prefac, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
+        self.ugl_mat_tointp = get_vmapped_func(self.get_ugl_cross, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
-        if verbose_time:
-            ti = time.time()
-        if setup_power_BCMP_obj is None:
-            setup_power_BCMP_obj = setup_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, verbose_time=verbose_time)            
-        if get_power_BCMP_obj is None:
-            get_power_BCMP_obj = get_power_BCMP(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, num_points_trapz_int=num_points_trapz_int, setup_power_BCMP_obj=setup_power_BCMP_obj, verbose_time=verbose_time)
-        if verbose_time:
-            print('Time for setup_power_BCMP: ', time.time() - ti)
-            ti = time.time()
+        vmapped_func = get_vmapped_func_warg(self.get_b_2h, 2, 3)
+        by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
+        self.Pyy_2h_kz_mat = by_kz_mat * (by_kz_mat) * self.plin_kz_mat
+        vmapped_func = get_vmapped_func_warg(self.get_P_1h, 2, 4)
+        self.Pyy_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3, 3).T
+        self.Pyy_tot_kz_mat = self.Pyy_1h_kz_mat + self.Pyy_2h_kz_mat
+        self.Pkyy_lz_mat_tointp = get_vmapped_func(self.get_Pkyy_lz, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
+
+        self.ukappal_dmb_prefac_mat = get_vmapped_func(self.get_ukl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
+        self.ukappal_dmb_prefac_mat = jnp.moveaxis(self.ukappal_dmb_prefac_mat, 0, 1)
+        self.ukappa_l_for_cov = vmap(self.get_ukappa_l_forcov)(jnp.arange(self.nbins))
+
+        self.uyl_mat = get_vmapped_func(self.get_uyl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
+        self.uyl_mat = jnp.moveaxis(self.uyl_mat, 0, 1)
+        self.uy_l_for_cov = self.get_uy_l_forcov()
+
+        self.ugl_mat = get_vmapped_func(self.get_ugl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
+        self.ugl_mat = jnp.moveaxis(self.ugl_mat, 0, 1)
+        self.ug_l_for_cov = vmap(self.get_ug_l_forcov)(jnp.arange(self.nbins))
+
+        self.hmf_Mz_mat_for_cov = vmap(self.get_hmf_interp)(jnp.arange(self.nM)).T
+
+        self.logPkyylz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkyy_lz_mat_tointp), extrap=True)                
+        self.Pkyy_lz_mat = get_vmapped_func(self.get_Pyy_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nz_for_Cls)).T
+
+        self.Cl_y_y_tot_mat = vmap(self.get_Cl_y_y_tot)(jnp.arange(self.nell))
 
         analysis_coords = analysis_dict['analysis_coords']
         beam_fwhm_arcmin = analysis_dict['beam_fwhm_arcmin']
@@ -59,24 +75,8 @@ class get_cov:
             self.add_beam_to_theory = True
         else:
             self.add_beam_to_theory = False
-        ell_array_calc = setup_power_BCMP_obj.ell_array
-
-        # if np.allclose(l_array_survey, ell_array_calc):
-        #     do_interpolation = False
-        # else:
-        #     do_interpolation = True
-        
-        # if verbose_time:
-            # print('do_interpolation: ', do_interpolation)
 
         dl_array_survey = analysis_dict['dl_array_survey']        
-        self.nell, self.nM, self.nz = get_power_BCMP_obj.nell, get_power_BCMP_obj.nM, get_power_BCMP_obj.nz
-
-        self.dndlnM_z = get_power_BCMP_obj.hmf_Mz_mat
-        self.chi_array = get_power_BCMP_obj.chi_array
-        self.M_array = get_power_BCMP_obj.M_array
-        self.z_array = get_power_BCMP_obj.z_array
-        self.dchi_dz_array = get_power_BCMP_obj.dchi_dz_array
 
         self.fsky_dict = {
             'yy': analysis_dict.get('fsky_yy',0.1),
@@ -109,20 +109,14 @@ class get_cov:
         self.Cl_result_dict['dl_array_survey'] = dl_array_survey
         self.Cl_result_dict['yy'] = {}
         self.Cl_result_dict['yy']['bin_' + '0_0'] = {}
-        # if do_interpolation:
-        #     log_Cl_yy_interp = interpax.Interpolator1D(
-        #         jnp.log(get_power_BCMP_obj.ell_array), jnp.log(jnp.abs(get_power_BCMP_obj.Cl_y_y_1h_mat + get_power_BCMP_obj.Cl_y_y_2h_mat) + 1e-25)
-        #         )
-        #     self.Cl_result_dict['yy']['bin_' + '0_0']['tot_ellsurvey'] = jnp.exp(log_Cl_yy_interp(jnp.log(l_array_survey)))
-        # else:
-        self.Cl_result_dict['yy']['bin_' + '0_0']['tot_ellsurvey'] = get_power_BCMP_obj.Cl_y_y_tot_mat
+        self.Cl_result_dict['yy']['bin_' + '0_0']['tot_ellsurvey'] = self.Cl_y_y_tot_mat
         
         yy_noise_ell_fname = analysis_dict.get('yy_noise_ell_fname',None)
         yy_total_ell_fname = analysis_dict.get('yy_total_ell_fname',None)
-        sigma_epsilon_SN_bins = analysis_dict.get('sigma_epsilon_SN_bins',jnp.zeros(get_power_BCMP_obj.nbins))
-        neff_arcmin2_SN_bins = analysis_dict.get('neff_arcmin2_SN_bins',jnp.ones(get_power_BCMP_obj.nbins))
+        sigma_epsilon_SN_bins = analysis_dict.get('sigma_epsilon_SN_bins',jnp.zeros(self.nbins))
+        neff_arcmin2_SN_bins = analysis_dict.get('neff_arcmin2_SN_bins',jnp.ones(self.nbins))
 
-        nbar_lens_bins = analysis_dict.get('nbar_lens_bins',jnp.ones(get_power_BCMP_obj.nbins_lens))
+        nbar_lens_bins = analysis_dict.get('nbar_lens_bins',jnp.ones(self.nbins_lens))
 
 
         if yy_total_ell_fname is not None:
@@ -146,35 +140,25 @@ class get_cov:
             self.Cl_result_dict['yy']['bin_' + '0_0']['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['yy']['0_0']['tot_ellsurvey']
         self.Cl_result_dict['yy']['bin_combs'] = [[0,0]]
 
-        # if do_interpolation:
-        #     log_Cl_ky_interp = interpax.Interpolator2D(
-        #         jnp.arange(get_power_BCMP_obj.nbins), jnp.log(get_power_BCMP_obj.ell_array),
-        #         jnp.log(jnp.abs(get_power_BCMP_obj.Cl_kappa_y_1h_mat + get_power_BCMP_obj.Cl_kappa_y_2h_mat) + 1e-25)
-        #         )
-            
-        #     log_Cl_kk_interp = interpax.Interpolator3D(
-        #         jnp.arange(get_power_BCMP_obj.nbins), jnp.arange(get_power_BCMP_obj.nbins), jnp.log(get_power_BCMP_obj.ell_array),
-        #         jnp.log(jnp.abs(get_power_BCMP_obj.Cl_kappa_kappa_1h_mat + get_power_BCMP_obj.Cl_kappa_kappa_2h_mat) + 1e-25)
-        #         )
 
         bin_combs_ky = []
         bin_combs_kk = []        
         self.Cl_result_dict['ky'] = {}
         self.Cl_result_dict['kk'] = {}
-        for jb1 in range(get_power_BCMP_obj.nbins):
+        for jb1 in range(self.nbins):
             self.Cl_result_dict['ky']['bin_' + str(jb1+1) + '_' + str(0)] = {}       
             # if do_interpolation:             
                 # self.Cl_result_dict['ky']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey'] = jnp.exp(log_Cl_ky_interp(jb1, jnp.log(l_array_survey)))
             # else:
-            self.Cl_result_dict['ky']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey'] = (get_power_BCMP_obj.Cl_kappa_y_tot_mat)[jb1,:]
+            self.Cl_result_dict['ky']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey'] = (self.Cl_kappa_y_tot_mat)[:, jb1]
             self.Cl_result_dict['ky']['bin_' + str(jb1+1) + '_' + str(0)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['ky']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey']
             bin_combs_ky.append([jb1+1, 0])
-            for jb2 in range(get_power_BCMP_obj.nbins):
+            for jb2 in range(self.nbins):
                 self.Cl_result_dict['kk']['bin_' + str(jb1+1) + '_' + str(jb2+1)] = {}   
                 # if do_interpolation:             
                     # self.Cl_result_dict['kk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = jnp.exp(log_Cl_kk_interp(jb1, jb2, jnp.log(l_array_survey)))
                 # else:
-                self.Cl_result_dict['kk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (get_power_BCMP_obj.Cl_kappa_kappa_tot_mat)[jb1, jb2, :]
+                self.Cl_result_dict['kk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (self.Cl_kappa_kappa_tot_mat)[:, jb1, jb2]
                 bin_combs_kk.append([jb1+1, jb2+1])                
                 if jb1 == jb2:
                     neff_rad2_from_arcmin2 = neff_arcmin2_SN_bins[jb1] * (180 * 60./ jnp.pi)**2
@@ -190,26 +174,26 @@ class get_cov:
         self.Cl_result_dict['gy'] = {}
         self.Cl_result_dict['gk'] = {}
         self.Cl_result_dict['gg'] = {}
-        for jb1 in range(get_power_BCMP_obj.nbins_lens):
+        for jb1 in range(self.nbins_lens):
             self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)] = {}       
-            self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey'] = (get_power_BCMP_obj.Cl_gal_y_tot_mat)[jb1,:]
+            self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey'] = (self.Cl_gal_y_tot_mat)[:, jb1]
             self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey']
             bin_combs_gy.append([jb1+1, 0])
 
-            for jb2 in range(get_power_BCMP_obj.nbins):
+            for jb2 in range(self.nbins):
                 self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)] = {}       
-                self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (get_power_BCMP_obj.Cl_gal_kappa_tot_mat)[jb1,jb2,:]
+                self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (self.Cl_gal_kappa_tot_mat)[:, jb1,jb2]
                 self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey']
                 bin_combs_gk.append([jb1+1, jb2+1])
 
-            for jb2 in range(get_power_BCMP_obj.nbins_lens):
+            for jb2 in range(self.nbins_lens):
                 if jb1 == jb2:
                     nbar_rad2_from_arcmin2 = nbar_lens_bins[jb1] * (180 * 60./ jnp.pi)**2
                     shotnoise = 1/nbar_rad2_from_arcmin2
                 else:
                     shotnoise = 0.
                 self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)] = {}       
-                self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (get_power_BCMP_obj.Cl_gal_gal_tot_mat)[jb1,jb2,:]
+                self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (self.Cl_gal_gal_tot_mat)[:, jb1,jb2]
                 self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] + shotnoise
                 bin_combs_gg.append([jb1+1, jb2+1])
 
@@ -221,40 +205,19 @@ class get_cov:
         self.Cl_result_dict['gg']['bin_combs'] = bin_combs_gg                
 
         ul_dict = {}
-        # if do_interpolation:
-        #     log_uyl_interp = interpax.Interpolator3D(
-        #         jnp.log(setup_power_BCMP_obj.ell_array), setup_power_BCMP_obj.z_array, jnp.log(setup_power_BCMP_obj.M_array),
-        #         jnp.log(jnp.abs(get_power_BCMP_obj.uy_l_for_cov) + 1e-25)
-        #         )     
-        #     ul_dict['y_0'] = jnp.exp(log_uyl_interp(jnp.log(l_array_survey), setup_power_BCMP_obj.z_array, jnp.log(setup_power_BCMP_obj.M_array)))
-        # else:
-        ul_dict['y_0'] = get_power_BCMP_obj.uy_l_for_cov
+        ul_dict['y_0'] = self.uy_l_for_cov
 
-        for jb in range(get_power_BCMP_obj.nbins):
-            # if do_interpolation:
-            #     log_ukl_interp = interpax.Interpolator3D(
-            #         jnp.log(setup_power_BCMP_obj.ell_array), setup_power_BCMP_obj.z_array, jnp.log(setup_power_BCMP_obj.M_array),
-            #         jnp.log(jnp.abs(get_power_BCMP_obj.ukappa_l_for_cov[jb,...]) + 1e-25)
-            #         )
-            #     ul_dict['k_' + str(jb+1)] = jnp.exp(log_ukl_interp(jnp.log(l_array_survey), setup_power_BCMP_obj.z_array, jnp.log(setup_power_BCMP_obj.M_array)))                
-            # else:
-            ul_dict['k_' + str(jb+1)] = get_power_BCMP_obj.ukappa_l_for_cov[jb,...]
+        for jb in range(self.nbins):
+            ul_dict['k_' + str(jb+1)] = self.ukappa_l_for_cov[jb,...]
 
 
-        for jb in range(get_power_BCMP_obj.nbins_lens):
-            # if do_interpolation:
-            #     log_ugl_interp = interpax.Interpolator3D(
-            #         jnp.log(setup_power_BCMP_obj.ell_array), setup_power_BCMP_obj.z_array, jnp.log(setup_power_BCMP_obj.M_array),
-            #         jnp.log(jnp.abs(get_power_BCMP_obj.ug_l_for_cov[jb,...]) + 1e-25)
-            #         )
-            #     ul_dict['g_' + str(jb+1)] = jnp.exp(log_ugl_interp(jnp.log(l_array_survey), setup_power_BCMP_obj.z_array, jnp.log(setup_power_BCMP_obj.M_array)))                
-            # else:
-            ul_dict['g_' + str(jb+1)] = get_power_BCMP_obj.ug_l_for_cov[jb,...]
+        for jb in range(self.nbins_lens):
+            ul_dict['g_' + str(jb+1)] = self.ug_l_for_cov[jb,...]
 
 
-            
-        if self.verbose:
-            print(list(self.Cl_result_dict['kk'].keys()))
+        self.verbose = analysis_dict.get('verbose_cov',True)    
+        # if self.verbose:
+        #     print(list(self.Cl_result_dict['kk'].keys()))
         if analysis_coords == 'real':
             if self.verbose:
                 print('setting up realspace covariance')
@@ -474,6 +437,113 @@ class get_cov:
 
     #     return uyl_intc
 
+    @partial(jit, static_argnums=(0,))
+    def get_uyl(self, jl, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=4000):
+        chiz = jnp.clip(self.chi_array[jz], 1.0)
+        az = 1.0 / (1.0 + self.z_array[jz])
+        prefac = az/(chiz**2)
+        rmin = xmin * self.r200c_mat[jz, jM]
+        rmax = xmax * self.r200c_mat[jz, jM]
+        logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
+        r_array_int = jnp.exp(logr_array_int)
+
+        y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jz, jM]))
+        y3d_clipped = jnp.clip(self.y3d_mat[:,jz, jM], y3d_min + 1e-30)
+        y3d_rarray = jnp.exp(jnp.interp(logr_array_int, jnp.log(self.r_array), jnp.log(y3d_clipped)))        
+        ell = self.ell_array[jl]
+        sin_fac = (jnp.sin((ell + 0.5)*r_array_int/chiz))/(((ell + 0.5)*r_array_int/chiz))
+
+        fx = y3d_rarray * sin_fac * (4*jnp.pi*r_array_int**2) * r_array_int
+        uyl = prefac * jsi.trapezoid(fx, x=logr_array_int) 
+        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+        return uyl * Bl
+
+    @partial(jit, static_argnums=(0,))
+    def get_ukappal_dmb_prefac(self, jl, jz, jM):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        uk_min = jnp.min(jnp.absolute(self.uk_dmb[:,jz, jM]))
+        uk_clipped = jnp.clip(self.uk_dmb[:,jz, jM], uk_min + 1e-25) * self.Mtot_mat[jz, jM]/self.rho_m_bar        
+        uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(uk_clipped)))        
+        return uk_dmb_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_ugl_cross(self, jl, jz, jM):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        uk_min = jnp.min(jnp.absolute(self.ukg_cross[:,jz, jM]))
+        uk_clipped = jnp.clip(self.ukg_cross[:,jz, jM], uk_min + 1e-25)
+        uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(uk_clipped)))        
+        return uk_dmb_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pkyy_lz(self, jl, jz):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pyy_tot_kz_mat[:,jz])))
+        return (Bl**2)*Pkz_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_ukl_interp(self, jl, jM):
+        val = jnp.interp(self.z_array_for_Cls, self.z_array, self.ukappal_dmb_prefac_mat_tointp[jl,:,jM])
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_uyl_interp(self, jl, jM):
+        val = jnp.interp(self.z_array_for_Cls, self.z_array, self.uyl_mat_tointp[jl,:,jM])
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_ugl_interp(self, jl, jM):
+        val = jnp.interp(self.z_array_for_Cls, self.z_array, self.ugl_mat_tointp[jl,:,jM])
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pyy_interp(self, jl, jz):
+        value = jnp.exp(self.logPkyylz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array[jz]))        
+        return value 
+
+    @partial(jit, static_argnums=(0,))
+    def get_ukappa_l_forcov(self, jb):
+        Wk_jb = self.Wk_mat[jb,:]
+        prefac_for_uk = Wk_jb/(self.chi_array_for_Cls**2)
+        prefac_for_uk_tile = jnp.tile(prefac_for_uk[None,:,None], (self.ukappal_dmb_prefac_mat.shape[0], 1, self.ukappal_dmb_prefac_mat.shape[2]))
+        return prefac_for_uk_tile *  self.ukappal_dmb_prefac_mat
+    
+    @partial(jit, static_argnums=(0,))
+    def get_uy_l_forcov(self):
+        Wk_jb = self.Wy_array
+        prefac_for_uk = Wk_jb/(self.chi_array_for_Cls**2)
+        prefac_for_uk_tile = jnp.tile(prefac_for_uk[None,:,None], (self.uyl_mat.shape[0], 1, self.uyl_mat.shape[2]))
+        return prefac_for_uk_tile *  self.uyl_mat
+
+    @partial(jit, static_argnums=(0,))
+    def get_ug_l_forcov(self, jb):
+        Wk_jb = self.Wg_mat[jb]
+        prefac_for_uk = Wk_jb/(self.dchi_dz_array_for_Cls * self.chi_array_for_Cls**2)
+        prefac_for_uk_tile = jnp.tile(prefac_for_uk[None,:,None], (self.ugl_mat.shape[0], 1, self.ugl_mat.shape[2]))
+        return prefac_for_uk_tile *  self.ugl_mat        
+    
+    @partial(jit, static_argnums=(0,))
+    def get_hmf_interp(self, jM):
+        val = jnp.interp(self.z_array_for_Cls, self.z_array, self.hmf_Mz_mat[:,jM])
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_y_y_tot(self, jl):
+        """
+        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
+        """
+        Wy = self.Wy_array
+        prefac_for_uy = Wy/(self.chi_array_for_Cls**2)
+        
+        fx = prefac_for_uy * prefac_for_uy  * (self.chi_array_for_Cls ** 2) * self.dchi_dz_array_for_Cls * self.Pkyy_lz_mat[jl]
+        fx_intz = jsi.trapezoid(fx, x=self.z_array_for_Cls)
+        return fx_intz
 
     def get_cov_G(
             self, bin1_stat1, bin2_stat1, bin1_stat2, bin2_stat2, stats_analyze_1, stats_analyze_2, Cl_result_dict,
@@ -567,18 +637,18 @@ class get_cov:
 
         uAl1_uBl1 = ul_A_mat * ul_B_mat
         uCl2_uDl2 = ul_C_mat * ul_D_mat
-        uAl1_uBl1_mat = np.tile(uAl1_uBl1.reshape(1, nl, self.nz, self.nM), (nl, 1, 1, 1))
-        uCl2_uDl2_mat = np.tile(uCl2_uDl2.reshape(nl, 1, self.nz, self.nM), (1, nl, 1, 1))
+        uAl1_uBl1_mat = np.tile(uAl1_uBl1.reshape(1, nl, self.nz_for_Cls, self.nM), (nl, 1, 1, 1))
+        uCl2_uDl2_mat = np.tile(uCl2_uDl2.reshape(nl, 1, self.nz_for_Cls, self.nM), (1, nl, 1, 1))
         
         dndlnm_array_mat = np.tile(
-            self.dndlnM_z.reshape(1, 1, self.nz, self.nM), (nl, nl, 1, 1)
+            self.hmf_Mz_mat_for_cov.reshape(1, 1, self.nz_for_Cls, self.nM), (nl, nl, 1, 1)
             )
         toint_M = (uAl1_uBl1_mat * uCl2_uDl2_mat) * dndlnm_array_mat
         val_z = sp.integrate.simpson(toint_M, x=np.log(self.M_array))
-        chi2_array_mat = np.tile((self.chi_array**2).reshape(1, 1, self.nz), (nl, nl, 1))
-        dchi_dz_array_mat = np.tile(self.dchi_dz_array.reshape(1, 1, self.nz), (nl, nl, 1))
+        chi2_array_mat = np.tile((self.chi_array_for_Cls**2).reshape(1, 1, self.nz_for_Cls), (nl, nl, 1))
+        dchi_dz_array_mat = np.tile(self.dchi_dz_array_for_Cls.reshape(1, 1, self.nz_for_Cls), (nl, nl, 1))
         toint_z = val_z * chi2_array_mat * dchi_dz_array_mat
-        val = sp.integrate.simpson(toint_z, x=self.z_array)
+        val = sp.integrate.simpson(toint_z, x=self.z_array_for_Cls)
 
         return val    
     

@@ -50,7 +50,7 @@ import healpy as hp
 import numpy as np
 from multiprocessing import Pool, cpu_count
 from astropy.io import fits
-import constants
+import helpers.constants as constants
 import jax_cosmo.background as bkgrd
 from get_sim_on_halos_NO_CONC_jit import get_mock_map
 import h5py as h5
