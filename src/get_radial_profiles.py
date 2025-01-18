@@ -98,8 +98,10 @@ class Profiles(base_class):
         M_z_mat = jnp.repeat(self.M_array[:, None], self.nz, axis=1)
         if self.hmf_model == 'T08':
             self.fsigma_Mz_mat = get_vmapped_func(self.get_fsigma_Mz_T08, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-        if self.hmf_model == 'T10':
+        elif self.hmf_model == 'T10':
             self.fsigma_Mz_mat = get_vmapped_func(self.get_fsigma_Mz_T10, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        else:
+            raise ValueError("HMF model not recognized")
         self.hmf_Mz_mat = -1 * self.fsigma_Mz_mat * (rhom_z_mat/M_z_mat).T * self.dlgsig_dlnM_mat
 
     @timing_decorator
@@ -214,14 +216,14 @@ class Profiles(base_class):
         Pth_mat = Ptot_mat * jnp.maximum(0, 1 - Pnt_fac)
         Pth_mat_physical = Ptot_mat_physical * jnp.maximum(0, 1 - Pnt_fac)        
         # this was thermal pressure. Convert to electron pressure using Xh=0.76 and dividing by 2*(Xh + 1)/(5*Xh + 3) ~ 1.932
-        Pe_mat_physical = Pth_mat_physical/1.932
+        self.Pe_mat_physical = Pth_mat_physical/1.932
         sigmat = const.sigma_T
         m_e = const.m_e
         c = const.c
         coeff = sigmat / (m_e * (c ** 2))
         oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
         const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
-        self.y3d_mat = const_coeff * Pe_mat_physical
+        self.y3d_mat = const_coeff * self.Pe_mat_physical
 
 
     @partial(jit, static_argnums=(0,))

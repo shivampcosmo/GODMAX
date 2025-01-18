@@ -35,15 +35,21 @@ class get_cov(get_Cl):
 
         self.uyl_mat_tointp = get_vmapped_func(self.get_uyl, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.ukappal_dmb_prefac_mat_tointp = get_vmapped_func(self.get_ukappal_dmb_prefac, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
-        self.ugl_mat_tointp = get_vmapped_func(self.get_ugl_cross, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
+        if self.model_galaxies:
+            self.ugl_mat_tointp = get_vmapped_func(self.get_ugl_cross, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
         vmapped_func = get_vmapped_func_warg(self.get_b_2h, 2, 3)
         by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
         self.Pyy_2h_kz_mat = by_kz_mat * (by_kz_mat) * self.plin_kz_mat
+        # self.byl_mat_tointp = get_vmapped_func(self.get_byl, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
+        # self.Pklin_lz_mat = get_vmapped_func(self.get_Pklin_lz, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
+
         vmapped_func = get_vmapped_func_warg(self.get_P_1h, 2, 4)
         self.Pyy_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3, 3).T
         self.Pyy_tot_kz_mat = self.Pyy_1h_kz_mat + self.Pyy_2h_kz_mat
+        # self.Pyy_tot_kz_mat = self.Pyy_2h_kz_mat
         self.Pkyy_lz_mat_tointp = get_vmapped_func(self.get_Pkyy_lz, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
+        # self.Pyy_1h_lz_mat = 
 
         self.ukappal_dmb_prefac_mat = get_vmapped_func(self.get_ukl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
         self.ukappal_dmb_prefac_mat = jnp.moveaxis(self.ukappal_dmb_prefac_mat, 0, 1)
@@ -53,25 +59,26 @@ class get_cov(get_Cl):
         self.uyl_mat = jnp.moveaxis(self.uyl_mat, 0, 1)
         self.uy_l_for_cov = self.get_uy_l_forcov()
 
-        self.ugl_mat = get_vmapped_func(self.get_ugl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
-        self.ugl_mat = jnp.moveaxis(self.ugl_mat, 0, 1)
-        self.ug_l_for_cov = vmap(self.get_ug_l_forcov)(jnp.arange(self.nbins))
+        if self.model_galaxies:
+            self.ugl_mat = get_vmapped_func(self.get_ugl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
+            self.ugl_mat = jnp.moveaxis(self.ugl_mat, 0, 1)
+            self.ug_l_for_cov = vmap(self.get_ug_l_forcov)(jnp.arange(self.nbins))
 
         self.hmf_Mz_mat_for_cov = vmap(self.get_hmf_interp)(jnp.arange(self.nM)).T
 
         self.logPkyylz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkyy_lz_mat_tointp), extrap=True)                
         self.Pkyy_lz_mat = get_vmapped_func(self.get_Pyy_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nz_for_Cls)).T
-
+        # self.Cl_y_y_1h_mat = vmap(self.get_Cl_y_y_1h)(jnp.arange(self.nell))
+        # self.Cl_y_y_2h_mat = vmap(self.get_Cl_y_y_2h)(jnp.arange(self.nell))
+        # self.Cl_y_y_tot_mat = self.Cl_y_y_1h_mat + self.Cl_y_y_2h_mat
         self.Cl_y_y_tot_mat = vmap(self.get_Cl_y_y_tot)(jnp.arange(self.nell))
 
-        analysis_coords = analysis_dict['analysis_coords']
-        beam_fwhm_arcmin = analysis_dict['beam_fwhm_arcmin']
-        l_array_survey = analysis_dict['l_array_survey']
-        beam_fwhm_arcmin = analysis_dict['beam_fwhm_arcmin']
+        analysis_coords = analysis_dict.get('analysis_coords', 'fourier')
+        l_array_survey = analysis_dict.get('l_array_survey', self.ell_array)
 
-        fac_ell_hres = analysis_dict['fac_ell_hres']
+        fac_ell_hres = analysis_dict.get('fac_ell_hres', 1)
 
-        if beam_fwhm_arcmin > 0.:
+        if self.beam_fwhm_arcmin > 0.:
             self.add_beam_to_theory = True
         else:
             self.add_beam_to_theory = False
@@ -133,7 +140,7 @@ class get_cov(get_Cl):
                 jnp.log(ell_yy_noise), jnp.log(jnp.abs(Cl_yy_noise)) + 1e-25, extrap=True
             )
             noise_yy = jnp.exp(log_Cl_yy_noise_interp(jnp.log(l_array_survey)))
-            self.Cl_result_dict['yy']['bin_' + '0_0']['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['yy']['0_0']['tot_ellsurvey'] + noise_yy
+            self.Cl_result_dict['yy']['bin_' + '0_0']['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['yy']['bin_0_0']['tot_ellsurvey'] + noise_yy
         else:
             # print a warning:
             print('Warning: no yy-total or yy-noise file found')
@@ -174,28 +181,29 @@ class get_cov(get_Cl):
         self.Cl_result_dict['gy'] = {}
         self.Cl_result_dict['gk'] = {}
         self.Cl_result_dict['gg'] = {}
-        for jb1 in range(self.nbins_lens):
-            self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)] = {}       
-            self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey'] = (self.Cl_gal_y_tot_mat)[:, jb1]
-            self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey']
-            bin_combs_gy.append([jb1+1, 0])
+        if self.model_galaxies:
+            for jb1 in range(self.nbins_lens):
+                self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)] = {}       
+                self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey'] = (self.Cl_gal_y_tot_mat)[:, jb1]
+                self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gy']['bin_' + str(jb1+1) + '_' + str(0)]['tot_ellsurvey']
+                bin_combs_gy.append([jb1+1, 0])
 
-            for jb2 in range(self.nbins):
-                self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)] = {}       
-                self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (self.Cl_gal_kappa_tot_mat)[:, jb1,jb2]
-                self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey']
-                bin_combs_gk.append([jb1+1, jb2+1])
+                for jb2 in range(self.nbins):
+                    self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)] = {}       
+                    self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (self.Cl_gal_kappa_tot_mat)[:, jb1,jb2]
+                    self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gk']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey']
+                    bin_combs_gk.append([jb1+1, jb2+1])
 
-            for jb2 in range(self.nbins_lens):
-                if jb1 == jb2:
-                    nbar_rad2_from_arcmin2 = nbar_lens_bins[jb1] * (180 * 60./ jnp.pi)**2
-                    shotnoise = 1/nbar_rad2_from_arcmin2
-                else:
-                    shotnoise = 0.
-                self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)] = {}       
-                self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (self.Cl_gal_gal_tot_mat)[:, jb1,jb2]
-                self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] + shotnoise
-                bin_combs_gg.append([jb1+1, jb2+1])
+                for jb2 in range(self.nbins_lens):
+                    if jb1 == jb2:
+                        nbar_rad2_from_arcmin2 = nbar_lens_bins[jb1] * (180 * 60./ jnp.pi)**2
+                        shotnoise = 1/nbar_rad2_from_arcmin2
+                    else:
+                        shotnoise = 0.
+                    self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)] = {}       
+                    self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] = (self.Cl_gal_gal_tot_mat)[:, jb1,jb2]
+                    self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_plus_noise_ellsurvey'] = self.Cl_result_dict['gg']['bin_' + str(jb1+1) + '_' + str(jb2+1)]['tot_ellsurvey'] + shotnoise
+                    bin_combs_gg.append([jb1+1, jb2+1])
 
 
         self.Cl_result_dict['ky']['bin_combs'] = bin_combs_ky
@@ -210,9 +218,9 @@ class get_cov(get_Cl):
         for jb in range(self.nbins):
             ul_dict['k_' + str(jb+1)] = self.ukappa_l_for_cov[jb,...]
 
-
-        for jb in range(self.nbins_lens):
-            ul_dict['g_' + str(jb+1)] = self.ug_l_for_cov[jb,...]
+        if self.model_galaxies:
+            for jb in range(self.nbins_lens):
+                ul_dict['g_' + str(jb+1)] = self.ug_l_for_cov[jb,...]
 
 
         self.verbose = analysis_dict.get('verbose_cov',True)    
@@ -314,7 +322,7 @@ class get_cov(get_Cl):
                     covNG = self.get_cov_NG(
                         l_array_survey, stats_analyze_1_ordered, stats_analyze_2_ordered,
                         False, self.fsky_dict, uAl_zM_dict, uBl_zM_dict, uCl_zM_dict, uDl_zM_dict,
-                        beam_fwhm_arcmin
+                        self.beam_fwhm_arcmin
                         )
 
                     covtot = covG + covNG
@@ -437,26 +445,46 @@ class get_cov(get_Cl):
 
     #     return uyl_intc
 
+    # @partial(jit, static_argnums=(0,))
+    # def get_uyl(self, jl, jz, jM, xmin=0.001, xmax=4, num_points_trapz_int=8000):
+    #     chiz = jnp.clip(self.chi_array[jz], 1.0)
+    #     az = 1.0 / (1.0 + self.z_array[jz])
+    #     prefac = az/(chiz**2)
+    #     rmin = xmin * self.r200c_mat[jz, jM]
+    #     rmax = xmax * self.r200c_mat[jz, jM]
+    #     logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
+    #     r_array_int = jnp.exp(logr_array_int)
+
+    #     y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jz, jM]))
+    #     y3d_clipped = jnp.clip(self.y3d_mat[:,jz, jM], y3d_min + 1e-30)
+    #     y3d_rarray = jnp.exp(jnp.interp(logr_array_int, jnp.log(self.r_array), jnp.log(y3d_clipped)))        
+    #     ell = self.ell_array[jl]
+    #     sin_fac = (jnp.sin((ell + 0.5)*r_array_int/chiz))/(((ell + 0.5)*r_array_int/chiz))
+
+    #     fx = y3d_rarray * sin_fac * (4*jnp.pi*r_array_int**2) * r_array_int
+    #     uyl = prefac * jsi.trapezoid(fx, x=logr_array_int) 
+    #     Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+    #     return uyl * Bl
+
     @partial(jit, static_argnums=(0,))
-    def get_uyl(self, jl, jz, jM, xmin=0.001, xmax=10, num_points_trapz_int=4000):
-        chiz = jnp.clip(self.chi_array[jz], 1.0)
-        az = 1.0 / (1.0 + self.z_array[jz])
-        prefac = az/(chiz**2)
-        rmin = xmin * self.r200c_mat[jz, jM]
-        rmax = xmax * self.r200c_mat[jz, jM]
-        logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
-        r_array_int = jnp.exp(logr_array_int)
-
-        y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jz, jM]))
-        y3d_clipped = jnp.clip(self.y3d_mat[:,jz, jM], y3d_min + 1e-30)
-        y3d_rarray = jnp.exp(jnp.interp(logr_array_int, jnp.log(self.r_array), jnp.log(y3d_clipped)))        
+    def get_uyl(self, jl, jz, jM):
         ell = self.ell_array[jl]
-        sin_fac = (jnp.sin((ell + 0.5)*r_array_int/chiz))/(((ell + 0.5)*r_array_int/chiz))
-
-        fx = y3d_rarray * sin_fac * (4*jnp.pi*r_array_int**2) * r_array_int
-        uyl = prefac * jsi.trapezoid(fx, x=logr_array_int) 
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        uk_min = jnp.min(jnp.absolute(self.uk_y[:,jz, jM]))
+        uk_clipped = jnp.clip(self.uk_y[:,jz, jM], uk_min + 1e-25)
+        uyl = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(uk_clipped))) 
         Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
         return uyl * Bl
+
+    @partial(jit, static_argnums=(0,))
+    def get_byl(self, jl, jz):
+        uyl_intc = self.uyl_mat_tointp[jl, jz, :]     
+        dndlnM_z = self.hmf_Mz_mat[jz, :]
+        bM_z = self.bias_Mz_mat[jz, :]
+        fx = uyl_intc * dndlnM_z * bM_z
+        byl = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        return byl
 
     @partial(jit, static_argnums=(0,))
     def get_ukappal_dmb_prefac(self, jl, jz, jM):
@@ -477,6 +505,37 @@ class get_cov(get_Cl):
         uk_clipped = jnp.clip(self.ukg_cross[:,jz, jM], uk_min + 1e-25)
         uk_dmb_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(uk_clipped)))        
         return uk_dmb_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pklin_lz(self, jl, jz):
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:,jz])))
+        return Pkz_ell
+    
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_y_y_1h(self, jl):
+        """
+        Computes the 1-halo term of the auto-spectrum of the Compton-y map.
+        """
+        uyl_jl = self.uyl_mat_tointp[jl, ...]        
+        fx =  uyl_jl * uyl_jl * self.hmf_Mz_mat
+        fx_intM = jsi.trapezoid(fx, x=jnp.log(self.M_array))
+        fx = fx_intM * (self.chi_array ** 2) * self.dchi_dz_array
+        fx_intz = jsi.trapezoid(fx, x=self.z_array)
+        return fx_intz
+    
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_y_y_2h(self, jl):
+        """
+        Computes the 2-halo term of the auto-spectrum of the Compton-y map.
+        """
+        byl_jl = self.byl_mat_tointp[jl]
+        
+        fx = byl_jl * byl_jl * (self.chi_array ** 2) * self.dchi_dz_array * self.Pklin_lz_mat[jl]
+        fx_intz = jsi.trapezoid(fx, x=self.z_array)
+        return fx_intz    
 
     @partial(jit, static_argnums=(0,))
     def get_Pkyy_lz(self, jl, jz):

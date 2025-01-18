@@ -1,0 +1,193 @@
+# These house the parameters that can be varied in the HMC sampler.
+sim_params:
+  cosmo:
+    flat: True
+    H0: 67.2
+    Om0: 0.31
+    Ob0: 0.049
+    sigma8: 0.81
+    ns: 0.95
+    w0: -1.0
+
+  init_power: True
+  nfw_trunc: True
+  epsilon_rt: 4.0
+
+  # Parameters to estimate the ejection radius and its evolution with mass and redshift
+  theta_ej_0: 3.0
+  log10_Mstar0_theta_ej: 15.0
+  nu_theta_ej_M: -0.2
+  nu_theta_ej_z: 0.2
+
+  # Parameters to estiamte the core radius and its evolution with mass and redshift
+  theta_co_0: 0.1
+  log10_Mstar0_theta_co: 15.0
+  nu_theta_co_M: 0.0
+  nu_theta_co_z: 0.0
+
+  # Parameter to get the beta-slope parameter and its evolution with mass and redshift
+  mu_beta: 0.6
+  log10_Mstar0: 14.0
+  log10_Mc0: 14.83
+  nu_z: 0.0
+  nu_M: 0.0
+
+  # Parameters for other gas profile slopes
+  gamma_rhogas: 2.0
+  delta_rhogas: 7.0
+
+  # Parameters for backreaction of gas on dark matter
+  a_zeta: 0.3
+  n_zeta: 2.0
+
+  # Non-thermal pressure parameters
+  alpha_nt: 0.18
+  beta_nt: 0.5
+  n_nt: 0.3
+
+  # If you want to model proper galaxies, these are true (see the settings in the analysis section)
+  log10M1_fshmr: 12.35
+  log10M1_a_fshmr: 0.28
+  log10Mstar0_fshmr: 10.72
+  log10Mstar0_a_fshmr: 0.55
+  beta_fshmr: 0.44
+  beta_a_fshmr: 0.18
+  delta_fshmr: 0.57
+  delta_a_fshmr: 0.17
+  gamma_fshmr: 1.56
+  gamma_a_fshmr: 2.51
+  siglogMstar_Ncen: 0.25
+  alphasat_Nsat: 1.0
+  Bcut_Nsat: 1.69
+  Bsat_Nsat: 9.01
+  betacut_Nsat: 0.6
+  betasat_Nsat: 0.74
+
+  # If you want some simple stellar profiles, use these:
+  eta_star: 0.3
+  eta_cga: 0.6
+  A_starcga: 0.09
+  log10_M1_starcga: 11.4
+
+
+other_params:
+  A_IA: 0.1
+  eta_IA: 0.1
+  z0_IA: 0.62
+  C1_rhocrit: 0.0134
+  Delta_z_bias_array:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0            
+    - 0.0                
+  mult_shear_bias_array:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+
+
+# Following are mostly settings, either for halo model calculations or for general analysis:
+halo_params:
+  rmin: 0.005
+  rmax: 8.0
+  nr: 18
+
+  zmin: 0.01
+  zmax: 1.6
+  nz: 18
+
+  lg10_Mmin: 11.5
+  lg10_Mmax: 15.5
+  nM: 18
+
+  kmin: 0.0001
+  kmax: 150.0
+  nk: 48
+
+  ellmin: 11.29462706
+  ellmax: 8971.6413594
+  nell: 30
+
+  mdef_Delta: 200
+  conc_model: Duffy08
+  hmf_model: T10
+  do_corr_2h_mm: True
+
+
+analysis:
+  model_galaxies: True
+  model_tSZ: True
+  num_points_trapz_int: 32
+  num_points_gal_cal: 32
+  calc_nfw_only: True
+  beam_fwhm_arcmin: 1.6
+  verbose_time: False  
+  analysis_coords: fourier
+
+  nbar_gal_comoving_zarray:
+    - 0.01
+    - 2.0
+    - 64
+  nbar_gal_comoving_val: 5e-4
+
+  nz_source_info_dict:
+    nbins: 1
+    z_array_source:
+      - 0.01
+      - 1.5
+      - 128
+    nz0:
+      - 1.0
+  nz_lens_info_dict:
+    nbins_lens: 1
+    z_array_lens:
+      - 0.01
+      - 1.5
+      - 128
+    nz0:
+      - 1.0
+
+  zmin_for_Cls: 0.01
+  zmax_for_Cls: 1.6
+  nz_for_Cls: 128
+
+  angles_data_array:
+    - 2.5
+    - 250
+    - 20
+
+  k_array_survey:
+    - 0.0001
+    - 150.0
+    - 64
+
+  fsky_yy: 0.4
+  fsky_ky: 0.437
+  fsky_kk: 0.437
+  fsky_yg: 0.34
+  fsky_kg: 0.1
+  fsky_gg: 0.34
+
+  stats_for_cov:
+    - ky
+    - kk
+    - gy
+    - gg
+    - gk
+
+  sigma_epsilon_SN_bins:
+    - 0.26
+    - 0.26
+    - 0.26
+    - 0.26
+    - 0.26
+  
+  neff_arcmin2_SN_bins:
+    - 4.64
+    - 4.64
+    - 4.64
+    - 4.64
+    - 4.64

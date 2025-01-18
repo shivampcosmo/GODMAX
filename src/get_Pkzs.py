@@ -76,14 +76,13 @@ class get_Pkz(Profiles):
 
             bm_dmb_2h = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0).T
             bm_largescales_2h_mat_lt_Mmin = 1. - bm_largescales_2h_mat
-            bm_dmb_kz_mat = bm_dmb_2h + bm_largescales_2h_mat_lt_Mmin
+            self.bm_dmb_kz_mat = bm_dmb_2h + bm_largescales_2h_mat_lt_Mmin
 
             bm_nfw_2h = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 1).T
-            bm_nfw_kz_mat = bm_nfw_2h + bm_largescales_2h_mat_lt_Mmin   
-            self.bm_nfw_kz_mat = bm_nfw_kz_mat         
+            self.bm_nfw_kz_mat = bm_nfw_2h + bm_largescales_2h_mat_lt_Mmin   
         else:
-            bm_dmb_kz_mat = jnp.ones((len(self.nk), self.nz))
-            bm_nfw_kz_mat = jnp.ones((len(self.nk), self.nz))
+            self.bm_dmb_kz_mat = jnp.ones((len(self.nk), self.nz))
+            self.bm_nfw_kz_mat = jnp.ones((len(self.nk), self.nz))
 
         if self.model_tSZ:
             by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
@@ -94,14 +93,14 @@ class get_Pkz(Profiles):
         else: bg_kz_mat, be_kz_mat = None, None
 
         # Get the 2-halo power:
-        self.Pmm_dmb_2h_kz_mat = bm_dmb_kz_mat * bm_dmb_kz_mat * self.plin_kz_mat
-        self.Pmm_nfw_2h_kz_mat = bm_nfw_kz_mat * bm_nfw_kz_mat * self.plin_kz_mat
+        self.Pmm_dmb_2h_kz_mat = self.bm_dmb_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
+        self.Pmm_nfw_2h_kz_mat = self.bm_nfw_kz_mat * self.bm_nfw_kz_mat * self.plin_kz_mat
         if self.model_tSZ:
-            self.Pym_2h_kz_mat = bm_dmb_kz_mat * by_kz_mat * self.plin_kz_mat
+            self.Pym_2h_kz_mat = self.bm_dmb_kz_mat * by_kz_mat * self.plin_kz_mat
         if self.model_galaxies:
             self.Pge_2h_kz_mat = bg_kz_mat * be_kz_mat * self.plin_kz_mat
-            self.Pgm_2h_kz_mat = bg_kz_mat * bm_dmb_kz_mat * self.plin_kz_mat
-            self.Pgm_nfw_2h_kz_mat = bg_kz_mat * bm_nfw_kz_mat * self.plin_kz_mat
+            self.Pgm_2h_kz_mat = bg_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
+            self.Pgm_nfw_2h_kz_mat = bg_kz_mat * self.bm_nfw_kz_mat * self.plin_kz_mat
             self.Pgy_2h_kz_mat = by_kz_mat * bg_kz_mat * self.plin_kz_mat
             self.Pgg_2h_kz_mat = bg_kz_mat * bg_kz_mat * self.plin_kz_mat
 

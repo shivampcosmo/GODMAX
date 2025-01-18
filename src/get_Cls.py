@@ -28,11 +28,17 @@ class get_Cl(get_Pkz):
         self.Pkmm_nfw_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.phfit_kz_mat).T 
         if self.model_tSZ:       
             self.Pkym_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pym_tot_mat).T
+            Bl_array = jnp.exp(-1. * self.ell_array * (self.ell_array + 1) * (self.sig_beam ** 2) / 2.)
+            self.Bl_mat = Bl_array[:, None]
+            self.Pkym_lz_mat = self.Pkym_lz_mat * self.Bl_mat
         if self.model_galaxies:
             self.Pkge_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pge_tot_mat).T
             self.Pkgm_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pgm_tot_mat).T
             self.Pkgm_nfw_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pgm_nfw_tot_mat).T
             self.Pkgy_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pgy_tot_mat).T
+            Bl_array = jnp.exp(-1. * self.ell_array * (self.ell_array + 1) * (self.sig_beam ** 2) / 2.)
+            self.Bl_mat = Bl_array[:, None]
+            self.Pkgy_lz_mat = self.Pkgy_lz_mat * self.Bl_mat
             self.Pkgg_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pgg_tot_mat).T
 
         # Get the interpolators:

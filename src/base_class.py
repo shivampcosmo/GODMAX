@@ -212,11 +212,6 @@ class base_class:
         self.M1_starcga=10**log10_M1_starcga
 
 
-        # Comoving number density of the galaxies. This can be an array of redshifts and values. Basically M_star_threshold (mininum stellar mass) is obtained from this.
-        self.nbar_gal_comoving_z_array = sim_params_dict.get('nbar_gal_comoving_zarray', jnp.linspace(0.01, 2.0, 64))                            
-        self.nbar_gal_comoving_val_array = sim_params_dict.get('nbar_gal_comoving_val', 5e-4*jnp.ones_like(self.nbar_gal_comoving_z_array))                            
-
-
         # Now get the halo parameters:
 
         # First the radial grid for the halo profiles.
@@ -231,8 +226,6 @@ class base_class:
         else:
             self.z_array = jnp.linspace(zmin, zmax, nz)
         self.scale_fac_a_array = 1./(1. + self.z_array)
-        # Get the comoving number density of galaxies at these redshifts.
-        self.nbar_gal_comoving_array = jnp.interp(self.z_array, self.nbar_gal_comoving_z_array, self.nbar_gal_comoving_val_array)
 
         kmin, kmax, nk = halo_params_dict.get('kmin', 1E-4), halo_params_dict.get('kmax', 150.0), halo_params_dict.get('nk', 48)
         self.kPk_array = jnp.logspace(jnp.log10(kmin), jnp.log10(kmax), nk)
@@ -246,7 +239,7 @@ class base_class:
 
 
         self.conc_model = halo_params_dict.get('conc_model','Duffy08')
-        self.hmf_model = halo_params_dict['hmf_model']
+        self.hmf_model = halo_params_dict.get('hmf_model', 'tinker08')
 
         self.ell_array = halo_params_dict.get('ell_array',None)
         if self.ell_array is None:
@@ -263,6 +256,15 @@ class base_class:
 
         self.angles_data_array = jnp.array(analysis_dict.get('angles_data_array', jnp.logspace(jnp.log10(2.5), jnp.log10(250), 20)))
         self.nt_out = len(self.angles_data_array)
+
+        # Comoving number density of the galaxies. This can be an array of redshifts and values. Basically M_star_threshold (mininum stellar mass) is obtained from this.
+        self.nbar_gal_comoving_z_array = analysis_dict.get('nbar_gal_comoving_zarray', jnp.linspace(0.01, 2.0, 64))                            
+        self.nbar_gal_comoving_val_array = analysis_dict.get('nbar_gal_comoving_val', jnp.zeros(64))                            
+        # Get the comoving number density of galaxies at these redshifts.
+        try:
+            self.nbar_gal_comoving_array = jnp.interp(self.z_array, self.nbar_gal_comoving_z_array, self.nbar_gal_comoving_val_array)
+        except:
+            self.nbar_gal_comoving_array = jnp.zeros_like(self.z_array)
 
 
         # Controls the accuracy of the trapezoidal integration.

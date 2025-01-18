@@ -19,17 +19,17 @@ class get_xi(get_Cl):
         else:
             self.__dict__.update(Cl_obj.__dict__)
 
-        theta_out, xi_out = (Hankel(self.ell_array, nu=2, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_y_tot_mat, axis=0, extrap=False))
+        theta_out, xi_out = (Hankel(self.ell_array, nu=2, q=1.0, nx=self.nell, lowring=True)(self.Cl_kappa_y_tot_mat, axis=0, extrap=False))
         self.theta_out_arcmin = theta_out * (180. / jnp.pi) * 60.
         self.gty_tot_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
         self.gty_out_mat = get_vmapped_func(self.interp_gty_theta, 2)(jnp.arange(self.nt_out), jnp.arange(self.nbins)).T
 
-        theta_out, xi_out = (Hankel(self.ell_array, nu=0, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_kappa_tot_mat, axis=0, extrap=False))
+        theta_out, xi_out = (Hankel(self.ell_array, nu=0, q=1.0, nx=self.nell, lowring=True)(self.Cl_kappa_kappa_tot_mat, axis=0, extrap=False))
         self.theta_out_arcmin = theta_out * (180. / jnp.pi) * 60.
         self.xip_tot_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))   
         self.xip_out_mat = get_vmapped_func(self.interp_xip_theta, 2)(jnp.arange(self.nbins), jnp.arange(self.nbins)).T
 
-        theta_out, xi_out = (Hankel(self.ell_array, nu=4, q=1.0, nx=halo_params_dict['nell'], lowring=True)(self.Cl_kappa_kappa_tot_mat, axis=0, extrap=False))
+        theta_out, xi_out = (Hankel(self.ell_array, nu=4, q=1.0, nx=self.nell, lowring=True)(self.Cl_kappa_kappa_tot_mat, axis=0, extrap=False))
         self.xim_tot_mat = jnp.array(xi_out * (1 / (2 * jnp.pi)))
         self.xim_out_mat = get_vmapped_func(self.interp_xim_theta, 2)(jnp.arange(self.nbins), jnp.arange(self.nbins)).T
 
