@@ -207,9 +207,7 @@ class Profiles(base_class):
         """
         Ptot_mat = get_vmapped_func(self.get_Ptot, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         # this was pressure in the comoving coordinates. Convert to physical coordinates:
-        # This comes because dP/dr = -G * rho_gas * M(<r) / r**2
-        # So it will simplify to P ~ rho_g/r and when we will convert rho_g and r to physical coordinates, we will get a**4 factor
-        Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 4)
+        Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 3)
         Pnt_fac = get_vmapped_func(self.get_Pnt_fac, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         Pnt_mat = Pnt_fac * Ptot_mat
         # Pnt_mat_physical = Pnt_fac * Ptot_mat_physical
@@ -645,11 +643,15 @@ class Profiles(base_class):
             r = r_array_here[jr]
         u = r / self.r_co_mat[jz, jM]
         v = r / self.r_ej_mat[jz, jM]
+
+        # y = r / self.rt_mat[jz, jM]
+        # fac = (1 / (1 + y**2)**2)
+
         rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jz, jM]) * jnp.power(1 + jnp.power(v, self.gamma_rhogas), (self.delta_rhogas - self.beta_mat[jz, jM]) / self.gamma_rhogas))
         return rho_gas_unnorm    
 
     @partial(jit, static_argnums=(0,))
-    def get_rho_gas_norm(self, jz, jM, rmax_r200c=16):
+    def get_rho_gas_norm(self, jz, jM, rmax_r200c=12):
         '''This is the normalization of the gas profile'''
         r200c = self.r200c_mat[jz, jM]
         logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
@@ -669,6 +671,10 @@ class Profiles(base_class):
 
         u = r / self.r_co_mat[jz, jM]
         v = r / self.r_ej_mat[jz, jM]
+        
+        # y = r / self.rt_mat[jz, jM]
+        # fac = (1 / (1 + y**2)**2)
+        
         rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jz, jM]) * jnp.power(1 + jnp.power(v, self.gamma_rhogas), (self.delta_rhogas - self.beta_mat[jz, jM]) / self.gamma_rhogas))
         prefac = self.rho_gas_norm_mat[jz, jM]
         return prefac * rho_gas_unnorm

@@ -41,15 +41,10 @@ class get_cov(get_Cl):
         vmapped_func = get_vmapped_func_warg(self.get_b_2h, 2, 3)
         by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
         self.Pyy_2h_kz_mat = by_kz_mat * (by_kz_mat) * self.plin_kz_mat
-        # self.byl_mat_tointp = get_vmapped_func(self.get_byl, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
-        # self.Pklin_lz_mat = get_vmapped_func(self.get_Pklin_lz, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
-
         vmapped_func = get_vmapped_func_warg(self.get_P_1h, 2, 4)
         self.Pyy_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3, 3).T
         self.Pyy_tot_kz_mat = self.Pyy_1h_kz_mat + self.Pyy_2h_kz_mat
-        # self.Pyy_tot_kz_mat = self.Pyy_2h_kz_mat
         self.Pkyy_lz_mat_tointp = get_vmapped_func(self.get_Pkyy_lz, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
-        # self.Pyy_1h_lz_mat = 
 
         self.ukappal_dmb_prefac_mat = get_vmapped_func(self.get_ukl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
         self.ukappal_dmb_prefac_mat = jnp.moveaxis(self.ukappal_dmb_prefac_mat, 0, 1)
@@ -68,9 +63,6 @@ class get_cov(get_Cl):
 
         self.logPkyylz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkyy_lz_mat_tointp), extrap=True)                
         self.Pkyy_lz_mat = get_vmapped_func(self.get_Pyy_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nz_for_Cls)).T
-        # self.Cl_y_y_1h_mat = vmap(self.get_Cl_y_y_1h)(jnp.arange(self.nell))
-        # self.Cl_y_y_2h_mat = vmap(self.get_Cl_y_y_2h)(jnp.arange(self.nell))
-        # self.Cl_y_y_tot_mat = self.Cl_y_y_1h_mat + self.Cl_y_y_2h_mat
         self.Cl_y_y_tot_mat = vmap(self.get_Cl_y_y_tot)(jnp.arange(self.nell))
 
         analysis_coords = analysis_dict.get('analysis_coords', 'fourier')
@@ -134,6 +126,7 @@ class get_cov(get_Cl):
             #     jnp.log(ell_yy_tot), jnp.log(Cl_yy_tot + 1e-25), extrap=-120)
             Cl_yy_tot = jnp.exp(log_Cl_yy_tot_interp(jnp.log(l_array_survey)))
             self.Cl_result_dict['yy']['bin_' + '0_0']['tot_plus_noise_ellsurvey'] = Cl_yy_tot
+            print('Loaded up y-total file')
         elif yy_noise_ell_fname is not None:
             ell_yy_noise, Cl_yy_noise = np.loadtxt(yy_noise_ell_fname, unpack = True)
             log_Cl_yy_noise_interp = interpax.Interpolator1D(
@@ -223,7 +216,7 @@ class get_cov(get_Cl):
                 ul_dict['g_' + str(jb+1)] = self.ug_l_for_cov[jb,...]
 
 
-        self.verbose = analysis_dict.get('verbose_cov',True)    
+        self.verbose = analysis_dict.get('verbose_cov',False)    
         # if self.verbose:
         #     print(list(self.Cl_result_dict['kk'].keys()))
         if analysis_coords == 'real':
@@ -429,42 +422,6 @@ class get_cov(get_Cl):
             self.covNG_dict[stats_analyze_1_ordered + '_' + stats_analyze_2_ordered] = covNG_stat12
             self.covtot_dict[stats_analyze_1_ordered + '_' + stats_analyze_2_ordered] = covtot_stat12
 
-
-    # @partial(jit, static_argnums=(0,))
-    # def get_uyl_intc(self, jz):
-    #     uyl_jl_jz = self.uyl_mat[:, :, jz, :]
-    #     cmean_jz = self.conc_Mz_mat[jz, :]
-    #     logc_array = jnp.log(self.conc_array)
-    #     sig_logc = self.sig_logc_z_array[jz]
-    #     conc_mat = jnp.tile(self.conc_array, (self.nell, self.nM, 1))
-    #     cmean_jz_mat = jnp.tile(cmean_jz, (self.nc, 1)).T
-    #     p_logc_Mz = jnp.exp(-0.5 * (jnp.log(conc_mat/cmean_jz_mat)/ sig_logc)**2) * (1.0/(sig_logc * jnp.sqrt(2*jnp.pi)))
-
-    #     fx = uyl_jl_jz.T * p_logc_Mz
-    #     uyl_intc = jsi.trapezoid(fx, x=logc_array)
-
-    #     return uyl_intc
-
-    # @partial(jit, static_argnums=(0,))
-    # def get_uyl(self, jl, jz, jM, xmin=0.001, xmax=4, num_points_trapz_int=8000):
-    #     chiz = jnp.clip(self.chi_array[jz], 1.0)
-    #     az = 1.0 / (1.0 + self.z_array[jz])
-    #     prefac = az/(chiz**2)
-    #     rmin = xmin * self.r200c_mat[jz, jM]
-    #     rmax = xmax * self.r200c_mat[jz, jM]
-    #     logr_array_int = jnp.linspace(jnp.log(rmin), jnp.log(rmax), num_points_trapz_int)
-    #     r_array_int = jnp.exp(logr_array_int)
-
-    #     y3d_min = jnp.min(jnp.absolute(self.y3d_mat[:,jz, jM]))
-    #     y3d_clipped = jnp.clip(self.y3d_mat[:,jz, jM], y3d_min + 1e-30)
-    #     y3d_rarray = jnp.exp(jnp.interp(logr_array_int, jnp.log(self.r_array), jnp.log(y3d_clipped)))        
-    #     ell = self.ell_array[jl]
-    #     sin_fac = (jnp.sin((ell + 0.5)*r_array_int/chiz))/(((ell + 0.5)*r_array_int/chiz))
-
-    #     fx = y3d_rarray * sin_fac * (4*jnp.pi*r_array_int**2) * r_array_int
-    #     uyl = prefac * jsi.trapezoid(fx, x=logr_array_int) 
-    #     Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
-    #     return uyl * Bl
 
     @partial(jit, static_argnums=(0,))
     def get_uyl(self, jl, jz, jM):

@@ -123,12 +123,16 @@ class get_Pkz(Profiles):
         self.Pmm_sup_tot_mat = self.phfit_kz_mat / self.Pmm_nfw_tot_mat
         self.Pmm_tot_mat = (self.Pmm_dmb_tot_mat) * self.Pmm_sup_tot_mat
         if self.model_tSZ:
-            self.Pym_tot_mat = (self.Pym_1h_kz_mat + self.Pym_2h_kz_mat) * self.Pmm_sup_tot_mat
+            self.Pym_tot_mat = ((self.Pym_1h_kz_mat)**(self.alpha_ky) + (self.Pym_2h_kz_mat)**(self.alpha_ky))**(1/self.alpha_ky)
+            if self.tSZ_transition_model == 'response':
+                self.Pym_tot_mat = self.Pym_tot_mat * self.Pmm_sup_tot_mat
         if self.model_galaxies:
             self.Pge_tot_mat = (self.Pge_1h_kz_mat + self.Pge_2h_kz_mat) * self.Pmm_sup_tot_mat
             self.Pgm_tot_mat = (self.Pgm_1h_kz_mat + self.Pgm_2h_kz_mat) * self.Pmm_sup_tot_mat
             self.Pgm_nfw_tot_mat = (self.Pgm_nfw_1h_kz_mat + self.Pgm_nfw_2h_kz_mat) * self.Pmm_sup_tot_mat
-            self.Pgy_tot_mat = (self.Pgy_1h_kz_mat + self.Pgy_2h_kz_mat) * self.Pmm_sup_tot_mat
+            self.Pgy_tot_mat = ((self.Pgy_1h_kz_mat)**(self.alpha_gy) + (self.Pgy_2h_kz_mat)**(self.alpha_gy))**(1/self.alpha_gy)
+            if self.tSZ_transition_model == 'response':
+                self.Pgy_tot_mat = self.Pgy_tot_mat * self.Pmm_sup_tot_mat
             self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat
 
 

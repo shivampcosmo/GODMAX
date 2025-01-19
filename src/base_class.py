@@ -319,7 +319,11 @@ class base_class:
         self.Delta_z_bias_array = jnp.array(other_params_dict.get('Delta_z_bias_array', [0.0]))
         self.mult_shear_bias_array = jnp.array(other_params_dict.get('mult_shear_bias_array', [0.0]))
 
-        
+        self.tSZ_transition_model = analysis_dict.get('tSZ_transition_model', 'poweradd')
+        self.alpha_ky = other_params_dict.get('alpha_ky', 1.0)
+        self.alpha_gy = other_params_dict.get('alpha_gy', 1.0)
+        self.kstar = other_params_dict.get('kstar', 0.05)
+
     @timing_decorator
     def get_power_spectra_cosmo(self):
         """
