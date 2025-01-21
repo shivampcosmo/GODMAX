@@ -13,6 +13,8 @@ results/
 *.png
 *.txt
 *.fits
+*.err
+*.out
 
 # C extensions
 *.so
