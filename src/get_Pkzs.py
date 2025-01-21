@@ -121,7 +121,10 @@ class get_Pkz(Profiles):
         self.Pmm_nfw_tot_mat = self.Pmm_nfw_1h_kz_mat + self.Pmm_nfw_2h_kz_mat
         self.Pmm_dmb_tot_mat = self.Pmm_dmb_1h_kz_mat + self.Pmm_dmb_2h_kz_mat        
         self.Pmm_sup_tot_mat = self.phfit_kz_mat / self.Pmm_nfw_tot_mat
-        self.Pmm_tot_mat = (self.Pmm_dmb_tot_mat) * self.Pmm_sup_tot_mat
+        if self.model_matter == 'halofit':
+            self.Pmm_tot_mat = self.phfit_kz_mat
+        else:
+            self.Pmm_tot_mat = (self.Pmm_dmb_tot_mat) * self.Pmm_sup_tot_mat
         if self.model_tSZ:
             self.Pym_tot_mat = ((self.Pym_1h_kz_mat)**(self.alpha_ky) + (self.Pym_2h_kz_mat)**(self.alpha_ky))**(1/self.alpha_ky)
             if self.tSZ_transition_model == 'response':

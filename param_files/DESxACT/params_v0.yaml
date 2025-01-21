@@ -19,7 +19,23 @@ analysis:
   model_galaxies: False
   beam_fwhm_arcmin: 1.6
   analysis_coords: real
+  tSZ_transition_model : poweradd
 
   fsky_yy: 0.1
   fsky_ky: 0.1
   fsky_kk: 0.1
+
+
+other_params:
+  alpha_ky : 1.0
+
+  theta_ej_0 : 0.8
+  nu_theta_ej_M : -0.21
+  nu_theta_ej_z : 0.281
+
+  theta_co_0 : 0.13
+
+  mu_beta : 1.36
+  log10_Mc0 : 14.83
+  delta_rhogas : 10.0
+  gamma_rhogas : 4.0

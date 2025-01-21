@@ -16,8 +16,8 @@ sim_params:
   # Parameters to estimate the ejection radius and its evolution with mass and redshift
   theta_ej_0: 3.0
   log10_Mstar0_theta_ej: 15.0
-  nu_theta_ej_M: -0.2
-  nu_theta_ej_z: 0.2
+  nu_theta_ej_M: 0.0
+  nu_theta_ej_z: 0.0
 
   # Parameters to estiamte the core radius and its evolution with mass and redshift
   theta_co_0: 0.1
@@ -75,6 +75,10 @@ other_params:
   eta_IA: 0.1
   z0_IA: 0.62
   C1_rhocrit: 0.0134
+
+  alpha_ky: 1.0
+  alpha_gy: 1.0
+
   Delta_z_bias_array:
     - 0.0
     - 0.0
@@ -93,15 +97,15 @@ other_params:
 halo_params:
   rmin: 0.005
   rmax: 8.0
-  nr: 18
+  nr: 22
 
   zmin: 0.01
   zmax: 1.6
-  nz: 18
+  nz: 22
 
   lg10_Mmin: 11.5
   lg10_Mmax: 15.5
-  nM: 18
+  nM: 22
 
   kmin: 0.0001
   kmax: 150.0
@@ -126,6 +130,7 @@ analysis:
   beam_fwhm_arcmin: 1.6
   verbose_time: False  
   analysis_coords: fourier
+  tSZ_transition_model: poweradd
 
   nbar_gal_comoving_zarray:
     - 0.01

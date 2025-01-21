@@ -27,6 +27,8 @@ numpyro.set_host_device_count(jax.device_count())
 from numpyro.handlers import seed, trace, condition
 from numpyro.infer.reparam import LocScaleReparam, TransformReparam
 from numpyro.infer import HMC, HMCECS, MCMC, NUTS, SA, SVI, Trace_ELBO, init_to_value
+from numpyro.distributions.transforms import AffineTransform
+import numpyro.distributions as dist
 
 from jax import config
 import scipy.interpolate as interp
@@ -34,6 +36,9 @@ import pickle as pk
 import numpy as np
 import colossus 
 import configobj
+import copy
+import yaml
+from deepmerge import always_merger
 
 from base_class import base_class
 from get_radial_profiles import Profiles
@@ -45,14 +50,20 @@ from get_covs import get_cov
 
 deproj = sys.argv[1]
 probe = sys.argv[2]
+model_matter = sys.argv[3]
+use_gty_scale_cuts = True
+# use_xipm_Y3_scale_cuts = bool(sys.argv[4])
+use_xipm_Y3_scale_cuts = False
+
+print(deproj, probe, model_matter, use_xipm_Y3_scale_cuts)
+
 try:
-    smooth_ym_model = sys.argv[3]
+    smooth_ym_model = sys.argv[5]
 except:
     smooth_ym_model = 'poweradd'
 
 
-import yaml
-from deepmerge import always_merger
+
 def read_yaml(file_path):
     with open(file_path, 'r') as file:
         data = yaml.safe_load(file)
@@ -93,6 +104,7 @@ halo_params_dict['ell_array'] = jnp.array(l_array_survey)
 analysis_dict['l_array_survey'] = jnp.array(l_array_survey)
 analysis_dict['dl_array_survey'] = jnp.array(dl_array)
 analysis_dict['tSZ_transition_model'] = smooth_ym_model
+analysis_dict['model_matter'] = model_matter
 
 deproj_to_true_y_file = {
     'None': 'ilc_SZ_yy',
@@ -132,47 +144,56 @@ elif probe == 'gty':
     cov_total = cov_total[:80, :80]
     data_vec = data_vec[:80]
 
-P_total = jnp.linalg.inv(cov_total)
-
-from numpyro.distributions.transforms import AffineTransform
-import numpyro.distributions as dist
-import numpyro
-def Uniform(name, min_value, max_value):
-    """ Creates a Uniform distribution in target range from a base
-    distribution between [-3, 3]
-    """
-    s = (max_value - min_value) / 6.
-    return numpyro.sample(
-            name,
-            dist.TransformedDistribution(
-                dist.Uniform(-3., 3.),
-                AffineTransform(min_value + 3.*s, s),
-            ),
-        )
+fname = abs_path_data + '/DESxACT/scale_cuts_xipm_y3_gty_fid.ini'
+config = configobj.ConfigObj(fname)
+sc_xipm = config['shear-shear']
+sc_gty = config['shear-tsz']
 
 df_cs = fits.open(abs_path_data + '/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate.fits') 
 bin1_vals =  df_cs['xip'].data['BIN1'][::20]
 bin2_vals =  df_cs['xip'].data['BIN2'][::20]
 biny_vals = np.array([1,2,3,4])
+ang_vals = df_cs['xip'].data['ANG'][0:20]
 
-index_gty = []
-for js in range(80):
-    index_gty.append([js%20 ,js//20])
-index_gty = jnp.array(index_gty)
+def process_indices(num, bin_vals, angle_ranges, offset, probe, angle_type, do_scalecuts):
+    indices, indrm = [], []
+    for js in range(num):
+        binv, thetav = divmod(js, 20)
+        bin1, bin2 = (bin_vals[binv] - 1, bin_vals[binv] - 1) if angle_type != 'gty' else (None, None)
+        if do_scalecuts:
+            sc_min, sc_max = map(float, angle_ranges[binv].split())
+        else:
+            sc_min, sc_max = 1e-3, 999.0
+        if sc_min < ang_vals[thetav] < sc_max:
+            indices.append([int(thetav), int(bin1), int(bin2)] if bin1 is not None else [int(thetav), int(binv)])
+        elif probe in [angle_type, 'all']:
+            indrm.append(int(offset + js))
+    return jnp.array(indices, dtype=jnp.int32), jnp.array(indrm, dtype=jnp.int32)
 
-index_xip = []
-for js in range(200):
-    binv = js//20
-    thetav = js%20
-    index_xip.append([thetav ,bin1_vals[binv]-1, bin2_vals[binv]-1])
-index_xip = jnp.array(index_xip)
+# Process gty indices
+sc_ranges_gty = [sc_gty[f'angle_range_gty_{biny}_0'] for biny in biny_vals]
+index_gty, indrm_gty = process_indices(80, None, sc_ranges_gty, 0, probe, 'gty', use_gty_scale_cuts)
+len_ind_gty = len(index_gty)
+# Process xip indices
+sc_ranges_xip = [sc_xipm[f'angle_range_xip_{bin1}_{bin2}'] for bin1, bin2 in zip(bin1_vals, bin2_vals)]
+offset_xip = 80 if probe in ['gty', 'all'] else 0
+index_xip, indrm_xip = process_indices(200, bin1_vals, sc_ranges_xip, offset_xip, probe, 'xip_xim', use_xipm_Y3_scale_cuts)
+len_ind_xip = len(index_xip)
+# Process xim indices
+sc_ranges_xim = [sc_xipm[f'angle_range_xim_{bin1}_{bin2}'] for bin1, bin2 in zip(bin1_vals, bin2_vals)]
+offset_xim = 280 if probe in ['gty', 'all'] else 200
+index_xim, indrm_xim = process_indices(200, bin1_vals, sc_ranges_xim, offset_xim, probe, 'xip_xim', use_xipm_Y3_scale_cuts)
+len_ind_xim = len(index_xim)
+# Combine results
+indrm = jnp.concatenate([indrm_gty, indrm_xip, indrm_xim], dtype=jnp.int32)
+print('removing indices: ', indrm)
 
-index_xim = []
-for js in range(200):
-    binv = js//20
-    thetav = js%20
-    index_xim.append([thetav ,bin1_vals[binv]-1, bin2_vals[binv]-1])
-index_xim = jnp.array(index_xim)
+if len(indrm) > 0:
+    data_vec = jnp.delete(data_vec, indrm)
+    cov_total = jnp.delete(cov_total, indrm, axis=0)
+    cov_total = jnp.delete(cov_total, indrm, axis=1)
+P_total = jnp.linalg.inv(cov_total)
+
 
 with open(abs_path_params + '/DESxACT/priors_v0.yaml', 'r') as file:
     data = yaml.safe_load(file)
@@ -201,9 +222,26 @@ mult_shear_vary_names = ['mult_shear_bias_bin1', 'mult_shear_bias_bin2', 'mult_s
 Delta_shear_vary_names = ['Delta_z_bias_bin1', 'Delta_z_bias_bin2', 'Delta_z_bias_bin3', 'Delta_z_bias_bin4']
 
 
-from get_Xis import get_xi
-import numpyro
-import copy
+def Uniform(name, min_value, max_value):
+    """ Creates a Uniform distribution in target range from a base
+    distribution between [-3, 3]
+    """
+    s = (max_value - min_value) / 6.
+    return numpyro.sample(
+            name,
+            dist.TransformedDistribution(
+                dist.Uniform(-3., 3.),
+                AffineTransform(min_value + 3.*s, s),
+            ),
+        )
+
+def config(x):
+    if type(x['fn']) is dist.TransformedDistribution:
+        return TransformReparam()
+    elif type(x['fn']) is dist.Normal and ('decentered' not in x['name']):
+        return LocScaleReparam(centered=0)
+    else:
+        return None
 
 def model():
     sim_params_dict_vary = copy.deepcopy(sim_params_dict)
@@ -255,9 +293,9 @@ def model():
         index_val = index_xim[index]
         return get_corrfunc_BCMP_test.xim_out_mat[index_val[0], index_val[1], index_val[2]]
 
-    gty_val = vmap(get_gty_from_index)(np.arange(80))
-    xip_val = vmap(get_xip_from_index)(np.arange(200))
-    xim_val = vmap(get_xim_from_index)(np.arange(200))
+    gty_val = vmap(get_gty_from_index)(jnp.arange(len_ind_gty))
+    xip_val = vmap(get_xip_from_index)(jnp.arange(len_ind_xip))
+    xim_val = vmap(get_xim_from_index)(jnp.arange(len_ind_xim))
 
     if probe == 'xip_xim':
         mu = jnp.concatenate([xip_val, xim_val])
@@ -272,32 +310,29 @@ def model():
 
 
 observed_model = condition(model, {'cl': data_vec})
-
-
-def config(x):
-    if type(x['fn']) is dist.TransformedDistribution:
-        return TransformReparam()
-    elif type(x['fn']) is dist.Normal and ('decentered' not in x['name']):
-        return LocScaleReparam(centered=0)
-    else:
-        return None
-
 observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 
-
-num_warmup = 100
-num_samples = 100
+num_warmup = 4000
+num_samples = 4000
 num_chains= 16
+
+
+# num_warmup = 6000
+# num_samples = 2500
+# num_chains= 20
+
 
 def do_mcmc(rng_key, n_vectorized=num_chains):
     # nuts_kernel = NUTS(model)
     nuts_kernel = numpyro.infer.NUTS(observed_model_reparam,
-                                step_size=2e-1, 
+                                step_size=5e-1, 
                                 init_strategy=numpyro.infer.init_to_sample,
                                 dense_mass=True,
-                                max_tree_depth=5
-                                # forward_mode_differentiation=True
+                                # max_tree_depth=4,
+                                max_tree_depth=5,                                     
+                                adapt_mass_matrix=True, 
+                                adapt_step_size=True
                                 )
 
     mcmc = numpyro.infer.MCMC(nuts_kernel, 
@@ -305,7 +340,6 @@ def do_mcmc(rng_key, n_vectorized=num_chains):
                             num_samples=num_samples,
                             num_chains=n_vectorized,
                             chain_method='vectorized',
-                            #   chain_method='sequential',                          
                             progress_bar=False,
                             jit_model_args=True)
 
@@ -321,14 +355,19 @@ traces = pmap(do_mcmc)(rng_keys)
 
 # concatenate traces along pmap'ed axis
 trace = {k: np.concatenate(v) for k, v in traces.items()}
-trace['prior_min'] = prior_min_all_dict
-trace['prior_max'] = prior_max_all_dict
-trace['fiducial_sims_params'] = sim_params_dict
-trace['fiducial_other_params'] = other_params_dict
-trace['fiducial_halo_params'] = halo_params_dict
-trace['fiducial_analysis_params'] = analysis_dict
+trace['RUN_SETTINGS'] = {}
+trace['RUN_SETTINGS']['prior_min'] = prior_min_all_dict
+trace['RUN_SETTINGS']['prior_max'] = prior_max_all_dict
+trace['RUN_SETTINGS']['fiducial_sims_params'] = sim_params_dict
+trace['RUN_SETTINGS']['fiducial_other_params'] = other_params_dict
+trace['RUN_SETTINGS']['fiducial_halo_params'] = halo_params_dict
+trace['RUN_SETTINGS']['fiducial_analysis_params'] = analysis_dict
+trace['RUN_SETTINGS']['index_gty'] = index_gty
+trace['RUN_SETTINGS']['index_xip'] = index_xip
+trace['RUN_SETTINGS']['index_xim'] = index_xim
+trace['RUN_SETTINGS']['indrm'] = indrm
 import dill as dill
 save_chain_dir = abs_path_results + '/DESxACT/chains_Jan/'
 print(save_chain_dir)
-dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_deproj_{deproj}_{num_samples}_{num_warmup}_num_chains_{num_chains*n_parallel}.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_probe_{probe}_modelmatter_{model_matter}_deproj_{deproj}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_gtysc_{use_gty_scale_cuts}_Y3xipmsc_{use_xipm_Y3_scale_cuts}.pkl', 'wb'))
 

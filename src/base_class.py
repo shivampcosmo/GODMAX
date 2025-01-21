@@ -253,6 +253,8 @@ class base_class:
 
         self.model_galaxies = analysis_dict.get('model_galaxies',True)
         self.model_tSZ = analysis_dict.get('model_tSZ',True)
+        # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
+        self.model_matter = analysis_dict.get('model_matter','DMB')
 
         self.angles_data_array = jnp.array(analysis_dict.get('angles_data_array', jnp.logspace(jnp.log10(2.5), jnp.log10(250), 20)))
         self.nt_out = len(self.angles_data_array)
@@ -322,7 +324,6 @@ class base_class:
         self.tSZ_transition_model = analysis_dict.get('tSZ_transition_model', 'poweradd')
         self.alpha_ky = other_params_dict.get('alpha_ky', 1.0)
         self.alpha_gy = other_params_dict.get('alpha_gy', 1.0)
-        self.kstar = other_params_dict.get('kstar', 0.05)
 
     @timing_decorator
     def get_power_spectra_cosmo(self):
