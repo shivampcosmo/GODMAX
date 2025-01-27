@@ -7,13 +7,13 @@ sim_params:
     sigma8: 0.76
     ns: 0.95
     w0: -1.0
-
-  theta_ej_0: 1.0
-  log10_Mstar0_theta_ej: 15.5
-  nu_theta_ej_M: -0.2
-  nu_theta_ej_z: 0.1
-  theta_co_0: 0.025
-
+    
+  log10_Mstar0_theta_ej: 16.0
+  theta_ej_0: 2.0
+  nu_theta_ej_M: 0.0
+  nu_theta_ej_z: 0.0
+  log10_Mc0 : 13.75
+  mu_beta : 0.75
 
 analysis:
   model_galaxies: False

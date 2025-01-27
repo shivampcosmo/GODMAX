@@ -14,14 +14,14 @@ sim_params:
   epsilon_rt: 4.0
 
   # Parameters to estimate the ejection radius and its evolution with mass and redshift
-  theta_ej_0: 3.0
-  log10_Mstar0_theta_ej: 15.0
+  theta_ej_0: 2.0
+  log10_Mstar0_theta_ej: 16.0
   nu_theta_ej_M: 0.0
   nu_theta_ej_z: 0.0
 
   # Parameters to estiamte the core radius and its evolution with mass and redshift
-  theta_co_0: 0.1
-  log10_Mstar0_theta_co: 15.0
+  theta_co_0: 0.05
+  log10_Mstar0_theta_co: 16.0
   nu_theta_co_M: 0.0
   nu_theta_co_z: 0.0
 

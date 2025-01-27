@@ -74,12 +74,12 @@ class get_Pkz(Profiles):
             bm_largescales_2h = vmap(self.get_bm_largescales_2h)(jnp.arange((self.nz)))
             bm_largescales_2h_mat = jnp.tile(bm_largescales_2h, ((self.nk), 1))
 
-            bm_dmb_2h = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0).T
-            bm_largescales_2h_mat_lt_Mmin = 1. - bm_largescales_2h_mat
-            self.bm_dmb_kz_mat = bm_dmb_2h + bm_largescales_2h_mat_lt_Mmin
+            self.bm_dmb_2h = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0).T
+            self.bm_largescales_2h_mat_lt_Mmin = 1. - bm_largescales_2h_mat
+            self.bm_dmb_kz_mat = self.bm_dmb_2h + self.bm_largescales_2h_mat_lt_Mmin
 
             bm_nfw_2h = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 1).T
-            self.bm_nfw_kz_mat = bm_nfw_2h + bm_largescales_2h_mat_lt_Mmin   
+            self.bm_nfw_kz_mat = bm_nfw_2h + self.bm_largescales_2h_mat_lt_Mmin   
         else:
             self.bm_dmb_kz_mat = jnp.ones((len(self.nk), self.nz))
             self.bm_nfw_kz_mat = jnp.ones((len(self.nk), self.nz))

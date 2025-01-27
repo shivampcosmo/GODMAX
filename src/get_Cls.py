@@ -175,7 +175,7 @@ class get_Cl(get_Pkz):
         # Define the conditions and corresponding functions
         conditions = [
             (jnp.logical_and(probe1 == 0, probe2 == 0), self.logPkmmlz_2d_interp),
-            (jnp.logical_and(probe1 == 1, probe2 == 1), self.logPkgm_nfw_lz_2d_interp),
+            (jnp.logical_and(probe1 == 1, probe2 == 1), self.logPkmm_nfw_lz_2d_interp),
             (jnp.logical_and(probe1 == 2, probe2 == 2), self.logPkgglz_2d_interp),
             (jnp.logical_and(probe1 == 2, probe2 == 0), self.logPkgmlz_2d_interp),
             (jnp.logical_and(probe1 == 0, probe2 == 2), self.logPkgmlz_2d_interp),
