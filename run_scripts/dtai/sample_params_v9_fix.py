@@ -97,7 +97,7 @@ other_params_dict['mult_shear_bias_array'] = np.zeros(analysis_dict['nz_source_i
 
 analysis_dict['angles_data_array'] = df['xip'].data['ANG'][0:20]
 
-lmin, lmax, dl_log_array = 10.0, 81000.0, 0.23025851
+lmin, lmax, dl_log_array = 1.0, 81000.0, 0.23025851/3.
 l_array_all = np.exp(np.arange(np.log(lmin), np.log(lmax), dl_log_array))
 dl_array = l_array_all[1:] - l_array_all[:-1]
 l_array_survey = (l_array_all[1:] + l_array_all[:-1]) / 2.
@@ -320,13 +320,19 @@ observed_model = condition(model, {'cl': data_vec})
 observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 
-num_warmup = 3000
-num_samples = 4000
-num_chains= 16
-max_tree_depth = 4
+# num_warmup = 3500
+# num_samples = 4500
+# num_chains= 16
+# max_tree_depth = 4
+
 # num_warmup = 6000
 # num_samples = 2500
 # num_chains= 20
+
+num_warmup = 3000
+num_samples = 12000
+num_chains= 4
+max_tree_depth = 5
 
 
 def do_mcmc(rng_key, n_vectorized=num_chains):

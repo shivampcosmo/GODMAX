@@ -39,6 +39,7 @@ import configobj
 import copy
 import yaml
 from deepmerge import always_merger
+import ast 
 
 from base_class import base_class
 from get_radial_profiles import Profiles
@@ -52,8 +53,8 @@ deproj = sys.argv[1]
 probe = sys.argv[2]
 model_matter = sys.argv[3]
 use_gty_scale_cuts = True
-# use_xipm_Y3_scale_cuts = bool(sys.argv[4])
-use_xipm_Y3_scale_cuts = False
+use_xipm_Y3_scale_cuts = bool(ast.literal_eval(sys.argv[4]))
+
 
 print(deproj, probe, model_matter, use_xipm_Y3_scale_cuts)
 
@@ -319,8 +320,8 @@ observed_model = condition(model, {'cl': data_vec})
 observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 
-num_warmup = 3000
-num_samples = 4000
+num_warmup = 3500
+num_samples = 4500
 num_chains= 16
 max_tree_depth = 4
 # num_warmup = 6000
