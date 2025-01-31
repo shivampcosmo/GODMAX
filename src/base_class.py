@@ -66,9 +66,14 @@ def get_vmapped_func_warg(func, num_args1, num_args2):
 
 
 class base_class:
-    """"
-    Class to calculate the BCMP profile as described in BCM 2018 (Schneider et al.) by augmenting it to have pressure term
-    """
+    '''
+    A base class providing common functionality for physical cosmology calculations
+    and halo model analysis.
+
+    This class handles reading and storing simulation, halo, analysis, and additional
+    parameters. It can optionally initialize power spectra computation and provides
+    a timing decorator to measure execution time of its methods.
+    '''
 
     def __init__(
             self,
@@ -78,14 +83,13 @@ class base_class:
             other_params_dict: dict = None
         ):
         """
-        Initialize the class with the simulation and halo parameters.
+        Initialize the class with the simulation, halo model, analysis and other parameters.
 
         Args:
-            sim_params_dict (dict): Dictionary containing the simulation parameters. The dictionary should contain all the relevant cosmological and BCMP parameters. See the example notebook () for more details.
-            halo_params_dict (dict): Dictionary containing the halo model calculation parameters. This basically controls the resolution of the calculation. See the example notebook () for more details.
-            analysis_dict (dict): Dictionary containing the analysis parameters. See the example notebook () for more details.
-            num_points_trapz_int (int): Number of points to use in the trapezoidal integration.
-            verbose_time (bool): If True, print the time taken to calculate the BCMP profile.
+            sim_params_dict (dict): Dictionary containing the simulation parameters. The dictionary should contain all the relevant cosmological and BCMP parameters. See params_default.yaml for more details.
+            halo_params_dict (dict): Dictionary containing the halo model calculation parameters. This basically controls the resolution of the calculation. See params_default.yaml for more details.
+            analysis_dict (dict): Dictionary containing the analysis settings, model and some accuracy parameters. See params_default.yaml for more details.
+            other_params_dict (dict): Dictionary containing other non-cosmological and non-baryonic parameters, such as intrinsic alignment, shear calibration and photo-z bias. See params_default.yaml for more details.
         Returns:
             None
         """

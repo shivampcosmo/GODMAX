@@ -9,6 +9,22 @@ import interpax
 from jax_cosmo.scipy.integrate import simps
 
 class get_Cl(get_Pkz):
+    """
+    Class that extends the get_Pkz object to compute angular power spectra C(ℓ).
+
+    This class uses the 3D power spectra calculated in get_Pkz and transforms
+    them to angular multipole space. It manages beam factors, optionally applies
+    smoothing, and stores 2D interpolators for quick evaluation of the angular
+    power at given ℓ and redshift.
+
+    Attributes:
+        sim_params_dict (dict): Dictionary containing the simulation parameters.
+        halo_params_dict (dict): Dictionary containing the halo model parameters.
+        analysis_dict (dict): Dictionary containing the analysis parameters.
+        other_params_dict (dict): Dictionary containing other parameters.
+        Pkz_obj (get_Pkz): If provided, the attributes from this object are
+            copied into the get_Cl instance.
+    """    
     def __init__(
                 self,
                 sim_params_dict: dict,
@@ -85,6 +101,23 @@ class get_Cl(get_Pkz):
 
     @partial(jit, static_argnums=(0,))
     def get_P_lz(self, jl, jz, Pk_mat):
+        """
+        Compute the projected angular power spectrum for a given ℓ and redshift index.
+
+        This method takes the 3D power spectrum (Pk_mat) at a given redshift bin jz,
+        converts the target multipole ℓ into a corresponding wavenumber k, and then
+        interpolates the 3D power spectrum at that k to get the angular power value.
+
+        Args:
+            jl (int): The index of the multipole ℓ in self.ell_array.
+            jz (int): The index of the redshift in self.chi_array.
+            Pk_mat (jax.numpy.DeviceArray): The 3D power spectrum array, with shape
+                [n_k, n_z].
+
+        Returns:
+            jax.numpy.DeviceArray: The projected angular power spectrum at the
+            specified multipole ℓ and redshift jz.
+        """        
         ell = self.ell_array[jl]
         chi_z = self.chi_array[jz]
         k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
@@ -100,7 +133,7 @@ class get_Cl(get_Pkz):
     @partial(jit, static_argnums=(0,))
     def get_photoz_biased_nz(self, jb):
         """
-        Returns a photo-z biased n(z)
+        Returns a photo-z shift parameter biased n(z)
         """
         val_biased = jnp.interp(self.z_array_nz - self.Delta_z_bias_array[jb], self.z_array_nz, self.pzs_inp_mat_inp[jb, :])
         norm_val = jsi.trapezoid(val_biased, x=self.z_array_nz)
@@ -152,7 +185,27 @@ class get_Cl(get_Pkz):
         return Az_IA * dndz / dchi_dz
 
     @partial(jit, static_argnums=(0,))
-    def get_Cl_tot(self, jl, jb1, jb2, probe1, probe2):        
+    def get_Cl_tot(self, jl, jb1, jb2, probe1, probe2): 
+        """
+        Compute the total angular power spectrum C(ℓ) for given multipole index jl,
+        lens/source bins jb1, jb2, and probe types probe1, probe2.
+
+        This function determines prefactors based on the probe type, selects the
+        appropriate 2D interpolator for the power spectrum, and applies the
+        line-of-sight integration or weighting factors as needed.
+
+        Args:
+            jl (int): Index of the multipole ℓ in self.ell_array.
+            jb1 (int): First index for lens/source bin.
+            jb2 (int): Second index for lens/source bin.
+            probe1 (int): Integer code selecting the first field (e.g., shear, galaxies, tSZ).
+            probe2 (int): Integer code selecting the second field.
+
+        Returns:
+            jax.numpy.DeviceArray: The total angular power spectrum C(ℓ) for the
+            specified multipole index, bins, and probes.
+        """        
+
         # Handle the first probe condition
         def compute_prefac(probe, jb):
             conditions = [
@@ -202,7 +255,7 @@ class get_Cl(get_Pkz):
     @partial(jit, static_argnums=(0,))
     def get_Pge_tot_ks(self, jb):
         """
-        Computes the 2-halo term of the cross-spectrum between the convergence of two bins (dmb only).
+        Get the galaxy-electron cross power spectrum for a given lens bin jb
         """
         fx_intz = jsi.trapezoid(self.Pge_zarray * self.Wg_mat[jb][None,:], x=self.z_array_for_Cls)
         return jnp.exp(jnp.interp(jnp.log(self.k_array_survey), jnp.log(self.kPk_array), jnp.log(fx_intz + 1e-40)))

@@ -11,6 +11,15 @@ from mcfitjax.cosmology_jax import xi2P
 
 
 class get_Pkz(Profiles):
+    """
+    Compute the total power spectra for matter, tSZ, and galaxy contributions over k and z.
+    Sets the class attributes (e.g., Pmm_tot_mat, Pym_tot_mat, Pgg_tot_mat) depending on
+    the chosen models (matter, tSZ, galaxy). Includes 1-halo and 2-halo terms, and optionally
+    applies 1-halo to 2-halo transition regime corrections.
+    
+    Returns:
+        None
+    """    
     def __init__(
                 self,
                 sim_params_dict: dict,
@@ -196,6 +205,25 @@ class get_Pkz(Profiles):
 
     @partial(jit, static_argnums=(0,))
     def compute_ukz(self, jk, jz, probe):
+        """
+        Compute the field-specific uk values for a given k and redshift bin.
+
+        Depending on the probe type:
+            0 -> dark matter-baryon (dmb)
+            1 -> NFW halo model
+            2 -> galaxies
+            3 -> Compton y-parameter
+            4 -> electron number density
+
+        Args:
+            jk (int): Index for the wavenumber (k).
+            jz (int): Index for the redshift bin (z).
+            probe (int): Integer code selecting which field to compute uk for.
+
+        Returns:
+            ukz (jax.numpy.DeviceArray): The dimensionless clustering amplitude or weighting function
+                for the specified probe, evaluated at the given k and z.
+        """        
         conditions = [
             (probe == 0, (self.Mtot_mat[jz, :] * self.uk_dmb[jk, jz, :]) / self.rhom_0),
             (probe == 1, (self.Mtot_mat[jz, :] * self.uk_nfw[jk, jz, :]) / self.rhom_0),
@@ -232,6 +260,23 @@ class get_Pkz(Profiles):
 
     @partial(jit, static_argnums=(0,))
     def get_P_1h(self, jk, jz, probe1, probe2):
+        """
+        Compute the 1-halo power spectrum for the specified probes.
+
+        This function calculates ukz values for two probes, handles the special case
+        when both probes are galaxies (auto-squared), and integrates over the halo mass
+        function to obtain the 1-halo contribution.
+
+        Args:
+            jk (int): Index for the wavenumber (k).
+            jz (int): Index for the redshift bin (z).
+            probe1 (int): Integer code selecting the first field.
+            probe2 (int): Integer code selecting the second field.
+
+        Returns:
+            jax.numpy.DeviceArray: The 1-halo power spectrum for the selected probes.
+        """
+
         # Compute ukz1 and ukz2
         ukz1 = self.compute_ukz(jk, jz, probe1)
         ukz2 = self.compute_ukz(jk, jz, probe2)

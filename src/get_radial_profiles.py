@@ -732,6 +732,7 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_Mclm(self, jr, jz, jM, r_array_here=None):
+        '''Collison less matter profile (includes dark matter and satellite galaxies)'''
         if r_array_here is None:
             r_array_here = self.r_array
         zeta = (jnp.interp(jnp.log(r_array_here[jr]), jnp.log(self.r_array), self.zeta_mat[:,jz, jM]))

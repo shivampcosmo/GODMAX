@@ -6,6 +6,44 @@ from functools import partial
 from mcfitjax.transforms import Hankel
 
 class get_xi(get_Cl):
+    """
+    Class that extends the get_Cl object to compute real-space correlation functions.
+
+    This class uses Hankel transforms (from mcfitjax) to convert the angular power
+    spectra computed in get_Cl to correlation functions in real space, such as
+    shear-tSZ cross-correlations and shear auto-correlations. It also sets up
+    interpolation functions to evaluate these correlation functions at specific
+    angular scales.
+
+    Attributes:
+        theta_out_arcmin (jax.numpy.DeviceArray): The angular scales in arcminutes
+            at which the correlation functions are evaluated.
+        gty_out_mat (jax.numpy.DeviceArray): The interpolated shear-tSZ correlation
+            function matrix at user-specified angles.
+        xip_out_mat (jax.numpy.DeviceArray): The interpolated ξ+ correlation matrix at
+            user-specified angles.
+        xim_out_mat (jax.numpy.DeviceArray): The interpolated ξ− correlation matrix at
+            user-specified angles.
+
+    Methods:
+        __init__(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, Cl_obj=None):
+            Initialize by either calling the parent constructor (if Cl_obj is None) or
+            copying attributes from the passed Cl_obj. Performs Hankel transforms
+            to compute correlation functions from the angular power spectra, and
+            sets up interpolation for these correlation functions at specific angles.
+        
+        interp_gty_theta(jt, jb):
+            Interpolates the shear-tSZ correlation at a particular angle for a given bin.
+        
+        interp_xip_theta(jb1, jb2):
+            Interpolates the shear-shear ξ+ correlation at specific angles for the
+            given bins.
+        
+        interp_xim_theta(jb1, jb2):
+            Interpolates the shear-shear ξ− correlation at specific angles for the
+            given bins.
+    """
+
     def __init__(
                 self,
                 sim_params_dict: dict,
