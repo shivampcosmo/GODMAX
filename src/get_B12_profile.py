@@ -69,7 +69,6 @@ class Battaglia_12_16(base_class):
         self.rho_gas_mat_physical = get_vmapped_func(self.get_rho_gas, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.Pth_mat_physical = get_vmapped_func(self.get_Pth, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.Pe_mat_physical = self.Pth_mat_physical/1.932
-        h = self.cosmo_params['H0'] / 100.
         self.ne_mat_physical = self.rho_gas_mat_physical/(mue*mp*(Mpc_to_cm**3)) # in cm**-3
 
     @partial(jit, static_argnums=(0,))
@@ -79,7 +78,7 @@ class Battaglia_12_16(base_class):
         R = (self.M_array[jM] * 3.0 / 4.0 / jnp.pi / rho_treshold)**(1.0 / 3.0)
         return R
 
-    @partial(jit, static_argnums=(0,1,2))
+    @partial(jit, static_argnums=(0,1))
     def get_params_density(self, key, jM, jz):
         params_dict = self.density_params_def
         Mval = self.M_array[jM] / self.h
@@ -90,7 +89,7 @@ class Battaglia_12_16(base_class):
         A = A0 * (Mval / 1e14)**alpha_m * (1 + zval)**alpha_z
         return A
 
-    @partial(jit, static_argnums=(0,1,2))
+    @partial(jit, static_argnums=(0,1))
     def get_params_pressure(self, key, jM, jz):
         params_dict = self.pressure_params_def
         Mval = self.M_array[jM] / self.h

@@ -69,7 +69,6 @@ class get_sim_map(Profiles):
             self.log_y2D_interp = interpax.Interpolator3D(jnp.log(self.rp_array), self.z_array, jnp.log(self.M_array), jnp.log(self.y2D_mat_physical), extrap=True)
 
             self.nside_map = mock_params_dict['nside']
-            self.y_sim = jnp.zeros(self.nside_map**2 * 12)
 
             self.nearby_pix_all = mock_params_dict['nearby_pix_all']
             self.pix_prop_all = mock_params_dict['pix_prop_all']
