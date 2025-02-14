@@ -7,7 +7,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --mem=128G
 #SBATCH --gpus-per-node=4
-#SBATCH --job-name=v9_xipm_Y3sc_halofit_run_treeedpth_5
+#SBATCH --job-name=v9_xipm_Y3sc_halofit_run
 #SBATCH --output=/projects/bdne/spandey3/new_godmax/GODMAX/run_scripts/dtai/logs/%x.%j.out
 #SBATCH --error=/projects/bdne/spandey3/new_godmax/GODMAX/run_scripts/dtai/logs/%x.%j.err
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
