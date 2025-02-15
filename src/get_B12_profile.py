@@ -70,6 +70,14 @@ class Battaglia_12_16(base_class):
         self.Pth_mat_physical = get_vmapped_func(self.get_Pth, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.Pe_mat_physical = self.Pth_mat_physical/1.932
         self.ne_mat_physical = self.rho_gas_mat_physical/(mue*mp*(Mpc_to_cm**3)) # in cm**-3
+        sigmat = const.sigma_T
+        m_e = const.m_e
+        c = const.c
+        coeff = sigmat / (m_e * (c ** 2))
+        oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
+        const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
+        self.y3d_mat = const_coeff * self.Pe_mat_physical
+
 
     @partial(jit, static_argnums=(0,))
     def get_M_to_R(self, jM, jz, mdef_delta=200):
