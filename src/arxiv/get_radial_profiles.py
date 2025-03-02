@@ -6,24 +6,22 @@ import astropy.units as u
 import jax
 from astropy import constants as const
 import jax.scipy.integrate as jsi
-from jax_cosmo.scipy.integrate import simps
-from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
-import jax_cosmo.background as bkgrd
-import time
-import interpax
-from base_class import base_class, get_vmapped_func, get_vmapped_func_warg
-
-# Define constants once at module level
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 mp = (1.6726219e-27*u.kg).to(u.Msun).value
 mue = 1.14
 Mpc_to_cm = 3.086e24
+import helpers.constants as constants
+import jax_cosmo.background as bkgrd
+import time
+from jax_cosmo.scipy.integrate import romb, simps
+from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
+from base_class import base_class, get_vmapped_func, get_vmapped_func_warg
+import interpax
 
 class Profiles(base_class):
     """"
-    Optimized class to calculate the BCMP profile as described in BCM 2018 (Schneider et al.)
-    by augmenting it to have pressure term
+    Class to calculate the BCMP profile as described in BCM 2018 (Schneider et al.) by augmenting it to have pressure term
     """
 
     def __init__(
@@ -34,13 +32,23 @@ class Profiles(base_class):
             other_params_dict: dict = None,
             base_class_obj = None
         ):
-        """Initialize the class with the simulation and halo parameters."""
+        """
+        Initialize the class with the simulation and halo parameters.
+
+        Args:
+            sim_params_dict (dict): Dictionary containing the simulation parameters. The dictionary should contain all the relevant cosmological and BCMP parameters. See the example notebook () for more details.
+            halo_params_dict (dict): Dictionary containing the halo model calculation parameters. This basically controls the resolution of the calculation. See the example notebook () for more details.
+            analysis_dict (dict): Dictionary containing the analysis parameters. See the example notebook () for more details.
+            num_points_trapz_int (int): Number of points to use in the trapezoidal integration.
+            verbose_time (bool): If True, print the time taken to calculate the BCMP profile.
+        Returns:
+            None
+        """
         if base_class_obj is None:
             super().__init__(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
         else:
             self.__dict__.update(base_class_obj.__dict__)
 
-        # Pre-compute arrays that will be used repeatedly
         self.setup_hmf()
         self.get_hmf()
         self.get_conc_Mz()
@@ -50,14 +58,16 @@ class Profiles(base_class):
         self.run_gas_calc()
         self.run_clm_calc()
         self.run_cga_calc()
+
         self.run_dmb_calc()
-        
         if self.model_tSZ:
             self.run_pressure_calc()
+
 
     def timing_decorator(func):
         """Decorator to time a function if the instance or class enables timing."""
         def wrapper(self, *args, **kwargs):
+            # Check if timing is enabled (instance or class-level flag)
             if getattr(self, "ENABLE_TIMING", False):
                 start_time = time.perf_counter()
                 result = func(self, *args, **kwargs)
@@ -68,194 +78,145 @@ class Profiles(base_class):
                 return func(self, *args, **kwargs)
         return wrapper
 
+
     @timing_decorator
     def setup_hmf(self):
-        """Setup the halo mass function calculation - optimized version."""
-        # Vectorize calculation of sigma_Mz matrix
-        self.sigma_Mz_mat = get_vmapped_func(self.get_sigma_Mz, 2)(
-            jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Pre-compute nu_Mz_mat
+        """
+        Setup the the halo mass function calculation by calculating the sigma_Mz matrix, dlg_sigma_dlnM matrix
+        """
+        self.sigma_Mz_mat = get_vmapped_func(self.get_sigma_Mz, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.nu_Mz_mat = constants.DELTA_COLLAPSE / self.sigma_Mz_mat
-        
-        # Use JAX grad for automatic differentiation
-        grad_lgsigma = jit(grad(self.get_lgsigma_z, argnums=1))
-        
-        # Pre-compute derivative for HMF
+        grad_lgsigma = grad(self.get_lgsigma_z, argnums=1)
         self.dlgsig_dlnM_mat = get_vmapped_func(grad_lgsigma, 2)(jnp.arange(self.nz), jnp.log(self.M_array)).T
 
     @timing_decorator
     def get_hmf(self):
-        """Get the halo mass function - optimized version."""
-        # Pre-compute density matrix only once
-        rhom_z_array = constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * jnp.ones_like(self.z_array) * 1E9
-        
-        # Use broadcast instead of repeat for better memory usage
-        rhom_z_mat = rhom_z_array[None, :] * jnp.ones((self.nM, 1))
-        M_z_mat = self.M_array[:, None] * jnp.ones((1, self.nz))
-        
-        # Compute fsigma based on model choice
+        """
+        Get the halo mass function by using the sigma_Mz matrix and the dlgsig_dlnM matrix.
+        """
+        rhom_z_array = (constants.RHO_CRIT_0_KPC3 * self.cosmo_params['Om0'] * jnp.ones_like(self.z_array)) * 1E9
+        rhom_z_mat = jnp.repeat(rhom_z_array[None, :], self.nM, axis=0)
+        M_z_mat = jnp.repeat(self.M_array[:, None], self.nz, axis=1)
         if self.hmf_model == 'T08':
             self.fsigma_Mz_mat = get_vmapped_func(self.get_fsigma_Mz_T08, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         elif self.hmf_model == 'T10':
             self.fsigma_Mz_mat = get_vmapped_func(self.get_fsigma_Mz_T10, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         else:
             raise ValueError("HMF model not recognized")
-            
-        # Calculate HMF in one vectorized operation
         self.hmf_Mz_mat = -1 * self.fsigma_Mz_mat * (rhom_z_mat/M_z_mat).T * self.dlgsig_dlnM_mat
 
     @timing_decorator
     def get_conc_Mz(self):
-        """Get the concentration-mass relation matrix - optimized version."""
-        # Use dictionary dispatch instead of multiple if statements
-        conc_models = {
-            'Prada12': self.get_conc_Mz_Prada12,
-            'Duffy08': self.get_conc_Mz_Duffy08,
-            'Diemer15': self.get_conc_Mz_Diemer15
-        }
-        
-        if self.conc_model not in conc_models:
-            raise ValueError(f"Concentration model {self.conc_model} not supported")
-            
-        self.conc_Mz_mat = get_vmapped_func(conc_models[self.conc_model], 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        """
+        Get the concentration-mass relation matrix
+        """
+        if self.conc_model == 'Prada12':
+            self.conc_Mz_mat = get_vmapped_func(self.get_conc_Mz_Prada12, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        if self.conc_model == 'Duffy08':
+            self.conc_Mz_mat = get_vmapped_func(self.get_conc_Mz_Duffy08, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        if self.conc_model == 'Diemer15':
+            self.conc_Mz_mat = get_vmapped_func(self.get_conc_Mz_Diemer15, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
     @timing_decorator
     def setup_main_calc(self):
-        """Setup main calculation parameters - optimized version."""
-        self.r200c_mat = get_vmapped_func(self.get_M_to_R, 2)(
-            jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
+        """
+        Setup the main calculation by calculating things like r200c matrix, Mc matrix, beta matrix etc.
+        """
+        self.r200c_mat = get_vmapped_func(self.get_M_to_R, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.rt_mat = self.r200c_mat * self.epsilon_rt
         self.Mc_mat = get_vmapped_func(self.get_Mc, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.beta_mat = get_vmapped_func(self.get_beta, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
         self.theta_co = get_vmapped_func(self.get_theta_co, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.theta_ej = get_vmapped_func(self.get_theta_ej, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
         self.r_co_mat = self.theta_co * self.r200c_mat
         self.r_ej_mat = self.theta_ej * self.r200c_mat
 
     @timing_decorator
     def get_DMO_profiles(self):
-        """Calculate DMO profiles - optimized version."""
-        # Optimize NFW profile calculation by calculating once and reusing
         self.rho_nfw_unnorm_mat = get_vmapped_func(self.get_rho_nfw_unnorm, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Pre-compute normalization
         self.rho_nfw_norm_mat = get_vmapped_func(self.get_nfw_norm, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Calculate normalized NFW profile
         self.rho_nfw_mat = get_vmapped_func(self.get_rho_nfw_normed, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Calculate total mass
         self.Mtot_mat = get_vmapped_func(self.get_Mtot, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
     @timing_decorator
     def run_stars_calc(self):
-        """Run the stellar/galaxy calculations - optimized version."""
+        """
+        Run the Ncen/Nsat calculation to get the stellar/galaxy counts.
+        """
         if self.model_galaxies:
-            # Pre-compute threshold masses
             self.Mthresh_array = vmap(self.get_Mthresh)(jnp.arange(self.nz))
-            
-            # Calculate galaxy statistics matrices
             self.Ncen_mat = get_vmapped_func(self.get_Ncen, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
             self.Nsat_mat = get_vmapped_func(self.get_Nsat, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-                
-            # Calculate stellar fraction matrices
             self.fstar_cen_mat = get_vmapped_func(self.get_fstar_cen, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
             self.fstar_sat_mat = get_vmapped_func(self.get_fstar_sat, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-                
-            # Calculate total stellar fraction
             self.fstar_tot_mat = self.fstar_cen_mat + self.fstar_sat_mat
         else:
-            # More efficient array creation for simpler model
             self.fcga_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_cga)
             self.fstar_array = self.A_starcga * ((self.M1_starcga / self.M_array) ** self.eta_star)
-            
-            # Use broadcasting for efficiency
-            self.fstar_tot_mat = self.fstar_array[None, :] * jnp.ones((self.nz, 1))
-            self.fstar_cen_mat = self.fcga_array[None, :] * jnp.ones((self.nz, 1))
+            self.fstar_tot_mat = self.fstar_array[None, :] * jnp.ones((self.nz, self.nM))
+            self.fstar_cen_mat = self.fcga_array[None, :] * jnp.ones((self.nz, self.nM))
             self.fstar_sat_mat = self.fstar_tot_mat - self.fstar_cen_mat
 
     @timing_decorator
     def run_gas_calc(self):
-        """Run the gas profile calculations - optimized version."""
-        # Use vectorized operations for gas fraction calculation
+        """
+        Run the gas profile calculation.
+        """
         self.fgas_mat = (self.cosmo_params['Ob0'] / self.cosmo_params['Om0']) - self.fstar_tot_mat
         self.fclm_mat = (1 - self.cosmo_params['Ob0'] / self.cosmo_params['Om0']) + self.fstar_sat_mat
-        
-        # Pre-compute radius factor
         self.Rh_mat = 0.015 * self.r200c_mat
-        
-        # Calculate gas density normalization
         self.rho_gas_norm_mat = get_vmapped_func(self.get_rho_gas_norm, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Calculate gas density profiles
         self.rho_gas_mat = get_vmapped_func(self.get_rho_gas_normed, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Calculate physical gas density
         self.rho_gas_mat_physical = self.rho_gas_mat / (self.scale_fac_a_array[None, :, None] ** 3)
-        
-        # Calculate gas mass
         self.Mgas_mat = get_vmapped_func(self.get_Mgas, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Pre-calculate electron number density
         h = self.cosmo_params['H0'] / 100.
-        factor = 1/(mue*mp*(Mpc_to_cm**3)/(h**2))  # Extract common factor
-        
-        # Calculate electron densities efficiently
-        self.ne_mat_physical = self.rho_gas_mat_physical * factor
-        self.ne_mat = self.rho_gas_mat * factor
-        self.ne_mat_norm = self.Mgas_mat * factor
+        self.ne_mat_physical = self.rho_gas_mat_physical/(mue*mp*(Mpc_to_cm**3)/(h**2)) # in cm**-3
+        self.ne_mat = self.rho_gas_mat/(mue*mp*(Mpc_to_cm**3)/(h**2)) # in cm**-3
+        self.ne_mat_norm = self.Mgas_mat/(mue*mp*(Mpc_to_cm**3)/(h**2)) # in cm**-3
+
 
     @timing_decorator
     def run_clm_calc(self):
-        """Run the collision-less matter profile calculation - optimized."""
-        # Pre-calculate zeta values
+        """
+        Run the collision less matter profile calculation.
+        """
         self.zeta_mat = get_vmapped_func(self.get_zeta, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Calculate CLM mass
         self.Mclm_mat = get_vmapped_func(self.get_Mclm, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Get CLM density
+        # self.rho_clm_mat = get_vmapped_func(self.get_rho_clm, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.rho_clm_mat = get_vmapped_func(self.get_rho_clm, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
 
     @timing_decorator
     def run_cga_calc(self):
-        """Run the central galaxy profile calculation - optimized."""
+        """
+        Run the central galaxy profile calculation.
+        """
         self.rho_cga_mat = get_vmapped_func(self.get_rho_cga, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
     @timing_decorator
     def run_dmb_calc(self):
-        """Get the final total matter profiles - optimized."""
-        # Calculate combined density in one operation
+        """
+        Get the final total matter profiles
+        """
+        # self.rho_dmb_mat = get_vmapped_func(self.get_rho_dmb, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.rho_dmb_mat = self.rho_cga_mat + self.rho_clm_mat + self.rho_gas_mat
-        
-        # Calculate mass profiles
+        # self.rho_dmb_mat_physical = self.rho_dmb_mat / (self.scale_fac_a_array[None, :, None] ** 3)
         self.Mdmb_mat = get_vmapped_func(self.get_Mdmb, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
     @timing_decorator
     def run_pressure_calc(self):
-        """Get the pressure profiles - optimized."""
-        # Calculate pressure profiles
+        """
+        Get the pressure profiles
+        """
         Ptot_mat = get_vmapped_func(self.get_Ptot, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Convert to physical coordinates
+        # this was pressure in the comoving coordinates. Convert to physical coordinates:
         Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 3)
-        
-        # Calculate non-thermal pressure
         Pnt_fac = get_vmapped_func(self.get_Pnt_fac, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
         Pnt_mat = Pnt_fac * Ptot_mat
-        
-        # Calculate thermal pressure more efficiently
+        # Pnt_mat_physical = Pnt_fac * Ptot_mat_physical
         Pth_mat = Ptot_mat * jnp.maximum(0, 1 - Pnt_fac)
-        Pth_mat_physical = Ptot_mat_physical * jnp.maximum(0, 1 - Pnt_fac)
-        
-        # Convert to electron pressure (factor 1.932)
+        Pth_mat_physical = Ptot_mat_physical * jnp.maximum(0, 1 - Pnt_fac)        
+        # this was thermal pressure. Convert to electron pressure using Xh=0.76 and dividing by 2*(Xh + 1)/(5*Xh + 3) ~ 1.932
         self.Pe_mat_physical = Pth_mat_physical/1.932
-        
-        # Calculate y3d parameter with pre-computed coefficient
         sigmat = const.sigma_T
         m_e = const.m_e
         c = const.c
@@ -263,6 +224,7 @@ class Profiles(base_class):
         oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
         const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
         self.y3d_mat = const_coeff * self.Pe_mat_physical
+
 
     @partial(jit, static_argnums=(0,))
     def get_M_to_R(self, jz, jM, mdef_delta=200):
@@ -273,44 +235,38 @@ class Profiles(base_class):
         R *= (1 + self.z_array[jz])
         return R
 
-    @partial(jit, static_argnums=(0,))
+
+    @partial(jit, static_argnums=(0,))        
     def get_lgsigma_z(self, jz, lgM, kmin=0.0001, kmax=1000.0):
-        """Optimized sigma calculation."""
         M = jnp.exp(lgM)
         R = (3.0 * M / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
-        
-        # Vectorize integration for efficiency
-        @jit
         def int_sigma(logk):
             k = jnp.exp(logk)
             x = k * R
             w = 3.0 * (jnp.sin(x) - x * jnp.cos(x)) / (x * x * x)
-            pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), 
-                                jnp.log(self.plin_kz_mat[:, jz])))
+            pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:, jz])))
             return k * (k * w) ** 2 * pkz
-        
-        # Use simps with fixed number of points
-        y = simps(int_sigma, jnp.log10(kmin), jnp.log10(kmax), N=64)
+
+        # y = romb(int_sigma, jnp.log10(kmin), jnp.log10(kmax), divmax=3)
+        y = simps(int_sigma, jnp.log10(kmin), jnp.log10(kmax), N=64) 
         return jnp.log(jnp.sqrt(y / (2.0 * jnp.pi**2.0)))
 
-    @partial(jit, static_argnums=(0,))
-    def get_sigma_Mz(self, jz, jM, kmin=0.0001, kmax=1000.0):
-        """Optimized sigma_Mz calculation using pre-computed values."""
-        R = (3.0 * self.M_array[jM] / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
         
-        @jit
+    @partial(jit, static_argnums=(0,))        
+    def get_sigma_Mz(self, jz, jM, kmin=0.0001, kmax=1000.0):
+        R = (3.0 * self.M_array[jM] / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
+
         def int_sigma(logk):
             k = jnp.exp(logk)
             x = k * R
             w = 3.0 * (jnp.sin(x) - x * jnp.cos(x)) / (x * x * x)
-            # Use pre-computed log interpolation values
-            pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), 
-                                jnp.log(self.plin_kz_mat[:, jz])))
+            pkz = jnp.exp(jnp.interp(logk, jnp.log(self.kPk_array), jnp.log(self.plin_kz_mat[:, jz])))
             return k * (k * w) ** 2 * pkz
-        
-        # Use simps with fixed number of points for better vectorization
-        y = simps(int_sigma, jnp.log10(kmin), jnp.log10(kmax), N=64)
+
+        # y = romb(int_sigma, jnp.log10(kmin), jnp.log10(kmax), divmax=3)
+        y = simps(int_sigma, jnp.log10(kmin), jnp.log10(kmax), N=64)        
         return jnp.sqrt(y / (2.0 * jnp.pi**2.0))
+
 
     @partial(jit, static_argnums=(0,))
     def get_fsigma_Mz_T08(self, jz, jM, mdef_delta=200):
@@ -368,8 +324,8 @@ class Profiles(base_class):
         eta = eta*(1+z)**0.27
         gamma = gamma*(1+z)**(-0.01)
         fnu= alpha*(1+(beta*nu)**(-2.0*phi))*nu**(2*eta)*jnp.exp(-gamma*nu**2/2)
-        return nu*fnu 
-
+        return nu*fnu        
+    
 
 
     @partial(jit, static_argnums=(0,))
@@ -458,25 +414,22 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_rho_nfw_unnorm(self, jr, jz, jM, r_array_here=None):
-        """Optimized NFW profile calculation."""
-        # Get cached values or compute them
+        '''This is the NFW profile (Eq.2.18)'''
         r200c = self.r200c_mat[jz, jM]
         rt = self.rt_mat[jz, jM]
         conc = self.conc_Mz_mat[jz, jM]
-        
-        # Use provided radius or default
-        r = r_array_here[jr] if r_array_here is not None else self.r_array[jr]
-        
-        # Pre-compute ratios
+        if r_array_here is None:
+            r = self.r_array[jr]
+        else:
+            r = r_array_here[jr]
         rs = r200c / conc
         x = r / rs
-        
-        # Conditionally apply truncation
+        y = r / rt
         if self.nfw_trunc:
-            y = r / rt
-            return (1 / (x * (1 + x)**2)) * (1 / (1 + y**2)**2)
+            rho_nfw = (1 / (x * (1 + x)**2)) * (1 / (1 + y**2)**2)
         else:
-            return 1 / (x * (1 + x)**2)
+            rho_nfw = 1 / (x * (1 + x)**2)
+        return rho_nfw
 
     @partial(jit, static_argnums=(0,))
     def get_nfw_norm(self, jz, jM):
@@ -491,6 +444,20 @@ class Profiles(base_class):
     @partial(jit, static_argnums=(0,))
     def get_rho_nfw_normed(self, jr, jz, jM, r_array_here=None):
         '''This is the NFW profile (Eq.2.18)'''
+        # r200c = self.r200c_mat[jz, jM]
+        # rt = self.rt_mat[jz, jM]
+        # conc = self.conc_Mz_mat[jz, jM]
+        # if r_array_here is None:
+        #     r = self.r_array[jr]
+        # else:
+        #     r = r_array_here[jr]
+        # rs = r200c / conc
+        # x = r / rs
+        # y = r / rt
+        # if self.nfw_trunc:
+        #     rho_nfw = (1 / (x * (1 + x)**2)) * (1 / (1 + y**2)**2)
+        # else:
+        #     rho_nfw = 1 / (x * (1 + x)**2)
         rho_nfw = self.get_rho_nfw_unnorm(jr, jz, jM, r_array_here=r_array_here)
         prefac = self.rho_nfw_norm_mat[jz, jM]
         return prefac * rho_nfw
@@ -752,6 +719,20 @@ class Profiles(base_class):
         return zeta
 
 
+    # @partial(jit, static_argnums=(0,))
+    # def get_rho_clm(self, jr, jz, jM, r_array_here=None):
+    #     if r_array_here is None:
+    #         r_array_here = self.r_array
+    #     zeta = (jnp.interp(jnp.log(r_array_here[jr]), jnp.log(self.r_array), self.zeta_mat[:,jz, jM]))
+    #     if r_array_here is None:
+    #         r_array_new = self.r_array/zeta        
+    #     else:
+    #         r_array_new = r_array_here/zeta
+        
+    #     rho_nfw = self.get_rho_nfw_normed(jr, jz, jM, r_array_new)
+    #     rho_clm = (self.fclm_mat[jz, jM] / (zeta**3)) * rho_nfw
+    #     return rho_clm
+
     @partial(jit, static_argnums=(0,))
     def get_rho_clm(self, jz, jM, r_array_here=None):
         if r_array_here is None:
@@ -759,11 +740,18 @@ class Profiles(base_class):
             Mclm_here = self.Mclm_mat[:, jz, jM]
         else:
             Mclm_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.Mclm_mat[:, jz, jM])))
+        # zeta = (jnp.interp(jnp.log(r_array_here[jr]), jnp.log(self.r_array), self.zeta_mat[:,jz, jM]))
+        # if r_array_here is None:
+        #     r_array_new = self.r_array/zeta        
+        # else:
+        #     r_array_new = r_array_here/zeta
         
         lnMclm_interp = interpax.CubicSpline(jnp.log(r_array_here), jnp.log(Mclm_here + 1e-30), extrapolate=True, check=False)
         dlnMclm_dr = lnMclm_interp.derivative(nu=1)(jnp.log(r_array_here))
         dMclm_dr = dlnMclm_dr * Mclm_here / r_array_here
         rho_clm = dMclm_dr / (4*jnp.pi*r_array_here**2)      
+        # rho_nfw = self.get_rho_nfw_normed(jr, jz, jM, r_array_new)
+        # rho_clm = (self.fclm_mat[jz, jM] / (zeta**3)) * rho_nfw
         return jnp.clip(rho_clm, 0, 1e30)
 
 
@@ -781,8 +769,15 @@ class Profiles(base_class):
             r_array_new = r_array_here/zeta
 
         M_clm = self.fclm_mat[jz, jM] * self.get_Mnfw(jr, jz, jM, r_array_new)
-        return jnp.clip(M_clm, 1e-30)
+        return M_clm
 
+
+    # @partial(jit, static_argnums=(0,))
+    # def get_rho_dmb(self, jr, jz, jM, r_array_here=None):
+    #     '''This is the total matter profile with all the components (Eq.2.2)'''    
+    #     rho_dmb = self.get_rho_gas_normed(jr, jz, jM, r_array_here=r_array_here) + \
+    #         self.get_rho_cga(jr, jz, jM, r_array_here=r_array_here) + self.get_rho_clm(jr, jz, jM, r_array_here=r_array_here)
+    #     return rho_dmb
 
     @partial(jit, static_argnums=(0,))
     def get_rho_dmb(self, jr, jz, jM, r_array_here=None):

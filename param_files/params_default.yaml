@@ -97,7 +97,7 @@ other_params:
 halo_params:
   rmin: 0.005
   rmax: 8.0
-  nr: 22
+  nr: 23
 
   zmin: 0.01
   zmax: 1.6
@@ -105,7 +105,7 @@ halo_params:
 
   lg10_Mmin: 11.5
   lg10_Mmax: 15.5
-  nM: 22
+  nM: 24
 
   kmin: 0.0001
   kmax: 150.0

@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=15
-#SBATCH --time=12:00:00
+#SBATCH --time=36:00:00
 #SBATCH --partition=ghx4
 #SBATCH --mem=128G
 #SBATCH --gpus-per-node=4

@@ -78,24 +78,24 @@ def generate_dicts(data):
     return sim_params_dict, halo_params_dict, analysis_dict, other_params_dict
 
 default_data = read_yaml(abs_path_params + '/params_default.yaml')
-new_data = read_yaml(abs_path_params + '/DESxACT/params_v3.yaml')
+new_data = read_yaml(abs_path_params + '/DESxACT/params_v2.yaml')
 merged_data = always_merger.merge(default_data, new_data)
 
 sim_params_dict, halo_params_dict, analysis_dict, other_params_dict = generate_dicts(merged_data)
 
 from astropy.io import fits
-df_cs = fits.open(os.path.abspath(abs_path_data + '/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate_newbins.fits'))
-z_array = df_cs['nz_source'].data['Z_MID']
+df = fits.open(os.path.abspath(abs_path_data + '/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate.fits'))
+z_array = df['nz_source'].data['Z_MID']
 nz_info_dict = {}
 nz_info_dict['z_array_source'] = z_array
 nz_info_dict['nbins'] = 4
 for ji in range(nz_info_dict['nbins']):
-    nz_info_dict['nz'+str(ji)] = np.maximum(df_cs['nz_source'].data['BIN'+str(ji+1)], 1e-4)
+    nz_info_dict['nz'+str(ji)] = np.maximum(df['nz_source'].data['BIN'+str(ji+1)], 1e-4)
 analysis_dict['nz_source_info_dict'] = nz_info_dict
 other_params_dict['Delta_z_bias_array'] = np.zeros(analysis_dict['nz_source_info_dict']['nbins'])
 other_params_dict['mult_shear_bias_array'] = np.zeros(analysis_dict['nz_source_info_dict']['nbins'])
 
-analysis_dict['angles_data_array'] = df_cs['xip'].data['ANG'][0:20]
+analysis_dict['angles_data_array'] = df['xip'].data['ANG'][0:20]
 
 lmin, lmax, dl_log_array = 1.0, 81000.0, 0.23025851/3
 l_array_all = np.exp(np.arange(np.log(lmin), np.log(lmax), dl_log_array))
@@ -125,7 +125,7 @@ deproj_to_true_y_file = {
     'cib_2p0_dBeta': 'ilc_SZ_deproj_cib_cibdBeta_2.0_10.7_yy',
 }
 
-save_DV_dir = os.path.abspath(abs_path_data + '/DESxACT/DV_v3/')
+save_DV_dir = os.path.abspath(abs_path_data + '/DESxACT/DV_v2/')
 df_measure = pk.load(open(f'{save_DV_dir}/DESxACT_gty_xip_xim_DV_{deproj_to_true_y_file[deproj]}.pk', 'rb'))
 cov_total = df_measure['cov_total']
 xi_all = df_measure['xi_all']
@@ -150,6 +150,7 @@ config = configobj.ConfigObj(fname)
 sc_xipm = config['shear-shear']
 sc_gty = config['shear-tsz']
 
+df_cs = fits.open(abs_path_data + '/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate.fits') 
 bin1_vals =  df_cs['xip'].data['BIN1'][::20]
 bin2_vals =  df_cs['xip'].data['BIN2'][::20]
 biny_vals = np.array([1,2,3,4])
@@ -196,7 +197,7 @@ if len(indrm) > 0:
 P_total = jnp.linalg.inv(cov_total)
 
 
-with open(abs_path_params + '/DESxACT/priors_v3.yaml', 'r') as file:
+with open(abs_path_params + '/DESxACT/priors_v2.yaml', 'r') as file:
     data = yaml.safe_load(file)
 prior_limits = {key: tuple(map(float, value.split())) for key, value in data['prior_uniform'].items()}
 prior_gaussian = {key: tuple(map(float, value.split())) for key, value in data['prior_gaussian'].items()}
@@ -325,7 +326,7 @@ observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 # max_tree_depth = 4
 
 
-num_warmup = 8000
+num_warmup = 7000
 num_samples = 8000
 num_chains= 16
 max_tree_depth = 4
@@ -379,7 +380,7 @@ trace['RUN_SETTINGS']['index_xip'] = index_xip
 trace['RUN_SETTINGS']['index_xim'] = index_xim
 trace['RUN_SETTINGS']['indrm'] = indrm
 import dill as dill
-save_chain_dir = abs_path_results + '/DESxACT/chains_Feb/'
+save_chain_dir = abs_path_results + '/DESxACT/chains_Jan/'
 print(save_chain_dir)
-dill.dump(trace, open(save_chain_dir + f'mcmc_v10_nzfix_probe_{probe}_modelmatter_{model_matter}_deproj_{deproj}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_gtysc_{use_gty_scale_cuts}_Y3xipmsc_{use_xipm_Y3_scale_cuts}.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_v10_probe_{probe}_modelmatter_{model_matter}_deproj_{deproj}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_gtysc_{use_gty_scale_cuts}_Y3xipmsc_{use_xipm_Y3_scale_cuts}.pkl', 'wb'))
 
