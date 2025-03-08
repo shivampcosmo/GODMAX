@@ -13,6 +13,12 @@ results/
 *.png
 *.txt
 *.fits
+*.err
+*.out
+*.gz
+*.fits
+*.h5
+*.hdf5
 
 # C extensions
 *.so

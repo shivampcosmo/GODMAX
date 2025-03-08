@@ -8,7 +8,7 @@ from jax import grad, jit, vmap
 import numpy as np
 from jaxopt import Bisection
 from functools import partial
-import constants
+import helpers.constants as constants
 import astropy.units as u
 from astropy import constants as const
 import jax.scipy.integrate as jsi

@@ -1,5 +1,5 @@
 import os
-from get_power_spectra import get_power_BCMP
+from arxiv.get_power_spectra import get_power_BCMP
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 import numpy as np
