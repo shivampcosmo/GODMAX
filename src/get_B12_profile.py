@@ -14,6 +14,7 @@ import helpers.constants as constants
 import jax_cosmo.background as bkgrd
 from jax_cosmo import Cosmology
 import jax.numpy as jnp
+import jax
 
 pressure_params_def = {
     'P0': {
@@ -78,7 +79,6 @@ class Battaglia_12_16(base_class):
         const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
         self.y3d_mat = const_coeff * self.Pe_mat_physical
 
-
     @partial(jit, static_argnums=(0,))
     def get_M_to_R(self, jM, jz, mdef_delta=200):
         rho_c_z = constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(self.cosmo_jax,self.scale_fac_a_array[jz]) * 1e9
@@ -86,33 +86,43 @@ class Battaglia_12_16(base_class):
         R = (self.M_array[jM] * 3.0 / 4.0 / jnp.pi / rho_treshold)**(1.0 / 3.0)
         return R
 
-    @partial(jit, static_argnums=(0,1))
-    def get_params_density(self, key, jM, jz):
-        params_dict = self.density_params_def
-        Mval = self.M_array[jM] / self.h
-        zval = self.z_array[jz]
-        A0 = params_dict[key]['A0']
-        alpha_m = params_dict[key]['alpha_m']
-        alpha_z = params_dict[key]['alpha_z']
-        A = A0 * (Mval / 1e14)**alpha_m * (1 + zval)**alpha_z
-        return A
+    # @partial(jit, static_argnums=(0,1))
+    # def get_params_density(self, key, jM, jz):
+    #     params_dict = self.density_params_def
+    #     Mval = self.M_array[jM] / self.h
+    #     zval = self.z_array[jz]
+    #     A0 = params_dict[key]['A0']
+    #     alpha_m = params_dict[key]['alpha_m']
+    #     alpha_z = params_dict[key]['alpha_z']
+    #     A = A0 * (Mval / 1e14)**alpha_m * (1 + zval)**alpha_z
+    #     return A
 
-    @partial(jit, static_argnums=(0,1))
-    def get_params_pressure(self, key, jM, jz):
-        params_dict = self.pressure_params_def
-        Mval = self.M_array[jM] / self.h
-        zval = self.z_array[jz]
-        A0 = params_dict[key]['A0']
-        alpha_m = params_dict[key]['alpha_m']
-        alpha_z = params_dict[key]['alpha_z']
-        A = A0 * (Mval / 1e14)**alpha_m * (1 + zval)**alpha_z
-        return A
+    # @partial(jit, static_argnums=(0,1))
+    # def get_params_pressure(self, key, jM, jz):
+    #     params_dict = self.pressure_params_def
+    #     Mval = self.M_array[jM] / self.h
+    #     zval = self.z_array[jz]
+    #     A0 = params_dict[key]['A0']
+    #     alpha_m = params_dict[key]['alpha_m']
+    #     alpha_z = params_dict[key]['alpha_z']
+    #     A = A0 * (Mval / 1e14)**alpha_m * (1 + zval)**alpha_z
+    #     return A
 
     @partial(jit, static_argnums=(0))
-    def get_rho_fit(self, jr, jz, jM):
-        rho0_density = self.get_params_density('rho0', jM, jz)
-        alpha_density = self.get_params_density('alpha', jM, jz)
-        beta_density = self.get_params_density('beta', jM, jz)
+    def get_rho_fit(self, jr, jz, jM, rmax_r200c=100.0):
+        def get_params_density(key, jM, jz):
+            params_dict = self.density_params_def
+            Mval = self.M_array[jM] / self.h
+            zval = self.z_array[jz]
+            A0 = params_dict[key]['A0']
+            alpha_m = params_dict[key]['alpha_m']
+            alpha_z = params_dict[key]['alpha_z']
+            A = A0 * (Mval / 1e14)**alpha_m * (1 + zval)**alpha_z
+            return A
+
+        rho0_density = get_params_density('rho0', jM, jz)
+        alpha_density = get_params_density('alpha', jM, jz)
+        beta_density = get_params_density('beta', jM, jz)
         xc_density = 0.5
         gamma_density = -0.2
 
@@ -121,22 +131,43 @@ class Battaglia_12_16(base_class):
         # rho_fit = rho0_density * ((x / xc_density)**gamma_density) * (
         #     1 + (x / xc_density)**alpha_density
         #     )**(-(beta_density - gamma_density) / alpha_density)
-        rho_fit = rho0_density * ((x / xc_density)**gamma_density) * (
-            1 + (x / xc_density)**alpha_density
-            )**(-(beta_density + gamma_density) / alpha_density)
+        # rho_fit = rho0_density * ((x / xc_density)**gamma_density) * (
+        #     1 + (x / xc_density)**alpha_density
+        #     )**(-(beta_density + gamma_density) / alpha_density)
+        rho_fit = jax.lax.cond(
+                        x < rmax_r200c,
+                        lambda: rho0_density * (x / xc_density)**gamma_density * 
+                                (1 + (x / xc_density)**alpha_density)**(-(beta_density + gamma_density) / alpha_density),
+                        lambda: 1e-30
+                    )        
         return rho_fit
 
     @partial(jit, static_argnums=(0))
-    def get_P_fit(self, jr, jz, jM):
+    def get_P_fit(self, jr, jz, jM, rmax_r200c=3.0):
+        def get_params_pressure(key, jM, jz):
+            params_dict = self.pressure_params_def
+            Mval = self.M_array[jM] / self.h
+            zval = self.z_array[jz]
+            A0 = params_dict[key]['A0']
+            alpha_m = params_dict[key]['alpha_m']
+            alpha_z = params_dict[key]['alpha_z']
+            A = A0 * (Mval / 1e14)**alpha_m * (1 + zval)**alpha_z
+            return A        
         a = self.scale_fac_a_array[jz]
         x = a * self.r_array[jr] / (self.r200c_mat[jM, jz])
-        P0_pressure = self.get_params_pressure('P0', jM, jz)
-        xc_pressure = self.get_params_pressure('xc', jM, jz)
-        beta_pressure = self.get_params_pressure('beta', jM, jz)
+        # x = self.r_array[jr] / (self.r200c_mat[jM, jz])        
+        P0_pressure = get_params_pressure('P0', jM, jz)
+        xc_pressure = get_params_pressure('xc', jM, jz)
+        beta_pressure = get_params_pressure('beta', jM, jz)
         alpha_pressure = 1.0
         gamma_pressure = -0.3
 
-        P_fit = P0_pressure * (x / xc_pressure)**gamma_pressure * (1 + (x / xc_pressure)**alpha_pressure)**(-beta_pressure)
+        # P_fit = P0_pressure * (x / xc_pressure)**gamma_pressure * (1 + (x / xc_pressure)**alpha_pressure)**(-beta_pressure)
+        P_fit = jax.lax.cond(
+                x < rmax_r200c,
+                lambda: P0_pressure * (x / xc_pressure)**gamma_pressure * (1 + (x / xc_pressure)**alpha_pressure)**(-beta_pressure),
+                lambda: 1e-30
+            )
         return P_fit
 
     @partial(jit, static_argnums=(0))
