@@ -49,7 +49,8 @@ class get_sim_map(Profiles):
         H_array = self.H0 * bkgrd.H(self.cosmo_jax, self.scale_fac_a_array)        
         self.H_array_interp = interpax.Interpolator1D(self.z_array, H_array, extrap=True)
 
-        self.rp_array = self.r_array[2:-2]
+        # self.rp_array = self.r_array[2:-2]
+        self.rp_array = self.r_array[:-3]        
 
         sigmat = const.sigma_T
         m_e = const.m_e
@@ -61,77 +62,70 @@ class get_sim_map(Profiles):
         get_kSZmap = mock_params_dict.get('get_kSZmap', False)
         get_taumap = mock_params_dict.get('get_taumap', False)
 
+
+        self.nside_map = mock_params_dict['nside']
+        self.nearby_pix_all = mock_params_dict['nearby_pix_all']
+        self.pix_prop_all = mock_params_dict['pix_prop_all']
+
+        pix_unique = np.unique(self.nearby_pix_all)
+        sort_index_nearby_pix_all = np.argsort(self.nearby_pix_all)
+        sorted_nearby_pix_all = self.nearby_pix_all[sort_index_nearby_pix_all]
+        
+        change_points = np.diff(sorted_nearby_pix_all, prepend=sorted_nearby_pix_all[0]-1, append=sorted_nearby_pix_all[-1]+1) != 0 
+        boundaries = np.where(change_points)[0]
+        
+
+
         if get_ymap:
-            self.Pe_mat_physical = self.Pe_mat_physical
+            # self.Pe_mat_physical = self.Pe_mat_physical
             self.const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
 
             self.y2D_mat_physical = get_vmapped_func(self.get_y2D_phyical_proj, 3)(jnp.arange(len(self.rp_array)), jnp.arange(len(self.z_array)), jnp.arange(len(self.M_array))).T
-            self.log_y2D_interp = interpax.Interpolator3D(jnp.log(self.rp_array), self.z_array, jnp.log(self.M_array), jnp.log(self.y2D_mat_physical), extrap=True)
+            self.log_y2D_interp = interpax.Interpolator3D(jnp.log(self.rp_array), self.z_array, jnp.log(self.M_array), jnp.log(self.y2D_mat_physical), extrap=[1e-20, 1e-20])
 
-            self.nside_map = mock_params_dict['nside']
+            yjpix_all = vmap(self.get_Pe_healpix)(jnp.arange(len(self.pix_prop_all)))
 
-            self.nearby_pix_all = mock_params_dict['nearby_pix_all']
-            self.pix_prop_all = mock_params_dict['pix_prop_all']
-
-            self.yjpix_all = vmap(self.get_Pe_healpix)(jnp.arange(len(self.pix_prop_all)))
-
-            pix_unique = np.unique(self.nearby_pix_all)
-            sort_index_nearby_pix_all = np.argsort(self.nearby_pix_all)
-            sorted_nearby_pix_all = self.nearby_pix_all[sort_index_nearby_pix_all]
-            ypix_all_sorted = self.yjpix_all[sort_index_nearby_pix_all]
-            change_points = np.diff(sorted_nearby_pix_all, prepend=sorted_nearby_pix_all[0]-1, append=sorted_nearby_pix_all[-1]+1) != 0 
-            boundaries = np.where(change_points)[0]
+            ypix_all_sorted = yjpix_all[sort_index_nearby_pix_all]
             ypix_sum = np.add.reduceat(ypix_all_sorted, boundaries[:-1])
-
-            ymap_final = np.zeros(12 * mock_params_dict['nside']**2)
-            ymap_final[pix_unique] = ypix_sum
+            ymap_final = np.zeros(12 * self.nside_map**2, dtype=np.float32)
+            ymap_final[pix_unique] = ypix_sum.astype(np.float32)
             self.ymap_final = ymap_final
 
         if get_kSZmap or get_taumap:
-            self.ne_mat_physical = self.ne_mat_physical
+            # self.ne_mat_physical = self.ne_mat_physical
 
             self.tauz_array = vmap(self.get_tau_z)(jnp.arange(len(self.z_array)))
             self.tau_interp = interpax.Interpolator1D(self.z_array, self.tauz_array, extrap=True)
 
             self.ne2D_mat_physical = get_vmapped_func(self.get_ne2D_phyical_proj, 3)(jnp.arange(len(self.rp_array)), jnp.arange(len(self.z_array)), jnp.arange(len(self.M_array))).T
-            self.log_ne2D_interp = interpax.Interpolator3D(jnp.log(self.rp_array), self.z_array, jnp.log(self.M_array), jnp.log(self.ne2D_mat_physical), extrap=True)
-
-            self.nearby_pix_all = mock_params_dict['nearby_pix_all']
-            self.pix_prop_all = mock_params_dict['pix_prop_all']
-            pix_unique = np.unique(self.nearby_pix_all)
-            sort_index_nearby_pix_all = np.argsort(self.nearby_pix_all)
-            sorted_nearby_pix_all = self.nearby_pix_all[sort_index_nearby_pix_all]
-            change_points = np.diff(sorted_nearby_pix_all, prepend=sorted_nearby_pix_all[0]-1, append=sorted_nearby_pix_all[-1]+1) != 0 
-            boundaries = np.where(change_points)[0]
-
-            self.nside_map = mock_params_dict['nside']
+            self.log_ne2D_interp = interpax.Interpolator3D(jnp.log(self.rp_array), self.z_array, jnp.log(self.M_array), jnp.log(self.ne2D_mat_physical), method='linear', extrap=True)
 
             if get_kSZmap:
                 coeff_kSZ = sigmat/(c)
-                self.const_coeff_kSZ =  (((coeff_kSZ * oneMpc).to(((u.cm ** 3) / (u.km/u.s)))).value)
-                self.ksz_sim = jnp.zeros(self.nside_map**2 * 12)
-                self.kszjpix_all = vmap(self.get_kSZ_healpix)(jnp.arange(len(self.pix_prop_all)))
-                kszpix_all_sorted = self.kszjpix_all[sort_index_nearby_pix_all]
+                self.const_coeff_kSZ =  (((coeff_kSZ * oneMpc).to(((u.cm ** 3) / (u.km/u.s)))).value)/(self.cosmo_params['H0']/100.)
+                # self.ksz_sim = jnp.zeros(self.nside_map**2 * 12)
+                kszjpix_all = vmap(self.get_kSZ_healpix)(jnp.arange(len(self.pix_prop_all)))
+                kszpix_all_sorted = kszjpix_all[sort_index_nearby_pix_all]
                 kszpix_sum = np.add.reduceat(kszpix_all_sorted, boundaries[:-1])
-                kszmap_final = np.zeros(12 * mock_params_dict['nside']**2)
-                kszmap_final[pix_unique] = kszpix_sum
+                kszmap_final = np.zeros(12 * mock_params_dict['nside']**2, dtype=np.float32)
+                kszmap_final[pix_unique] = kszpix_sum.astype(np.float32)
                 self.kszmap_final = kszmap_final
 
             if get_taumap:
                 coeff_tau = sigmat
-                self.const_coeff_tau =  ((coeff_tau * oneMpc).to(u.cm ** 3)).value
-                self.tau_sim = jnp.zeros(self.nside_map**2 * 12)
-                self.taujpix_all = vmap(self.get_tau_healpix)(jnp.arange(len(self.pix_prop_all)))
-                taupix_all_sorted = self.taujpix_all[sort_index_nearby_pix_all]
+                self.const_coeff_tau =  (((coeff_tau * oneMpc).to(u.cm ** 3)).value)/(self.cosmo_params['H0']/100.)
+                # self.tau_sim = jnp.zeros(self.nside_map**2 * 12)
+                taujpix_all = vmap(self.get_tau_healpix)(jnp.arange(len(self.pix_prop_all)))
+                taupix_all_sorted = taujpix_all[sort_index_nearby_pix_all]
                 taupix_sum = np.add.reduceat(taupix_all_sorted, boundaries[:-1])
-                taumap_final = np.zeros(12 * mock_params_dict['nside']**2)
-                taumap_final[pix_unique] = taupix_sum
+                taumap_final = np.zeros(12 * mock_params_dict['nside']**2, dtype=np.float32)
+                taumap_final[pix_unique] = taupix_sum.astype(np.float32)
                 self.taumap_final = taumap_final
 
     @partial(jit, static_argnums=(0,))        
     def get_tau_z(self, jz):
         z = self.z_array[jz]
-        z_array = jnp.linspace(0.000001, z, 100)
+        z_array = jnp.linspace(0.001, z, 100)
         H_array = self.H_array_interp(z_array)
         to_int = (1 + z_array)**2 / H_array
         tau_z = jsi.trapezoid(to_int, z_array)
@@ -142,7 +136,7 @@ class get_sim_map(Profiles):
         return val
 
     @partial(jit, static_argnums=(0,))        
-    def get_y2D_phyical_proj(self, jrp, jz, jM, num_trapz_points=40):
+    def get_y2D_phyical_proj(self, jrp, jz, jM, num_trapz_points=32):
         rp = self.rp_array[jrp]
         zval = self.z_array[jz]
         r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(jnp.max(self.r_array)), num_trapz_points))
@@ -151,10 +145,11 @@ class get_sim_map(Profiles):
         denom = jnp.sqrt(r_array_here ** 2 - rp ** 2)
         toint = num / denom
         val = 2. * jsi.trapezoid(toint * r_array_here, jnp.log(r_array_here))
+        # val = 2. * jsi.trapezoid(toint, (r_array_here))        
         return self.const_coeff * val
 
     @partial(jit, static_argnums=(0,))        
-    def get_ne2D_phyical_proj(self, jrp, jz, jM, num_trapz_points=40):
+    def get_ne2D_phyical_proj(self, jrp, jz, jM, num_trapz_points=32):
         rp = self.rp_array[jrp]
         zval = self.z_array[jz]
         r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(jnp.max(self.r_array)), num_trapz_points))
@@ -183,7 +178,7 @@ class get_sim_map(Profiles):
     @partial(jit, static_argnums=(0,))
     def get_tau_healpix(self, jpix):
         prop_jpix = self.pix_prop_all[jpix]
-        zval = prop_jpix[1]
+        # zval = prop_jpix[1]
         tau_jpix = self.const_coeff_tau * jnp.exp(self.log_ne2D_interp(prop_jpix[0], prop_jpix[1], prop_jpix[2]))        
         return tau_jpix
  

@@ -94,8 +94,8 @@ class get_Pkz(Profiles):
             self.bm_nfw_kz_mat = jnp.ones((len(self.nk), self.nz))
 
         if self.model_tSZ:
-            by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
-        else: by_kz_mat = None
+            self.by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
+        else: self.by_kz_mat = None
         if self.model_galaxies:
             bg_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 2).T
             be_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 4).T
@@ -105,7 +105,7 @@ class get_Pkz(Profiles):
         self.Pmm_dmb_2h_kz_mat = self.bm_dmb_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
         self.Pmm_nfw_2h_kz_mat = self.bm_nfw_kz_mat * self.bm_nfw_kz_mat * self.plin_kz_mat
         if self.model_tSZ:
-            self.Pym_2h_kz_mat = self.bm_dmb_kz_mat * by_kz_mat * self.plin_kz_mat
+            self.Pym_2h_kz_mat = self.bm_dmb_kz_mat * self.by_kz_mat * self.plin_kz_mat
         if self.model_galaxies:
             self.Pge_2h_kz_mat = bg_kz_mat * be_kz_mat * self.plin_kz_mat
             self.Pgm_2h_kz_mat = bg_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat

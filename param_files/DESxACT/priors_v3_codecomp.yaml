@@ -29,7 +29,7 @@ prior_gaussian:
   Delta_z_bias_bin2: 0.0 1.5e-2
   Delta_z_bias_bin3: 0.0 1.1e-2
   Delta_z_bias_bin4: 0.0 1.7e-2
-  mult_shear_bias_bin1: -6.3e-3 9.1e-3
-  mult_shear_bias_bin2: -1.98e-2 7.8e-3
-  mult_shear_bias_bin3: -2.4e-2 7.6e-3
-  mult_shear_bias_bin4: -3.7e-2 7.6e-3
+  mult_shear_bias_bin1: 0.0 9.1e-3
+  mult_shear_bias_bin2: 0.0 7.8e-3
+  mult_shear_bias_bin3: 0.0 7.6e-3
+  mult_shear_bias_bin4: 0.0 7.6e-3
