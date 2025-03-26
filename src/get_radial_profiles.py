@@ -275,7 +275,7 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_lgsigma_z(self, jz, lgM, kmin=0.0001, kmax=1000.0):
-        """Optimized sigma calculation."""
+        """Optimized sigma calculation. Parts of HMF calculations are copied from Benedikt Diemer's colossus code and jax-ified here."""
         M = jnp.exp(lgM)
         R = (3.0 * M / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
         
@@ -295,7 +295,7 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_sigma_Mz(self, jz, jM, kmin=0.0001, kmax=1000.0):
-        """Optimized sigma_Mz calculation using pre-computed values."""
+        """Optimized sigma_Mz calculation using pre-computed values. Parts of HMF calculations are copied from Benedikt Diemer's colossus code and jax-ified here."""
         R = (3.0 * self.M_array[jM] / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
         
         @jit
@@ -314,7 +314,7 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_fsigma_Mz_T08(self, jz, jM, mdef_delta=200):
-        '''Tinker 2008 mass function'''
+        '''Tinker 2008 mass function. Parts of HMF calculations are copied from Benedikt Diemer's colossus code and jax-ified here.'''
         sigma = self.sigma_Mz_mat[jz, jM]
         z = self.z_array[jz]
         rho_treshold = mdef_delta * self.get_rho_c(z)
@@ -700,18 +700,6 @@ class Profiles(base_class):
     @partial(jit, static_argnums=(0,))
     def get_rho_gas_normed(self, jr, jz, jM, r_array_here=None):
         '''This is the NFW profile (Eq.2.18)'''
-        # if r_array_here is None:
-        #     r = self.r_array[jr]
-        # else:
-        #     r = r_array_here[jr]
-
-        # u = r / self.r_co_mat[jz, jM]
-        # v = r / self.r_ej_mat[jz, jM]
-        
-        # # y = r / self.rt_mat[jz, jM]
-        # # fac = (1 / (1 + y**2)**2)
-        
-        # rho_gas_unnorm = 1 / (jnp.power(1 + u, self.beta_mat[jz, jM]) * jnp.power(1 + jnp.power(v, self.gamma_rhogas), (self.delta_rhogas - self.beta_mat[jz, jM]) / self.gamma_rhogas))
         rho_gas_unnorm = self.get_rho_gas_unnorm(jr, jz, jM, r_array_here=r_array_here)
         prefac = self.rho_gas_norm_mat[jz, jM]
         return prefac * rho_gas_unnorm
@@ -754,6 +742,7 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_rho_clm(self, jz, jM, r_array_here=None):
+        '''Get the rho_clm directly following Schneider 2019 paper. Thanks to Sven Heydenreich for identifying bug in original expression.'''
         if r_array_here is None:
             r_array_here = self.r_array
             Mclm_here = self.Mclm_mat[:, jz, jM]
