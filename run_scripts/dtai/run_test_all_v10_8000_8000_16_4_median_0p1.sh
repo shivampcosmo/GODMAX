@@ -37,5 +37,5 @@ module load cuda
 which python
 export XLA_FLAGS=--xla_gpu_enable_command_buffer=
 cd /projects/bdne/spandey3/new_godmax/GODMAX/run_scripts/dtai/
-time srun --export=ALL python sample_params_v10_tests.py cib_1p7_dBeta all DMB 0 poweradd 1000 1000 8 6
+time srun --export=ALL python sample_params_v10_tests.py cib_1p7_dBeta all DMB 0 poweradd 8000 8000 16 4 0.1 median
 echo "done"

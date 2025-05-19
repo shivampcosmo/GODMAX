@@ -3,11 +3,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=15
-#SBATCH --time=32:00:00
+#SBATCH --time=14:00:00
 #SBATCH --partition=ghx4
 #SBATCH --mem=128G
-#SBATCH --gpus-per-node=4
-#SBATCH --job-name=v10_ALL_run
+#SBATCH --gpus-per-node=1
+#SBATCH --job-name=nomaskPS
 #SBATCH --output=/projects/bdne/spandey3/new_godmax/GODMAX/run_scripts/dtai/logs/%x.%j.out
 #SBATCH --error=/projects/bdne/spandey3/new_godmax/GODMAX/run_scripts/dtai/logs/%x.%j.err
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -36,6 +36,6 @@ module load cuda
 
 which python
 export XLA_FLAGS=--xla_gpu_enable_command_buffer=
-cd /projects/bdne/spandey3/new_godmax/GODMAX/run_scripts/dtai/
-time srun --export=ALL python sample_params_v10_tests.py cib_1p7_dBeta all DMB 0 poweradd 1000 1000 8 6
+cd /projects/bdne/spandey3/new_godmax/GODMAX/notebooks/ACTxDES/
+time srun --export=ALL python submit_Pksup.py all 6000 0
 echo "done"

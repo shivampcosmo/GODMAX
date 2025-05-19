@@ -66,7 +66,7 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
 
 
 
-def get_samps(fname, acorr_max = 0.075, acorr_min = 0.0075):
+def get_samps(fname, acorr_max = 0.075, acorr_min = 0.0):
     df = pk.load(open(fname,'rb'))
     sig8 = df['sigma8']
     nchains = 64
@@ -134,7 +134,8 @@ ldir = '/projects/bdne/spandey3/new_godmax/GODMAX/results/DESxACT/chains_Feb/'
 # probe = 'all'
 probe = sys.argv[1]
 # samps, keys = get_samps(ldir + 'mcmc_v10_nzfix_probe_all_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
-samps, keys = get_samps(ldir + f'mcmc_v10_widemuej_nzfix_probe_{probe}_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
+# samps, keys = get_samps(ldir + f'mcmc_v10_widemuej_nzfix_probe_{probe}_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
+samps, keys = get_samps(ldir + f'mcmc_v11_nzfix_probe_{probe}_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
 
 nsamp_tot = samps.shape[0]
 all_ind = np.arange(nsamp_tot)
@@ -285,7 +286,7 @@ for jind in range(len(indsel)):
         Ymin = np.percentile(Y_model_all_samp_array, 16, axis=0)
         Ymax = np.percentile(Y_model_all_samp_array, 84, axis=0)        
         saved = {'indsel':indsel,'YM_ratio_all_samp': Y_model_all_samp_array, 'Ymin': Ymin, 'Ymax': Ymax, 'M_array': M_array}
-        pk.dump(saved, open(abs_path_results + f'/DESxACT/plot_data/YM_plot_data_nsamps_{nsel}_v10_{probe}_probes_widemuej.pkl','wb'))
+        pk.dump(saved, open(abs_path_results + f'/DESxACT/plot_data/YM_plot_data_nsamps_{nsel}_v11_{probe}_probes_widemuej.pkl','wb'))
 
 
 

@@ -54,33 +54,16 @@ probe = sys.argv[2]
 model_matter = sys.argv[3]
 use_gty_scale_cuts = True
 use_xipm_Y3_scale_cuts = bool(ast.literal_eval(sys.argv[4]))
-smooth_ym_model = sys.argv[5]
+
 
 print(deproj, probe, model_matter, use_xipm_Y3_scale_cuts)
 
-# try:
-#     smooth_ym_model = sys.argv[5]
-# except:
-#     smooth_ym_model = 'poweradd'
-
-num_warmup = int(sys.argv[6])
-num_samples = int(sys.argv[7])
-num_chains= int(sys.argv[8])
-max_tree_depth = int(sys.argv[9])
-
 try:
-    step_size = float(sys.argv[10])
+    smooth_ym_model = sys.argv[5]
 except:
-    step_size = 0.3
+    smooth_ym_model = 'poweradd'
 
-try:
-    init_type = sys.argv[11]
-except:
-    init_type = 'median'
 
-print('init_type: ', init_type)
-print('step_size: ', step_size)
-print(num_warmup, num_samples, num_chains, max_tree_depth)
 
 def read_yaml(file_path):
     with open(file_path, 'r') as file:
@@ -213,7 +196,7 @@ if len(indrm) > 0:
 P_total = jnp.linalg.inv(cov_total)
 
 
-with open(abs_path_params + '/DESxACT/priors_v3.yaml', 'r') as file:
+with open(abs_path_params + '/DESxACT/priors_v3_wider.yaml', 'r') as file:
     data = yaml.safe_load(file)
 prior_limits = {key: tuple(map(float, value.split())) for key, value in data['prior_uniform'].items()}
 prior_gaussian = {key: tuple(map(float, value.split())) for key, value in data['prior_gaussian'].items()}
@@ -342,10 +325,10 @@ observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 # max_tree_depth = 4
 
 
-# num_warmup = 8000
-# num_samples = 8000
-# num_chains= 16
-# max_tree_depth = 4
+num_warmup = 8000
+num_samples = 8000
+num_chains= 16
+max_tree_depth = 4
 
 # num_warmup = 6000
 # num_samples = 2500
@@ -354,26 +337,15 @@ observed_model_reparam = numpyro.handlers.reparam(observed_model, config=config)
 
 def do_mcmc(rng_key, n_vectorized=num_chains):
     # nuts_kernel = NUTS(model)
-    if init_type == 'median':
-        nuts_kernel = numpyro.infer.NUTS(observed_model_reparam,
-                                    step_size=step_size, 
-                                    init_strategy=numpyro.infer.init_to_median,
-                                    dense_mass=True,
-                                    max_tree_depth=max_tree_depth,
-                                    # max_tree_depth=5,                                     
-                                    adapt_mass_matrix=True, 
-                                    adapt_step_size=True
-                                    )
-    elif init_type == 'samp':
-        nuts_kernel = numpyro.infer.NUTS(observed_model_reparam,
-                                    step_size=step_size,
-                                    init_strategy=numpyro.infer.init_to_sample,
-                                    dense_mass=True,
-                                    max_tree_depth=max_tree_depth,
-                                    # max_tree_depth=5,
-                                    adapt_mass_matrix=True, 
-                                    adapt_step_size=True
-                                    )                                    
+    nuts_kernel = numpyro.infer.NUTS(observed_model_reparam,
+                                step_size=3e-1, 
+                                init_strategy=numpyro.infer.init_to_median,
+                                dense_mass=True,
+                                max_tree_depth=max_tree_depth,
+                                # max_tree_depth=5,                                     
+                                adapt_mass_matrix=True, 
+                                adapt_step_size=True
+                                )
 
     mcmc = numpyro.infer.MCMC(nuts_kernel, 
                             num_warmup=num_warmup, 
@@ -409,5 +381,5 @@ trace['RUN_SETTINGS']['indrm'] = indrm
 import dill as dill
 save_chain_dir = abs_path_results + '/DESxACT/chains_Feb/'
 print(save_chain_dir)
-dill.dump(trace, open(save_chain_dir + f'mcmc_v10_init_{init_type}_nzfix_probe_{probe}_modelmatter_{model_matter}_deproj_{deproj}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_gtysc_{use_gty_scale_cuts}_Y3xipmsc_{use_xipm_Y3_scale_cuts}_step_{step_size}.pkl', 'wb'))
+dill.dump(trace, open(save_chain_dir + f'mcmc_v10_widemuej_nzfix_probe_{probe}_modelmatter_{model_matter}_deproj_{deproj}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_gtysc_{use_gty_scale_cuts}_Y3xipmsc_{use_xipm_Y3_scale_cuts}.pkl', 'wb'))
 

@@ -242,7 +242,7 @@ class Profiles(base_class):
         Ptot_mat = get_vmapped_func(self.get_Ptot, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
             
         # Convert to physical coordinates
-        Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 3)
+        Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 4)
         
         # Calculate non-thermal pressure
         Pnt_fac = get_vmapped_func(self.get_Pnt_fac, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T

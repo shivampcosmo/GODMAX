@@ -74,7 +74,7 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
 
 
 
-def get_samps(fname, acorr_max = 0.075, acorr_min = 0.0075):
+def get_samps(fname, acorr_max = 0.075, acorr_min = 0.0):
     df = pk.load(open(fname,'rb'))
     sig8 = df['sigma8']
     nchains = 64
@@ -141,14 +141,21 @@ ldir = '/projects/bdne/spandey3/new_godmax/GODMAX/results/DESxACT/chains_Feb/'
 # probe = 'xip_xim'
 # probe = 'all'
 probe = sys.argv[1]
+nsel = int(sys.argv[2])
+maskPS = bool(int(sys.argv[3]))
 # samps, keys = get_samps(ldir + 'mcmc_v10_nzfix_probe_all_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
-samps, keys = get_samps(ldir + f'mcmc_v10_widemuej_nzfix_probe_{probe}_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
+# samps, keys = get_samps(ldir + f'mcmc_v10_widemuej_nzfix_probe_{probe}_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
+if maskPS:
+    samps, keys = get_samps(ldir + f'mcmc_v12_maskPS_probe_all_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
+else:
+    samps, keys = get_samps(ldir + f'mcmc_v12_noPSmask_probe_all_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
+
+# samps_all = get_MCsamps(ldir + 'mcmc_v11_nzfix_probe_all_modelmatter_DMB_deproj_cib_1p7_dBeta_samples_8000_warmup_8000_num_chains_64_treedepth_4_gtysc_True_Y3xipmsc_False.pkl')
 
 nsamp_tot = samps.shape[0]
 all_ind = np.arange(nsamp_tot)
 all_inp_perm = np.random.permutation(all_ind)
 
-nsel = int(sys.argv[2])
 
 indsel = all_inp_perm[:nsel]
 # indsel = np.sort(np.random.randint(0, nsamp_tot, 64))
@@ -195,7 +202,7 @@ for jind in range(len(indsel)):
         return sim_params_dict, halo_params_dict, analysis_dict, other_params_dict
     
     default_data = read_yaml(abs_path_params + '/params_default.yaml')
-    new_data = read_yaml(abs_path_params + '/DESxACT/params_v2.yaml')
+    new_data = read_yaml(abs_path_params + '/DESxACT/params_v3.yaml')
     # new_data = read_yaml(abs_path_params + '/DESxACT/params_v0.yaml')
     merged_data = always_merger.merge(default_data, new_data)
     
@@ -204,7 +211,7 @@ for jind in range(len(indsel)):
     
     # saved_bestift
     from astropy.io import fits
-    df = fits.open(os.path.abspath(abs_path_data + '/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate.fits'))
+    df = fits.open(os.path.abspath(abs_path_data + '/DESxACT/2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate_newbins.fits'))
     z_array = df['nz_source'].data['Z_MID']
     nz_info_dict = {}
     nz_info_dict['z_array_source'] = z_array
@@ -248,7 +255,8 @@ for jind in range(len(indsel)):
     profiles_test = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, base_class_obj=base_test)
     Pkz_test = get_Pkz(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, Profiles_obj=profiles_test)
     ratio = Pkz_test.Pmm_dmb_tot_mat[:,0]/Pkz_test.Pmm_nfw_tot_mat[:,0]    
-    Pmm_ratio_all_samp.append(savitzky_golay(ratio, 19, 3))
+    # Pmm_ratio_all_samp.append(savitzky_golay(ratio, 19, 3))
+    Pmm_ratio_all_samp.append(ratio)    
 
     h = sim_params_dict['cosmo']['H0'] / 100.0
     Ob = sim_params_dict['cosmo']['Ob0']
@@ -298,7 +306,7 @@ for jind in range(len(indsel)):
         Ymax = np.percentile(Y_model_all_samp_array, 84, axis=0)        
 
         saved = {'indsel':indsel,'Pmm_ratio_all_samp': Pmm_ratio_all_samp_array, 'Pmin': Pmin, 'Pmax': Pmax, 'k_array': np.array(Pkz_test.kPk_array),'YM_ratio_all_samp': Y_model_all_samp_array, 'Ymin': Ymin, 'Ymax': Ymax, 'M_array': M_array}
-        pk.dump(saved, open(abs_path_results + f'/DESxACT/plot_data/Pksup_YMerr_plot_data_nsamps_{nsel}_v10_{probe}_probes_widemuej.pkl','wb'))
+        pk.dump(saved, open(abs_path_results + f'/DESxACT/plot_data/Pksup_YMerr_v12_maskPS_{maskPS}_plot_data_nsamps_{nsel}_v12_{probe}_probes.pkl','wb'))
 
 
 
