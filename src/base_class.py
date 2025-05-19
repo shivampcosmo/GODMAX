@@ -1,5 +1,6 @@
 import jax.numpy as jnp
-from jax import vmap
+from jax import grad, jit, vmap
+from functools import partial
 import numpy as np
 import astropy.units as u
 from astropy import constants as const
@@ -16,6 +17,7 @@ import helpers.constants as constants
 from jax_cosmo import Cosmology
 from helpers.jax_cosmo_power import linear_matter_power
 from jax_cosmo.background import angular_diameter_distance, radial_comoving_distance
+from matter_pk_symbolic import *
 
 class EmptyCallable:
     def __call__(self, *args, **kwargs):
@@ -49,6 +51,8 @@ def get_vmapped_func_warg(func, num_args1, num_args2):
         return vmap(vmap(func, in_axes=(0, None, None)), in_axes=(None, 0, None))
     if (num_args1 == 2) and (num_args2 == 4):
         return vmap(vmap(func, in_axes=(0, None, None, None)), in_axes=(None, 0, None, None))
+    if (num_args1 == 1) and (num_args2 == 4):
+        return vmap(func, in_axes=(0, None, None, None))
     if (num_args1 == 3) and (num_args2 == 4):
         func = vmap(func, (0, None, None, None))
         func = vmap(func, (None, 0, None, None))
@@ -260,6 +264,10 @@ class base_class:
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
 
+        # Weather to use symbolic regression for Pk and HMF:
+        self.symbolic_hmf = analysis_dict.get('symbolic_hmf', False)
+        self.symbolic_pk = analysis_dict.get('symbolic_pk', False)
+
         self.angles_data_array = jnp.array(analysis_dict.get('angles_data_array', jnp.logspace(jnp.log10(2.5), jnp.log10(250), 20)))
         self.nt_out = len(self.angles_data_array)
 
@@ -336,24 +344,32 @@ class base_class:
         """
         self.chi_array = radial_comoving_distance(self.cosmo_jax, self.scale_fac_a_array)
         self.DA_array = angular_diameter_distance(self.cosmo_jax, self.scale_fac_a_array)
-        self.growth_array = bkgrd.growth_factor(self.cosmo_jax, self.scale_fac_a_array)
         self.dchi_dz_array = (const.c.value * 1e-3) / bkgrd.H(self.cosmo_jax, self.scale_fac_a_array)
-        self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
+
+        if self.symbolic_pk:
+            self.growth_array = symbolic_D(self.Om0, self.z_array)
+            vmap_func =  vmap(symbolic_pklin,(None, None, None, None, None, 0, None))
+            self.plin_kz_mat = vmap_func(self.Om0, self.cosmo_params['Ob0'], self.h, self.cosmo_params['ns'], self.cosmo_params['sigma8'], self.z_array, self.kPk_array).T
+        else:
+            self.growth_array = bkgrd.growth_factor(self.cosmo_jax, self.scale_fac_a_array)
+            self.plin_kz_mat = vmap(linear_matter_power,(None, None, 0))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array).T
 
         self.chi_array_for_Cls = jnp.exp(jnp.interp(self.z_array_for_Cls, self.z_array, jnp.log(self.chi_array)))
         self.dchi_dz_array_for_Cls = jnp.exp(jnp.interp(self.z_array_for_Cls, self.z_array, jnp.log(self.dchi_dz_array)))
         self.growth_array_for_Cls = jnp.exp(jnp.interp(self.z_array_for_Cls, self.z_array, jnp.log(self.growth_array)))
         self.rhom_0 = self.get_rho_m(0.0)
 
+    @partial(jit, static_argnums=(0,))    
     def get_rho_m(self, z):
         return (constants.RHO_CRIT_0_KPC3 * self.Om0 * (1.0 + z)**3) * 1E9
 
-
+    @partial(jit, static_argnums=(0,))
     def get_Ez(self, z):
         zp1 = (1.0 + z)
         t = (self.Om0) * zp1**3 + (1 - self.Om0)
         E = jnp.sqrt(t)        
         return E
 
+    @partial(jit, static_argnums=(0,))
     def get_rho_c(self, z):
         return constants.RHO_CRIT_0_KPC3 * self.get_Ez(z)**2  * 1E9    

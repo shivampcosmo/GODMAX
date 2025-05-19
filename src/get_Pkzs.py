@@ -7,7 +7,7 @@ from helpers.jax_cosmo_power import halofit_parameters, nonlinear_matter_power
 import jax.scipy.integrate as jsi
 import helpers.constants as constants
 from mcfitjax.cosmology_jax import xi2P
-
+from matter_pk_symbolic import *
 
 
 class get_Pkz(Profiles):
@@ -72,8 +72,12 @@ class get_Pkz(Profiles):
         else: self.uk_clm, self.ukg_cross, self.ukg_auto_sqr, self.uk_ne = jnp.zeros((1,1,1)), jnp.zeros((1,1,1)), jnp.zeros((1,1,1)), jnp.zeros((1,1,1))
 
         # Get the halofit power spectra:
-        hfit_params = vmap(halofit_parameters,(None, 0))(self.cosmo_jax, self.scale_fac_a_array).T
-        self.phfit_kz_mat = vmap(nonlinear_matter_power,(None, None, 0, None, None, None))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array, self.plin_kz_mat, hfit_params, self.scale_fac_a_array).T
+        if self.symbolic_pk:
+            vmap_func = vmap(symbolic_pkhalofit,(None, None, None, None, None, None, None, None, 0))
+            self.phfit_kz_mat = vmap_func(self.kPk_array, self.plin_kz_mat, self.Om0, self.cosmo_params['Ob0'], self.h, self.cosmo_params['ns'], self.cosmo_params['sigma8'], self.z_array, jnp.arange(self.nz)).T
+        else:
+            hfit_params = vmap(halofit_parameters,(None, 0))(self.cosmo_jax, self.scale_fac_a_array).T
+            self.phfit_kz_mat = vmap(nonlinear_matter_power,(None, None, 0, None, None, None))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array, self.plin_kz_mat, hfit_params, self.scale_fac_a_array).T
 
         # Get the large-scale bias of the fields:
         self.bias_Mz_mat = get_vmapped_func(self.get_bias_Mz, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
@@ -98,8 +102,10 @@ class get_Pkz(Profiles):
         else: self.by_kz_mat = None
         if self.model_galaxies:
             bg_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 2).T
-            be_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 4).T
-        else: bg_kz_mat, be_kz_mat = None, None
+            self.be_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 4).T
+            if self.do_corr_2h_mm:
+                self.be_kz_mat = self.be_kz_mat + self.bm_largescales_2h_mat_lt_Mmin
+        else: bg_kz_mat, self.be_kz_mat = None, None
 
         # Get the 2-halo power:
         self.Pmm_dmb_2h_kz_mat = self.bm_dmb_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
@@ -107,10 +113,10 @@ class get_Pkz(Profiles):
         if self.model_tSZ:
             self.Pym_2h_kz_mat = self.bm_dmb_kz_mat * self.by_kz_mat * self.plin_kz_mat
         if self.model_galaxies:
-            self.Pge_2h_kz_mat = bg_kz_mat * be_kz_mat * self.plin_kz_mat
+            self.Pge_2h_kz_mat = bg_kz_mat * self.be_kz_mat * self.plin_kz_mat
             self.Pgm_2h_kz_mat = bg_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
             self.Pgm_nfw_2h_kz_mat = bg_kz_mat * self.bm_nfw_kz_mat * self.plin_kz_mat
-            self.Pgy_2h_kz_mat = by_kz_mat * bg_kz_mat * self.plin_kz_mat
+            self.Pgy_2h_kz_mat = self.by_kz_mat * bg_kz_mat * self.plin_kz_mat
             self.Pgg_2h_kz_mat = bg_kz_mat * bg_kz_mat * self.plin_kz_mat
 
         # Get the 1-halo power:

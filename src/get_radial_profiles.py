@@ -12,6 +12,8 @@ import jax_cosmo.background as bkgrd
 import time
 import interpax
 from base_class import base_class, get_vmapped_func, get_vmapped_func_warg
+from hmf_symbolic import *
+
 
 # Define constants once at module level
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
@@ -71,18 +73,27 @@ class Profiles(base_class):
     @timing_decorator
     def setup_hmf(self):
         """Setup the halo mass function calculation - optimized version."""
+
+        # TODO: get symbolic regression here:
         # Vectorize calculation of sigma_Mz matrix
-        self.sigma_Mz_mat = get_vmapped_func(self.get_sigma_Mz, 2)(
-            jnp.arange(self.nz), jnp.arange(self.nM)).T
+        if self.symbolic_hmf:
+            R_array_hmf = (3.0 * self.M_array / 4.0 / jnp.pi / self.get_rho_m(0.0))**(1.0 / 3.0)
+            vmap_func = vmap(vmap(symbolic_sigma, in_axes=(0, None, None, None, None, None, None)), in_axes=(None, None, None, None, None, None, 0))
+            self.sigma_Mz_mat = vmap_func(R_array_hmf, self.cosmo_params['Om0'], self.cosmo_params['Ob0'], self.cosmo_params['H0'] / 100., self.cosmo_params['ns'], self.cosmo_params['sigma8'], self.z_array)
+            vmap_func = vmap(symbolic_dlnsigmadR, in_axes=(0, None, None, None, None))
+            dlgsig_dR = vmap_func(R_array_hmf, self.cosmo_params['Om0'], self.cosmo_params['Ob0'], self.cosmo_params['H0'] / 100., self.cosmo_params['ns'])
+            dlgsig_dlnM_array = dlgsig_dR * R_array_hmf/3.
+            self.dlgsig_dlnM_mat = jnp.repeat(dlgsig_dlnM_array[None, :], self.nz, axis=0)
+        else:
+            self.sigma_Mz_mat = get_vmapped_func(self.get_sigma_Mz, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+            # Use JAX grad for automatic differentiation
+            grad_lgsigma = jit(grad(self.get_lgsigma_z, argnums=1))           
+            # Pre-compute derivative for HMF
+            self.dlgsig_dlnM_mat = get_vmapped_func(grad_lgsigma, 2)(jnp.arange(self.nz), jnp.log(self.M_array)).T
             
         # Pre-compute nu_Mz_mat
         self.nu_Mz_mat = constants.DELTA_COLLAPSE / self.sigma_Mz_mat
         
-        # Use JAX grad for automatic differentiation
-        grad_lgsigma = jit(grad(self.get_lgsigma_z, argnums=1))
-        
-        # Pre-compute derivative for HMF
-        self.dlgsig_dlnM_mat = get_vmapped_func(grad_lgsigma, 2)(jnp.arange(self.nz), jnp.log(self.M_array)).T
 
     @timing_decorator
     def get_hmf(self):
@@ -242,7 +253,7 @@ class Profiles(base_class):
         Ptot_mat = get_vmapped_func(self.get_Ptot, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
             
         # Convert to physical coordinates
-        Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 3)
+        Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 4)
         
         # Calculate non-thermal pressure
         Pnt_fac = get_vmapped_func(self.get_Pnt_fac, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
@@ -687,7 +698,7 @@ class Profiles(base_class):
         return rho_gas_unnorm    
 
     @partial(jit, static_argnums=(0,))
-    def get_rho_gas_norm(self, jz, jM, rmax_r200c=12):
+    def get_rho_gas_norm(self, jz, jM, rmax_r200c=16):
         '''This is the normalization of the gas profile'''
         r200c = self.r200c_mat[jz, jM]
         logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
