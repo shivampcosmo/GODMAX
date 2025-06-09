@@ -3,6 +3,23 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+data/
+logs/
+results/
+*.npy
+*.pdf
+*.pkl
+*.pk
+*.png
+*.txt
+*.fits
+*.err
+*.out
+*.gz
+*.fits
+*.h5
+*.hdf5
+
 # C extensions
 *.so
 
