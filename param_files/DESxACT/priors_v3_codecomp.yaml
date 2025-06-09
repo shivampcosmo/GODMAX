@@ -1,0 +1,35 @@
+# Prior Min and Max Values
+prior_uniform:
+  Om0: 0.1 0.5
+  Ob0: 0.03 0.07
+  h: 0.5 0.9
+  ns: 0.8 1.2
+  sigma8: 0.6 1.0
+
+  theta_ej_0: 0.5 4.0
+  log10_Mc0: 13.0 16.0
+  mu_beta: 0.05 1.5
+  nu_theta_ej_M: -1.0 1.0
+  nu_theta_ej_z: -1.5 1.5
+  delta_rhogas: 4.0 13.0
+  # nu_z: -3.0 3.0
+  # gamma_rhogas: 0.2 4.0
+  theta_co_0: 0.001 0.5
+  nu_theta_co_z: -1.5 1.5
+  nu_theta_co_M: -1.5 1.5  
+  alpha_nt: 0.0 0.5
+  A_IA: -3.0 3.0
+  eta_IA: -3.0 3.0
+  alpha_ky: 0.8 1.2
+  # alpha_1h2h_mm: 0.8 1.2
+
+# Prior Mu and Sigma Values
+prior_gaussian:
+  Delta_z_bias_bin1: 0.0 1.8e-2
+  Delta_z_bias_bin2: 0.0 1.5e-2
+  Delta_z_bias_bin3: 0.0 1.1e-2
+  Delta_z_bias_bin4: 0.0 1.7e-2
+  mult_shear_bias_bin1: 0.0 9.1e-3
+  mult_shear_bias_bin2: 0.0 7.8e-3
+  mult_shear_bias_bin3: 0.0 7.6e-3
+  mult_shear_bias_bin4: 0.0 7.6e-3

@@ -1,0 +1,32 @@
+sim_params:
+  cosmo:
+    flat: True
+    H0: 67.2
+    Om0: 0.27
+    Ob0: 0.049
+    sigma8: 0.76
+    ns: 0.95
+    w0: -1.0
+    
+  log10_Mstar0_theta_ej: 15.5
+  theta_ej_0: 1.0
+  nu_theta_ej_M: 0.0
+  nu_theta_ej_z: 0.0
+  log10_Mc0 : 14.83
+  mu_beta : 0.6
+  delta_rhogas: 7.0
+
+
+analysis:
+  model_galaxies: False
+  beam_fwhm_arcmin: 1.6
+  analysis_coords: real
+  tSZ_transition_model : poweradd
+
+  fsky_yy: 0.1
+  fsky_ky: 0.1
+  fsky_kk: 0.1
+
+
+other_params:
+  alpha_ky : 1.0

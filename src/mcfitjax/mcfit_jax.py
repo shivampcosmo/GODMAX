@@ -6,7 +6,8 @@ import jax
 from jax.numpy import pi
 jax.config.update("jax_enable_x64", True)
 
-class mcfit(object):
+# class mcfit(object):
+class mcfit:    
     r"""Compute integral transforms as a multiplicative convolution.
 
     The generic form is
