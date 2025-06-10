@@ -2,9 +2,9 @@ sim_params:
   cosmo:
     flat: True
     H0: 67.2
-    Om0: 0.27
+    Om0: 0.3
     Ob0: 0.049
-    sigma8: 0.76
+    sigma8: 0.81
     ns: 0.95
     w0: -1.0
     
@@ -24,17 +24,19 @@ sim_params:
   siglogMstar_Ncen: 0.25
   alphasat_Nsat: 1.0
 
+other_params:
+  alpha_ky : 1.0
 
 analysis:
   model_galaxies: False
-  beam_fwhm_arcmin: 1.6
+  beam_fwhm_arcmin: 1.4
   analysis_coords: real
   tSZ_transition_model : poweradd
 
-  fsky_yy: 0.1
-  fsky_ky: 0.1
-  fsky_kk: 0.1
+  fsky_yy: 0.4
+  fsky_ky: 0.4
+  fsky_kk: 0.4
+  fsky_yg: 0.35
+  fsky_kg: 0.35
+  fsky_gg: 0.4
 
-
-other_params:
-  alpha_ky : 1.0
