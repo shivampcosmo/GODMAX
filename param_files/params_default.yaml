@@ -164,10 +164,10 @@ analysis:
     - 250
     - 20
 
-  k_array_survey:
-    - 0.0001
-    - 150.0
-    - 64
+  # k_array_survey:
+  #   - 0.0001
+  #   - 150.0
+  #   - 64
 
   fsky_yy: 0.4
   fsky_ky: 0.437

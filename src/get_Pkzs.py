@@ -101,11 +101,11 @@ class get_Pkz(Profiles):
             self.by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
         else: self.by_kz_mat = None
         if self.model_galaxies:
-            bg_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 2).T
+            self.bg_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 2).T
             self.be_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 4).T
             if self.do_corr_2h_mm:
                 self.be_kz_mat = self.be_kz_mat + self.bm_largescales_2h_mat_lt_Mmin
-        else: bg_kz_mat, self.be_kz_mat = None, None
+        else: self.bg_kz_mat, self.be_kz_mat = None, None
 
         # Get the 2-halo power:
         self.Pmm_dmb_2h_kz_mat = self.bm_dmb_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
@@ -113,11 +113,11 @@ class get_Pkz(Profiles):
         if self.model_tSZ:
             self.Pym_2h_kz_mat = self.bm_dmb_kz_mat * self.by_kz_mat * self.plin_kz_mat
         if self.model_galaxies:
-            self.Pge_2h_kz_mat = bg_kz_mat * self.be_kz_mat * self.plin_kz_mat
-            self.Pgm_2h_kz_mat = bg_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
-            self.Pgm_nfw_2h_kz_mat = bg_kz_mat * self.bm_nfw_kz_mat * self.plin_kz_mat
-            self.Pgy_2h_kz_mat = self.by_kz_mat * bg_kz_mat * self.plin_kz_mat
-            self.Pgg_2h_kz_mat = bg_kz_mat * bg_kz_mat * self.plin_kz_mat
+            self.Pge_2h_kz_mat = self.bg_kz_mat * self.be_kz_mat * self.plin_kz_mat
+            self.Pgm_2h_kz_mat = self.bg_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
+            self.Pgm_nfw_2h_kz_mat = self.bg_kz_mat * self.bm_nfw_kz_mat * self.plin_kz_mat
+            self.Pgy_2h_kz_mat = self.by_kz_mat * self.bg_kz_mat * self.plin_kz_mat
+            self.Pgg_2h_kz_mat = self.bg_kz_mat * self.bg_kz_mat * self.plin_kz_mat
 
         # Get the 1-halo power:
         vmapped_func = get_vmapped_func_warg(self.get_P_1h, 2, 4)
