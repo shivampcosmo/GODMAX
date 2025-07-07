@@ -71,6 +71,8 @@ def parse_args():
                         help='Number of chains for MCMC')
     parser.add_argument('--max_tree_depth', type=int, default=4,
                         help='Maximum tree depth for NUTS sampler')
+    parser.add_argument('--bao_prior', type=bool, default=False,
+                        help='Use BAO prior')
     args = parser.parse_args()
     return args
 
@@ -83,10 +85,11 @@ num_warmup = args.num_warmup
 num_samples = args.num_samples
 num_chains= args.num_chains
 max_tree_depth = args.max_tree_depth
+wbao_prior = args.bao_prior
 run_this_script = True
 n_parallel = jax.local_device_count()
 
-print(f'Running with probes: {probes_forecast}, sc_val: {sc_val}, num_warmup: {num_warmup}, num_samples: {num_samples}, num_chains: {num_chains}, max_tree_depth: {max_tree_depth}')
+print(f'Running with probes: {probes_forecast}, sc_val: {sc_val}, num_warmup: {num_warmup}, num_samples: {num_samples}, num_chains: {num_chains}, max_tree_depth: {max_tree_depth}, wbao_prior: {wbao_prior}')
 
 # print(sys.argv)
 # probes_forecast = list(sys.argv[1])
@@ -114,7 +117,10 @@ probes_forecast_all_str = '_'.join(probes_forecast)
 if not os.path.exists(save_chain_dir + f'{probes_forecast_all_str}/'):
     os.makedirs(save_chain_dir + f'{probes_forecast_all_str}/')
 
-savefname_out = save_chain_dir + f'{probes_forecast_all_str}/mcmc_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}.pkl'
+if wbao_prior:
+    savefname_out = save_chain_dir + f'{probes_forecast_all_str}/mcmc_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}.pkl'
+else:
+    savefname_out = save_chain_dir + f'{probes_forecast_all_str}/mcmc_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}.pkl'
 
 print(probes_forecast, sc_val, savefname_out)
 
@@ -381,9 +387,12 @@ if run_this_script:
     cov_total = cov_total_orig_scaled[ell_sel_all,:][:, ell_sel_all]
     P_total = jnp.linalg.inv(cov_total)
 
-
-    with open(abs_path_params + '/Pge/priors.yaml', 'r') as file:
-        data = yaml.safe_load(file)
+    if wbao_prior:
+        with open(abs_path_params + '/Pge/priors_bao.yaml', 'r') as file:
+            data = yaml.safe_load(file)
+    else:
+        with open(abs_path_params + '/Pge/priors.yaml', 'r') as file:
+            data = yaml.safe_load(file)
     prior_limits = {key: tuple(map(float, value.split())) for key, value in data['prior_uniform'].items()}
     prior_gaussian = {key: tuple(map(float, value.split())) for key, value in data['prior_gaussian'].items()}
 
@@ -446,15 +455,20 @@ if run_this_script:
         analysis_dict_vary = copy.deepcopy(analysis_dict)
         if len(cosmo_params_vary_names) > 0:
             for jp in range(len(cosmo_params_vary_names)):
-                if cosmo_params_vary_names[jp] == 'h':
-                    fac = 100.
-                    cosmo_name = 'H0'
+                if wbao_prior and cosmo_params_vary_names[jp] == 'Om0':
+                    prior_mu = prior_mu_all_dict['Om0']
+                    prior_sig = prior_sig_all_dict['Om0']
+                    sim_params_dict_vary['cosmo']['Om0'] = numpyro.sample('Om0', dist.Normal(prior_mu, prior_sig))
                 else:
-                    fac = 1.
-                    cosmo_name = cosmo_params_vary_names[jp]
-                prior_min_jp = prior_min_all_dict[cosmo_params_vary_names[jp]]
-                prior_max_jp = prior_max_all_dict[cosmo_params_vary_names[jp]]
-                sim_params_dict_vary['cosmo'][cosmo_name] = fac * Uniform(cosmo_params_vary_names[jp], prior_min_jp, prior_max_jp)
+                    if cosmo_params_vary_names[jp] == 'h':
+                        fac = 100.
+                        cosmo_name = 'H0'
+                    else:
+                        fac = 1.
+                        cosmo_name = cosmo_params_vary_names[jp]
+                    prior_min_jp = prior_min_all_dict[cosmo_params_vary_names[jp]]
+                    prior_max_jp = prior_max_all_dict[cosmo_params_vary_names[jp]]
+                    sim_params_dict_vary['cosmo'][cosmo_name] = fac * Uniform(cosmo_params_vary_names[jp], prior_min_jp, prior_max_jp)
 
         if len(sims_params_vary_names) > 0:
             for jp in range(len(sims_params_vary_names)):

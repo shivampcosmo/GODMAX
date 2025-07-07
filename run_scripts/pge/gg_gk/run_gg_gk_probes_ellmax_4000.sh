@@ -38,5 +38,6 @@ which python
 export XLA_FLAGS=--xla_gpu_enable_command_buffer=
 cd /projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/
 # time srun --export=ALL python sample_params_v1.py "gg,gk" 4000
-time srun --export=ALL python sample_params_v5.py --probes="gg,gk" --lmax=4000 --num_warmup=3000 --num_samples=4000 --num_chains=24 --max_tree_depth=4
+# time srun --export=ALL python sample_params_v5.py --probes="gg,gk" --lmax=4000 --num_warmup=3000 --num_samples=4000 --num_chains=24 --max_tree_depth=4
+time srun --export=ALL python sample_params_v5.py --probes="gg,gk" --lmax=4000 --num_warmup=3000 --num_samples=4000 --num_chains=24 --max_tree_depth=4 --bao_prior=True
 echo "done"
