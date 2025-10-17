@@ -40,6 +40,8 @@ prior_uniform:
   gamma_a_fshmr: -2.0 2.0
   siglogMstar_Ncen: 0.05 1.5
   alphasat_Nsat: 0.4 2.0
+  Bcut_Nsat: 1.0 5.0
+  Bsat_Nsat: 5.0 12.0
 
 
 # Prior Mu and Sigma Values

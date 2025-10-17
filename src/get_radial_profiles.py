@@ -172,7 +172,9 @@ class Profiles(base_class):
             # Calculate galaxy statistics matrices
             self.Ncen_mat = get_vmapped_func(self.get_Ncen, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
             self.Nsat_mat = get_vmapped_func(self.get_Nsat, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-                
+            
+            self.Mh_Mstar = get_vmapped_func(self.get_Mh_Mstar, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+
             # Calculate stellar fraction matrices
             self.fstar_cen_mat = get_vmapped_func(self.get_fstar_cen, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
             self.fstar_sat_mat = get_vmapped_func(self.get_fstar_sat, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T

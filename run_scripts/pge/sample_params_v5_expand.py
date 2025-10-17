@@ -420,7 +420,7 @@ if run_this_script:
 
 
     cosmo_params_vary_names = ['Om0', 'sigma8', 'Ob0', 'h', 'ns']
-    sims_params_vary_names_baryons = ['theta_ej_0','nu_theta_ej_z','nu_theta_ej_M', 'mu_beta', 'alpha_nt']
+    sims_params_vary_names_baryons = ['theta_ej_0', 'theta_co_0','nu_theta_ej_z','nu_theta_ej_M', 'delta_rhogas', 'mu_beta', 'alpha_nt']
     sims_params_vary_names_gals = ['log10M1_fshmr', 'log10M1_a_fshmr','gamma_fshmr','gamma_a_fshmr',  'delta_fshmr', 'delta_a_fshmr', 'siglogMstar_Ncen', 'alphasat_Nsat']
     sims_params_vary_names = sims_params_vary_names_baryons + sims_params_vary_names_gals
     IA_params_vary_names = ['A_IA', 'eta_IA']
