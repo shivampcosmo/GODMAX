@@ -218,6 +218,6 @@ If you use GODMAX in your research, please cite the relevant papers (https://arx
 ## Acknowledgments
 
 GODMAX builds on:
-- [JAX-COSMO](https://github.com/DifferentiableUniverseInitiative/jax_cosmo) for cosmological background calculations
+- [JAX-COSMO](https://github.com/DifferentiableUniverseInitiative/jax_cosmo) and [Colossus](https://bdiemer.bitbucket.io/colossus/) for cosmological background calculations
 - [NumPyro](https://github.com/pyro-ppl/numpyro) for probabilistic programming
 - [mcfit](https://github.com/eelregit/mcfit) for the original mcfit implementation
