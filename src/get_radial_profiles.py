@@ -568,7 +568,7 @@ class Profiles(base_class):
     def get_Nsat(self, jz, jM):
         log10mthresh = jnp.log10(self.Mthresh_array[jz])
         Mval = self.M_array[jM]
-        Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh)
+        Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
         Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
         Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
         Ncen = self.get_Ncen(jz, jM)
@@ -589,7 +589,7 @@ class Profiles(base_class):
 
         def get_Nsat(jz, jM, log10mthresh):
             Mval = self.M_array[jM]
-            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh)
+            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
             Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
             Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
             Ncen = get_Ncen(jz, jM, log10mthresh)
