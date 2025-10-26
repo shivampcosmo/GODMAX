@@ -12,7 +12,7 @@ GODMAX provides a fully differentiable framework for computing:
 - **Matter power spectra** - 3D power spectra P(k,z) for various matter components
 - **Angular power spectra** - 2D angular power spectra C(ℓ) for cosmological observables
 - **Radial profiles** - Gas pressure, density, and other physical profiles in halos
-- **Covariance matrices** - For multi-probe cosmological analyses
+- **Covariance matrices** - Gaussian and Non-Gaussian covs for multi-probe cosmological analyses
 - **Pasting maps** - JAX-based pasting a lightcone halo catalog with multi-probe observables (lensing, tSZ, kSZ, galaxies)
 
 ### Key Features
