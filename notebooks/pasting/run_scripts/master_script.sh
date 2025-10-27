@@ -2,12 +2,12 @@
 
 # --- Configuration ---
 # Set the parameters for your runs
-NSIDE=2048
-TOTAL_DEVICES=8
+NSIDE=1024
+TOTAL_DEVICES=4
 
 # Set the base directory where your python script is located
 # The script will `cd` into this directory before running python
-WORK_DIR="/mnt/home/spandey/ceph/paste_godmax/GODMAX/notebooks/pasting/"
+WORK_DIR="/mnt/ceph/users/spandey/paste_godmax/GODMAX/notebooks/pasting/"
 
 # Set the directory to store the generated Slurm scripts and logs
 # Using a sub-directory keeps your project folder clean
@@ -70,7 +70,8 @@ cd "${WORK_DIR}"
 
 # Run the python script with the correct parameters
 # The 'time' command will measure the execution duration
-time srun python run_nside_map_halfdome.py ${NSIDE} ${JDEVICE} ${TOTAL_DEVICES}
+# time srun python run_nside_map_halfdome.py ${NSIDE} ${JDEVICE} ${TOTAL_DEVICES}
+time srun python run_backlight_pkdgrav_all_maps.py ${NSIDE} ${JDEVICE} ${TOTAL_DEVICES}
 
 echo "done"
 EOF
