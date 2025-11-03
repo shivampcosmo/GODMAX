@@ -44,6 +44,7 @@ other_params:
   A_IA : -0.5
   eta_IA : 0.5
 
+
 analysis:
   model_galaxies: True
   beam_fwhm_arcmin: 1.4

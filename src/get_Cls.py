@@ -262,7 +262,7 @@ class get_Cl(get_Pkz):
             ]
             
             # Default value if no condition matches
-            prefac = jnp.nan
+            prefac = 0.0
             for condition, value in conditions:
                 prefac = jnp.where(condition, value, prefac)
             return prefac

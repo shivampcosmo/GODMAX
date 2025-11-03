@@ -62,7 +62,10 @@ class get_Pkz(Profiles):
         # else: self.uk_y = jnp.zeros((self.nk, self.nz, self.nM))
         else: self.uk_y = jnp.zeros((1,1,1))
         if self.model_galaxies:
-            self.uk_clm = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 2).T
+            if self.model_matter == 'halofit':
+                self.uk_clm = self.uk_nfw
+            else:
+                self.uk_clm = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 2).T
             self.nbarz = jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen_mat + self.Nsat_mat), jnp.log(self.M_array), axis=-1)
             self.ukg_cross = (self.Ncen_mat[None,:,:] + self.Nsat_mat[None,:,:] * self.uk_clm)/self.nbarz[None,:,None]
             ukg_auto_arg = jnp.clip(jnp.nan_to_num(2 * self.Ncen_mat[None,:,:] * self.Nsat_mat[None,:,:] * self.uk_clm + (self.Nsat_mat[None,:,:] * self.uk_clm)**2), 1e-10, 2e4)
@@ -146,12 +149,16 @@ class get_Pkz(Profiles):
                 self.Pym_tot_mat = self.Pym_tot_mat * self.Pmm_sup_tot_mat
         if self.model_galaxies:
             self.Pge_tot_mat = (self.Pge_1h_kz_mat + self.Pge_2h_kz_mat) * self.Pmm_sup_tot_mat
-            self.Pgm_tot_mat = (self.Pgm_1h_kz_mat + self.Pgm_2h_kz_mat) * self.Pmm_sup_tot_mat
             self.Pgm_nfw_tot_mat = (self.Pgm_nfw_1h_kz_mat + self.Pgm_nfw_2h_kz_mat) * self.Pmm_sup_tot_mat
+            if self.model_matter == 'halofit':
+                self.Pgm_tot_mat = self.Pgm_nfw_tot_mat
+            else:
+                self.Pgm_tot_mat = (self.Pgm_1h_kz_mat + self.Pgm_2h_kz_mat) * self.Pmm_sup_tot_mat
+            self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat            
             self.Pgy_tot_mat = ((self.Pgy_1h_kz_mat)**(self.alpha_gy) + (self.Pgy_2h_kz_mat)**(self.alpha_gy))**(1/self.alpha_gy)
             if self.tSZ_transition_model == 'response':
                 self.Pgy_tot_mat = self.Pgy_tot_mat * self.Pmm_sup_tot_mat
-            self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat
+            
 
 
 
@@ -162,15 +169,15 @@ class get_Pkz(Profiles):
         # Helper function to select uk_val based on the probe
         def compute_uk_val(probe):
             conditions = [
-                (probe == 0, jnp.clip(self.uk_dmb_tointp[:, jz, jM], 1e-30, 1)),
-                (probe == 1, jnp.clip(self.uk_nfw_tointp[:, jz, jM], 1e-30, 1)),
-                (probe == 2, jnp.clip(self.uk_clm_tointp[:, jz, jM], 1e-30, 1)),
-                (probe == 3, self.uk_y_tointp[:, jz, jM]),
-                (probe == 4, self.uk_ne_tointp[:, jz, jM]),
+                (probe == 0, jnp.clip(jnp.nan_to_num(self.uk_dmb_tointp[:, jz, jM]), 1e-30, 1)),
+                (probe == 1, jnp.clip(jnp.nan_to_num(self.uk_nfw_tointp[:, jz, jM]), 1e-30, 1)),
+                (probe == 2, jnp.clip(jnp.nan_to_num(self.uk_clm_tointp[:, jz, jM]), 1e-30, 1)),
+                (probe == 3, jnp.nan_to_num(self.uk_y_tointp[:, jz, jM])),
+                (probe == 4, jnp.nan_to_num(self.uk_ne_tointp[:, jz, jM])),
             ]
             
             # Default value if no condition matches
-            uk_val = jnp.nan
+            uk_val = 0
             for condition, value in conditions:
                 uk_val = jnp.where(condition, value, uk_val)
             return uk_val
@@ -231,15 +238,15 @@ class get_Pkz(Profiles):
                 for the specified probe, evaluated at the given k and z.
         """        
         conditions = [
-            (probe == 0, (self.Mtot_mat[jz, :] * self.uk_dmb[jk, jz, :]) / self.rhom_0),
-            (probe == 1, (self.Mtot_mat[jz, :] * self.uk_nfw[jk, jz, :]) / self.rhom_0),
-            (probe == 2, self.ukg_cross[jk, jz, :]),
-            (probe == 3, self.uk_y[jk, jz, :]),
-            (probe == 4, (self.Mtot_mat[jz, :] * self.uk_ne[jk, jz, :]) / self.rhom_0),
+            (probe == 0, jnp.nan_to_num(self.Mtot_mat[jz, :] * self.uk_dmb[jk, jz, :]) / self.rhom_0),
+            (probe == 1, jnp.nan_to_num(self.Mtot_mat[jz, :] * self.uk_nfw[jk, jz, :]) / self.rhom_0),
+            (probe == 2, jnp.nan_to_num(self.ukg_cross[jk, jz, :])),
+            (probe == 3, jnp.nan_to_num(self.uk_y[jk, jz, :])),
+            (probe == 4, jnp.nan_to_num(self.Mtot_mat[jz, :] * self.uk_ne[jk, jz, :]) / self.rhom_0),
         ]
         
         # Default value if no condition matches
-        ukz = jnp.nan
+        ukz = 0
         for condition, value in conditions:
             ukz = jnp.where(condition, value, ukz)
         return ukz

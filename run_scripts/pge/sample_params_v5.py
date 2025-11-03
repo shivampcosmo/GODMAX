@@ -1,12 +1,14 @@
 import sys, os
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-from jax.lib import xla_bridge
-platform = xla_bridge.get_backend().platform
+# from jax.lib import xla_bridge
+# platform = jax.extend.backend.get_backend.platform
 import jax
 import jax.numpy as jnp
 from jax import vmap, grad, pmap
 print(jax.local_device_count(), jax.device_count())
-jax.config.update('jax_platform_name', platform)
+# jax.config.update('jax_platform_name', platform)
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_debug_nans", True)
 import pathlib
@@ -75,6 +77,8 @@ def parse_args():
                         help='Use BAO prior')
     parser.add_argument('--init_strategy', type=str, default="median",
                         help='Initialization strategy for sampler')    
+    parser.add_argument('--model_matter', type=str, default="DMB",
+                        help='model for matter power spectrum: DMB or halofit')                            
     args = parser.parse_args()
     return args
 
@@ -89,11 +93,12 @@ num_chains= args.num_chains
 max_tree_depth = args.max_tree_depth
 wbao_prior = args.bao_prior
 init_strategy = args.init_strategy
+model_matter = args.model_matter
 run_this_script = True
 
 n_parallel = jax.local_device_count()
 
-print(f'Running with probes: {probes_forecast}, sc_val: {sc_val}, num_warmup: {num_warmup}, num_samples: {num_samples}, num_chains: {num_chains}, max_tree_depth: {max_tree_depth}, wbao_prior: {wbao_prior}, init_strategy: {init_strategy}')
+print(f'Running with probes: {probes_forecast}, sc_val: {sc_val}, num_warmup: {num_warmup}, num_samples: {num_samples}, num_chains: {num_chains}, max_tree_depth: {max_tree_depth}, wbao_prior: {wbao_prior}, init_strategy: {init_strategy}, model_matter: {model_matter}')
 
 # print(sys.argv)
 # probes_forecast = list(sys.argv[1])
@@ -121,8 +126,10 @@ probes_forecast_all_str = '_'.join(probes_forecast)
 if not os.path.exists(save_chain_dir + f'{probes_forecast_all_str}/'):
     os.makedirs(save_chain_dir + f'{probes_forecast_all_str}/')
 
-
-savefname_out = save_chain_dir + f'{probes_forecast_all_str}/mcmc_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}.pkl'
+if model_matter == 'halofit':
+    savefname_out = save_chain_dir + f'{probes_forecast_all_str}/mcmc_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}_halofit.pkl'
+else:
+    savefname_out = save_chain_dir + f'{probes_forecast_all_str}/mcmc_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}.pkl'
 # if wbao_prior:
 #     savefname_out = save_chain_dir + f'{probes_forecast_all_str}/mcmc_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}.pkl'
 # else:
@@ -152,7 +159,10 @@ if run_this_script:
 
     default_data = read_yaml(abs_path_params + '/params_default.yaml')
     # sim_params_dict, halo_params_dict, analysis_dict, other_params_dict = generate_dicts(default_data)
-    new_data = read_yaml(abs_path_params + '/Pge/params.yaml')
+    if model_matter == 'halofit':
+        new_data = read_yaml(abs_path_params + '/Pge/params_halofit.yaml')
+    else:
+        new_data = read_yaml(abs_path_params + '/Pge/params.yaml')
     # new_data = read_yaml(abs_path_params + '/DESxACT/params_v0.yaml')
     merged_data = always_merger.merge(default_data, new_data)
 
@@ -429,7 +439,7 @@ if run_this_script:
     analysis_vary_names = []
 
 
-
+    print("HMC sampling now...")
 
 
 
@@ -581,7 +591,7 @@ if run_this_script:
             jittered_params[key] = val + noise
         return jittered_params
     
-
+    print("Starting MCMC sampling...")
     def do_mcmc(rng_key, n_vectorized=num_chains):
         # nuts_kernel = NUTS(model)
         
