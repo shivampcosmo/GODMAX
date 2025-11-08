@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "godmax"
+version = "0.1.0"
+description = "Gas thermODynamics and Matter distribution using jAX (GODMAX)"
+readme = "README.md"
+authors = [
+    {name = "Shivam Pandey", email = "shivampcosmo@gmail.com"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpyro[cuda]",
+    "jax[cuda]",
+    "interpax",
+    "colossus",
+    "configobj",
+    "astropy",
+    "jax_cosmo",
+    "deepmerge",
+    "healpy",
+]
+
+[project.urls]
+Homepage = "https://github.com/shivampcosmo/GODMAX"
+Repository = "https://github.com/shivampcosmo/GODMAX"
+
+[tool.setuptools]
+packages = ["godmax"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "black", "flake8"]
