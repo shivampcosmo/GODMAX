@@ -31,6 +31,11 @@ GODMAX provides a fully differentiable framework for computing:
 - JAX with GPU support (recommended)
 - NumPyro for sampling
 
+To use GPU support, install with following:
+```
+pip install -e . --find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+```
+
 ### Dependencies
 
 The main dependencies include:
