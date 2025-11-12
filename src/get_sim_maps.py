@@ -403,6 +403,7 @@ class get_sim_map(Profiles):
         theta_fwhm_arcmin = hp.nside2resol(self.nside_map, arcmin=True)
         theta_fwhm_rad = (theta_fwhm_arcmin / 60.) * (jnp.pi / 180.)
         self.sigma_val = theta_fwhm_rad / jnp.sqrt(8. * jnp.log(2.))
+        self.pix_area = hp.nside2pixarea(self.nside_map, degrees=False)
         
         # Pixel arrays
         self.nearby_pix_all = jnp.array(mock_params_dict['nearby_pix_all'], dtype=jnp.int32)
