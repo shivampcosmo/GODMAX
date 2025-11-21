@@ -124,6 +124,7 @@ class setup_sim_map(Profiles):
         get_kSZmap = mock_params_dict.get('get_kSZmap', False)
         get_taumap = mock_params_dict.get('get_taumap', False)
         get_kappamap = mock_params_dict.get('get_kappamap', False)   
+        get_baryonified_map = mock_params_dict.get('get_baryonifiedmap', False)
         get_galmap = mock_params_dict.get('get_galmap', False)
         
         # Setup tau interpolator if needed
@@ -143,6 +144,9 @@ class setup_sim_map(Profiles):
         # Process kappa map
         if get_kappamap:
             self._setup_kappamap()
+
+            if get_baryonified_map:
+                self._setup_DMOmap()
         
     def _setup_tau_interpolator(self):
         """Setup tau(z) interpolator"""
@@ -171,8 +175,8 @@ class setup_sim_map(Profiles):
         if self.profile_timing: start_time = time.perf_counter()
         self.log_y2D_interp = interpax.Interpolator3D(
             jnp.log(self.rp_array), self.z_array.astype(jnp.float32), 
-            jnp.log(self.M_array).astype(jnp.float32), jnp.log(self.y2D_mat_physical), 
-            extrap=[1e-20, 1e-20]
+            jnp.log(self.M_array).astype(jnp.float32), jnp.nan_to_num(jnp.log(self.y2D_mat_physical), nan=-20, posinf=-20, neginf=-20), 
+            extrap=[-20, -20]
         )
         if self.profile_timing: self.timing_results['ymap_interpolator_creation'] = time.perf_counter() - start_time
         
@@ -194,17 +198,17 @@ class setup_sim_map(Profiles):
         if self.profile_timing: start_time = time.perf_counter()
         self.log_ne2D_interp = interpax.Interpolator3D(
             jnp.log(self.rp_array), self.z_array.astype(jnp.float32), 
-            jnp.log(self.M_array).astype(jnp.float32), jnp.log(self.ne2D_mat_physical), 
-            extrap=[1e-20, 1e-20]
+            jnp.log(self.M_array).astype(jnp.float32), jnp.nan_to_num(jnp.log(self.ne2D_mat_physical), nan=-20, posinf=-20, neginf=-20), 
+            extrap=[-20, -20]
         )
         if self.profile_timing: self.timing_results['ne_map_interpolator_creation'] = time.perf_counter() - start_time
         
     def _setup_kappamap(self):
         """Setup kappa (lensing) map"""
         self.rho_dmb_mat_physical = (self.rho_dmb_mat / (self.scale_fac_a_array[None, :, None] ** 3)).astype(jnp.float32)
-        
+                
         if self.profile_timing: start_time = time.perf_counter()
-        self.rhom2D_mat_physical = self._compute_projections(
+        self.rhom2D_mat_physical_orig = self._compute_projections(
             self.rho_dmb_mat_physical, 'rhom2D'
         ).astype(jnp.float32)
         if self.profile_timing: self.timing_results['kappa_map_projection_calculation'] = time.perf_counter() - start_time
@@ -212,18 +216,45 @@ class setup_sim_map(Profiles):
         if self.smooth_profiles:
             if self.profile_timing: start_time = time.perf_counter()
             self.rhom2D_mat_physical = self._apply_smoothing_to_profile(
-                self.rhom2D_mat_physical, 'rhom2D'
+                self.rhom2D_mat_physical_orig, 'rhom2D'
             ).astype(jnp.float32)
             if self.profile_timing: self.timing_results['kappa_map_profile_smoothing'] = time.perf_counter() - start_time
-        
+        else:
+            self.rhom2D_mat_physical = self.rhom2D_mat_physical_orig
         if self.profile_timing: start_time = time.perf_counter()
         self.log_rhom2D_interp = interpax.Interpolator3D(
             jnp.log(self.rp_array), self.z_array.astype(jnp.float32), 
-            jnp.log(self.M_array).astype(jnp.float32), jnp.log(self.rhom2D_mat_physical), 
-            extrap=[1e-20, 1e-20]
+            jnp.log(self.M_array).astype(jnp.float32), jnp.nan_to_num(jnp.log(self.rhom2D_mat_physical), nan=-20, posinf=-20, neginf=-20), 
+            extrap=[-20, -20]
         )
         if self.profile_timing: self.timing_results['kappa_map_interpolator_creation'] = time.perf_counter() - start_time
+
+    def _setup_DMOmap(self):
+        """Setup kappa (lensing) map"""
+        self.rho_dmo_mat_physical = (self.rho_nfw_mat / (self.scale_fac_a_array[None, :, None] ** 3)).astype(jnp.float32)
+                
+        if self.profile_timing: start_time = time.perf_counter()
+        self.rhom_dmo_2D_mat_physical_orig = self._compute_projections(
+            self.rho_dmo_mat_physical, 'rhom2D_dmo'
+        ).astype(jnp.float32)
+        if self.profile_timing: self.timing_results['kappa_map_projection_calculation'] = time.perf_counter() - start_time
         
+        if self.smooth_profiles:
+            if self.profile_timing: start_time = time.perf_counter()
+            self.rhom_dmo_2D_mat_physical = self._apply_smoothing_to_profile(
+                self.rhom_dmo_2D_mat_physical_orig, 'rhom2D_dmo'
+            ).astype(jnp.float32)
+            if self.profile_timing: self.timing_results['kappa_map_profile_smoothing'] = time.perf_counter() - start_time
+        else:
+            self.rhom_dmo_2D_mat_physical = self.rhom_dmo_2D_mat_physical_orig
+        if self.profile_timing: start_time = time.perf_counter()
+        self.log_rhom_dmo_2D_interp = interpax.Interpolator3D(
+            jnp.log(self.rp_array), self.z_array.astype(jnp.float32), 
+            jnp.log(self.M_array).astype(jnp.float32), jnp.nan_to_num(jnp.log(self.rhom_dmo_2D_mat_physical), nan=-20, posinf=-20, neginf=-20), 
+            extrap=[-20, -20]
+        )
+        if self.profile_timing: self.timing_results['kappa_map_interpolator_creation'] = time.perf_counter() - start_time
+
     def _compute_projections(self, mat_physical, profile_name):
         """Compute 2D projections for a given physical matrix"""
         if profile_name == 'y2D':
@@ -244,6 +275,12 @@ class setup_sim_map(Profiles):
                 jnp.arange(len(self.z_array)), 
                 jnp.arange(len(self.M_array))
             ).T
+        elif profile_name == 'rhom2D_dmo':
+            return get_vmapped_func(self.get_rhom2D_dmo_physical_proj, 3)(
+                jnp.arange(len(self.rp_array)), 
+                jnp.arange(len(self.z_array)), 
+                jnp.arange(len(self.M_array))
+            ).T
 
     def _apply_smoothing_to_profile(self, proj_2d, profile_name):
         """Apply smoothing to 2D profile"""
@@ -259,6 +296,11 @@ class setup_sim_map(Profiles):
             ).T
         elif profile_name == 'rhom2D':
             return get_vmapped_func(self.get_rhom2D_smoothed_prof, 2)(
+                jnp.arange(len(self.z_array)), 
+                jnp.arange(len(self.M_array))
+            ).T
+        elif profile_name == 'rhom2D_dmo':
+            return get_vmapped_func(self.get_rhom2D_dmo_smoothed_prof, 2)(
                 jnp.arange(len(self.z_array)), 
                 jnp.arange(len(self.M_array))
             ).T
@@ -309,25 +351,64 @@ class setup_sim_map(Profiles):
         """Compute rhom2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.rho_dmb_mat_physical, 1.0, num_trapz_points)
 
+    @partial(jit, static_argnums=(0, 4))        
+    def get_rhom2D_dmo_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+        """Compute rhom2D projection"""
+        return self._generic_2D_projection(jrp, jz, jM, self.rho_dmo_mat_physical, 1.0, num_trapz_points)
+
+
+    # @partial(jit, static_argnums=(0,))
+    # def _generic_smoothing(self, jz, jM, proj_2d_mat):
+    #     """Generic smoothing helper"""
+    #     DA_val = self.DA_array[jz]
+    #     theta_array = self.rp_array / DA_val
+        
+    #     ell_out, prof_ell = Hankel(theta_array, nu=0, q=1.0, nx=len(theta_array), lowring=True)(
+    #         proj_2d_mat[:,jz, jM], extrap=True
+    #     )
+    #     prof_ell = prof_ell * (2 * jnp.pi)
+        
+    #     b_ell = jnp.exp(-0.5 * ell_out * (ell_out + 1.) * (self.sigma_val ** 2))
+        
+    #     theta_out, prof_smooth = Hankel(ell_out, nu=0, q=1.0, nx=len(ell_out), lowring=True)(
+    #         jnp.clip(b_ell * prof_ell, 1e-40, 1e10), extrap=True
+    #     )
+    #     prof_smooth = prof_smooth / (2 * jnp.pi)
+        
+    #     return jnp.clip(prof_smooth, 1e-20, jnp.max(proj_2d_mat[:,jz, jM]))
+
     @partial(jit, static_argnums=(0,))
     def _generic_smoothing(self, jz, jM, proj_2d_mat):
         """Generic smoothing helper"""
         DA_val = self.DA_array[jz]
         theta_array = self.rp_array / DA_val
-        
-        ell_out, prof_ell = Hankel(theta_array, nu=0, q=1.0, nx=len(theta_array), lowring=True)(
-            proj_2d_mat[:,jz, jM], extrap=True
+
+        theta_array_here = jnp.logspace(-6, jnp.log10(jnp.pi/8), num=100)
+        prof_here = jnp.exp(jnp.interp(
+            jnp.log(theta_array_here), 
+            jnp.log(theta_array), 
+            jnp.log(proj_2d_mat[:,jz, jM])
+        ))
+
+        ell_out, prof_ell = Hankel(theta_array_here, nu=0, q=0.95, nx=len(theta_array_here), lowring=True)(
+            prof_here, extrap=True
         )
         prof_ell = prof_ell * (2 * jnp.pi)
         
         b_ell = jnp.exp(-0.5 * ell_out * (ell_out + 1.) * (self.sigma_val ** 2))
         
-        theta_out, prof_smooth = Hankel(ell_out, nu=0, q=1.0, nx=len(ell_out), lowring=True)(
-            jnp.clip(b_ell * prof_ell, 1e-40, 1e10), extrap=True
+        theta_out, prof_smooth = Hankel(ell_out, nu=0, q=0.95, nx=len(ell_out), lowring=True)(
+            jnp.clip(b_ell * prof_ell, 1e-40, 1e40), extrap=True
         )
         prof_smooth = prof_smooth / (2 * jnp.pi)
-        
-        return jnp.clip(prof_smooth, 1e-20, jnp.max(proj_2d_mat[:,jz, jM]))
+
+        prof_smooth_interp = jnp.exp(jnp.interp(
+            jnp.log(theta_array), 
+            jnp.log(theta_out), 
+            jnp.log(prof_smooth)
+        ))
+
+        return jnp.clip(prof_smooth_interp,  jnp.min(proj_2d_mat[:,jz, jM]), jnp.max(proj_2d_mat[:,jz, jM]))
 
     @partial(jit, static_argnums=(0,))        
     def get_y2D_smoothed_prof(self, jz, jM):
@@ -342,8 +423,12 @@ class setup_sim_map(Profiles):
     @partial(jit, static_argnums=(0,))        
     def get_rhom2D_smoothed_prof(self, jz, jM):
         """Apply smoothing to rhom2D profile"""
-        return self._generic_smoothing(jz, jM, self.rhom2D_mat_physical)
+        return self._generic_smoothing(jz, jM, self.rhom2D_mat_physical_orig)
 
+    @partial(jit, static_argnums=(0,))
+    def get_rhom2D_dmo_smoothed_prof(self, jz, jM):
+        """Apply smoothing to rhom2D DMO profile"""
+        return self._generic_smoothing(jz, jM, self.rhom_dmo_2D_mat_physical_orig)
 
 
 
@@ -454,7 +539,9 @@ class get_sim_map(Profiles):
         get_kSZmap = mock_params_dict.get('get_kSZmap', False)
         get_taumap = mock_params_dict.get('get_taumap', False)
         get_kappamap = mock_params_dict.get('get_kappamap', False)   
+        get_baryonified_map = mock_params_dict.get('get_baryonifiedmap', False)
         get_galmap = mock_params_dict.get('get_galmap', False)
+
         
         # Setup tau interpolator if needed
         if get_kSZmap or get_taumap:
@@ -473,6 +560,9 @@ class get_sim_map(Profiles):
         # Process kappa map
         if get_kappamap:
             self._get_kappamap()
+
+        if get_baryonified_map:
+            self._get_kappamap_dmo()
         
         # Process galaxy catalog
         if get_galmap:
@@ -530,8 +620,14 @@ class get_sim_map(Profiles):
         if self.profile_timing: start_time = time.perf_counter()
         rhomjpix_all = vmap(self.get_rhom_healpix)(jnp.arange(len(self.pix_prop_all)))
         self.rhommap_final = self._assemble_map(rhomjpix_all)
-        # self.rhommap_final.block_until_ready()
         if self.profile_timing: self.timing_results['kappa_map_generation_and_assembly'] = time.perf_counter() - start_time
+
+    def _get_kappamap_dmo(self):
+        """Get kappa (lensing) map"""        
+        if self.profile_timing: start_time = time.perf_counter()
+        rhom_dmo_jpix_all = vmap(self.get_rhom_dmo_healpix)(jnp.arange(len(self.pix_prop_all)))
+        self.rhom_dmo_map_final = self._assemble_map(rhom_dmo_jpix_all)
+        if self.profile_timing: self.timing_results['kappa_dmo_map_generation_and_assembly'] = time.perf_counter() - start_time
 
 
     def _assemble_map(self, pixel_values):
@@ -621,7 +717,18 @@ class get_sim_map(Profiles):
     def get_rhom_healpix(self, jpix):
         """Get rhom value for HEALPix pixel"""
         prop = self.pix_prop_all[jpix]
-        return jnp.exp(self.log_rhom2D_interp(prop[0], prop[1], prop[2]))
+        DA_val = jnp.exp(jnp.interp(prop[1], self.z_array, jnp.log(self.DA_array)))
+        pix_area_corr = self.pix_area * (DA_val**2)
+        return pix_area_corr * jnp.exp(self.log_rhom2D_interp(prop[0], prop[1], prop[2]))
+
+    @partial(jit, static_argnums=(0,))
+    def get_rhom_dmo_healpix(self, jpix):
+        """Get rhom value for HEALPix pixel"""
+        prop = self.pix_prop_all[jpix]
+        DA_val = jnp.exp(jnp.interp(prop[1], self.z_array, jnp.log(self.DA_array)))
+        pix_area_corr = self.pix_area * (DA_val**2)
+        return pix_area_corr * jnp.exp(self.log_rhom_dmo_2D_interp(prop[0], prop[1], prop[2]))
+
 
     # ========== Galaxy catalog methods ==========
     

@@ -18,33 +18,6 @@ sim_params:
   log10_Mc0 : 13.75
   mu_beta : 0.0762
 
-  # log10M1_fshmr: 12.35
-  # log10M1_a_fshmr: 0.28
-  # beta_fshmr: 0.44
-  # beta_a_fshmr: 0.18
-  # delta_fshmr: 0.57
-  # delta_a_fshmr: 0.17
-  # siglogMstar_Ncen: 0.25
-  # alphasat_Nsat: 1.0
-
-
-##### TEST1######
-  # log10M1_fshmr: 12.42
-  # log10M1_a_fshmr: -0.25
-  # log10Mstar0_fshmr: 10.72
-  # log10Mstar0_a_fshmr: 0.55
-  # beta_fshmr: 0.4
-  # beta_a_fshmr: 0.2
-  # delta_fshmr: 0.41
-  # delta_a_fshmr: -0.11
-  # gamma_fshmr: 1.70
-  # gamma_a_fshmr: -1.8
-  # siglogMstar_Ncen: 0.5
-  # alphasat_Nsat: 1.16
-  # Bcut_Nsat: 1.69
-  # Bsat_Nsat: 9.01
-  # betacut_Nsat: 0.6
-  # betasat_Nsat: 0.3
 
 
 ##### TEST2######
@@ -67,24 +40,6 @@ sim_params:
 
 
 
-  # log10M1_fshmr: 12.0
-  # log10M1_a_fshmr: 0.3
-  # log10Mstar0_fshmr: 10.72
-  # log10Mstar0_a_fshmr: 0.55
-  # beta_fshmr: 0.4
-  # beta_a_fshmr: 0.2
-  # delta_fshmr: 0.12
-  # delta_a_fshmr: 0.15
-  # gamma_fshmr: 1.56
-  # gamma_a_fshmr: 2.51
-  # siglogMstar_Ncen: 0.25
-  # alphasat_Nsat: 1.0
-  # Bcut_Nsat: 1.69
-  # Bsat_Nsat: 9.01
-  # betacut_Nsat: 0.6
-  # betasat_Nsat: 0.74
-
-
   alpha_nt : 0.05
 
 halo_params:
@@ -92,7 +47,7 @@ halo_params:
   rmax: 16.0
   nr: 64
 
-
+  hmf_model: T08
   conc_model: Diemer15
 
 other_params:
