@@ -328,9 +328,9 @@ sim_params_dict, halo_params_dict, analysis_dict, other_params_dict = generate_d
 
 # Override halo parameters for this analysis
 halo_params_dict.update({
-    'rmin': 0.001, 'rmax': 10.0, 'nr': 48,
-    'zmin': 0.001, 'zmax': 2.1, 'nz':31,
-    'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32
+    'rmin': 0.00075, 'rmax': 10.0, 'nr': 48,
+    'zmin': 0.005, 'zmax': 2.1, 'nz':31,
+    'lg10_Mmin': 10.75, 'lg10_Mmax': 16.0, 'nM': 40
 })
 
 # cosmology of the backlight simulations
@@ -347,11 +347,25 @@ mock_params_dict_setup['get_ymap'] = True
 mock_params_dict_setup['get_kSZmap'] = True
 mock_params_dict_setup['get_taumap'] = True
 mock_params_dict_setup['get_kappamap'] = True
+mock_params_dict_setup['get_baryonifiedmap'] = True
 mock_params_dict_setup['get_galmap'] = True
 mock_params_dict_setup['smooth_profiles'] = True
 Prof_test = setup_sim_map(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, mock_params_dict_setup, Profiles_obj=Prof_test)
 
 chi2z_interp = interpolate.interp1d(np.log(Prof_test.chi_array), Prof_test.z_array, fill_value="extrapolate")
+
+
+rho_m = Prof_test.get_rho_m(0.0)
+Mtot = rho_m * (1000)**3
+part_mass = float(Mtot/2048**3)
+map_tot_orig = hp.read_map(f'{sim_file_path}/compressed_massMaps/massSheet_tot_z_{int(snap_num)}.fits.gz')
+map_tot_orig_ds = hp.ud_grade(np.array(map_tot_orig*part_mass), nside, power=-2)
+
+# map_unbound = hp.read_map(f'{sim_file_path}/compressed_massMaps/massSheet_unbound_z_{int(snap_num)}.fits.gz')
+# map_unbound_ds = hp.ud_grade(np.array(map_unbound*part_mass), nside, power=-2)
+# map_bound = map_tot_orig - map_unbound
+# map_bound_ds = hp.ud_grade(np.array(map_bound*part_mass), nside, power=-2)
+
 
 if PROFILE_TIMING:
     setup_end_time = time.perf_counter()
@@ -435,7 +449,7 @@ for snap_num in snap_num_all[1:-1]:
             nsel = len(M200c_all)
             num_chunks = int(np.ceil(nsel / nh_max)) if nsel > nh_max else 1
             
-            map_rhom, map_ymap, map_ksz, map_tau = (np.zeros(12 * nside**2, dtype=np.float32) for _ in range(4))
+            map_rhom_dmb, map_rhom_dmo, map_kappa, map_ymap, map_ksz, map_tau = (np.zeros(12 * nside**2, dtype=np.float32) for _ in range(6))
             mock_gals_all = {}
             
             for i in tqdm(range(num_chunks), desc=f"Painting maps for z={zval:.3f}"):
@@ -487,11 +501,17 @@ for snap_num in snap_num_all[1:-1]:
                     
                     mock_map = get_sim_map(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, mock_params_dict, Profiles_obj=Prof_test)
                     
-                    map_rhom += np.nan_to_num(mock_map.rhommap_final)
+                    map_rhom_dmb += np.nan_to_num(mock_map.rhommap_final)
+                    map_rhom_dmo += np.nan_to_num(mock_map.rhom_dmo_map_final)
                     map_ymap += np.nan_to_num(mock_map.ymap_final)
                     map_ksz += np.nan_to_num(mock_map.kszmap_final)
                     map_tau += np.nan_to_num(mock_map.taumap_final)
                     mock_gals_all[i] = mock_map.final_galaxy_catalog
+
+                    map_tot_orig_ds_smooth = hp.smoothing(map_tot_orig_ds, sigma=mock_map.sigma_val)
+
+                    map_diff = map_rhom_dmb - map_rhom_dmo
+                    map_kappa += map_tot_orig_ds_smooth + map_diff
 
                     if PROFILE_TIMING:
                         map_gen_end_time = time.perf_counter()
@@ -506,8 +526,9 @@ for snap_num in snap_num_all[1:-1]:
                 save_start_time = time.perf_counter()
                 
 
-            saved_data = {'mock_gals_all': mock_gals_all, 'map_rhom': map_rhom, 
-                            'map_ymap': map_ymap, 'map_ksz': map_ksz, 'map_tau': map_tau}
+            saved_data = {'mock_gals_all': mock_gals_all, 'map_rhom_dmb': map_rhom_dmb, 
+                            'map_ymap': map_ymap, 'map_ksz': map_ksz, 'map_tau': map_tau,
+                            'map_kappa': map_kappa, 'map_rhom_dmo': map_rhom_dmo}
             
             with open(save_map_fname, 'wb') as f:
                 pk.dump(saved_data, f)
