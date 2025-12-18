@@ -122,6 +122,7 @@ halo_params:
 
 
 analysis:
+  backreaction: True
   model_galaxies: True
   model_tSZ: True
   num_points_trapz_int: 32

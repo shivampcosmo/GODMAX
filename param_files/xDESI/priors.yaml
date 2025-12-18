@@ -1,0 +1,10 @@
+# Prior Min and Max Values
+prior_uniform:
+  log10M1_fshmr: 11.0 14.0
+  log10M1_a_fshmr: -2.0 2.0
+  delta_fshmr: 0.01 1.0
+  delta_a_fshmr: -2.0 2.0
+  gamma_fshmr: 0.1 3.0
+  gamma_a_fshmr: -2.0 2.0
+  siglogMstar_Ncen: 0.05 1.5
+  alphasat_Nsat: 0.4 2.0

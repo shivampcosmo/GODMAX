@@ -223,14 +223,20 @@ class Profiles(base_class):
     @timing_decorator
     def run_clm_calc(self):
         """Run the collision-less matter profile calculation - optimized."""
-        # Pre-calculate zeta values
-        self.zeta_mat = get_vmapped_func(self.get_zeta, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Calculate CLM mass
-        self.Mclm_mat = get_vmapped_func(self.get_Mclm, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Get CLM density
-        self.rho_clm_mat = get_vmapped_func(self.get_rho_clm, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        if self.backreaction:
+            # Pre-calculate zeta values
+            self.zeta_mat = get_vmapped_func(self.get_zeta, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
+                
+            # Calculate CLM mass
+            self.Mclm_mat = get_vmapped_func(self.get_Mclm, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
+                
+            # Get CLM density
+            self.rho_clm_mat = get_vmapped_func(self.get_rho_clm, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
+        else:
+            # Calculate CLM density without backreaction
+            self.rho_clm_mat = self.fclm_mat[None, :, :] * self.rho_nfw_mat
+            # Calculate CLM mass without backreaction
+            self.Mclm_mat = self.fclm_mat[None, :, :] * get_vmapped_func(self.get_Mnfw, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
     @timing_decorator
     def run_cga_calc(self):
@@ -596,7 +602,7 @@ class Profiles(base_class):
             val = Ncen * ((Mval / Msat)**self.alphasat_Nsat) * jnp.exp(-(Mcut / Mval))
             return val
 
-        Mthresh_array = jnp.logspace(9, 13, npoints)
+        Mthresh_array = jnp.logspace(9, 14, 2*npoints)
         Ncen_mat = get_vmapped_func(get_Ncen, 3)(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
         Nsat_mat = get_vmapped_func(get_Nsat, 3)(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
         Ntot_mat = (Ncen_mat + Nsat_mat)[0,...]
@@ -760,10 +766,19 @@ class Profiles(base_class):
         else:
             Mclm_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.Mclm_mat[:, jz, jM])))
         
-        lnMclm_interp = interpax.CubicSpline(jnp.log(r_array_here), jnp.log(Mclm_here + 1e-30), extrapolate=True, check=False)
-        dlnMclm_dr = lnMclm_interp.derivative(nu=1)(jnp.log(r_array_here))
+        # lnMclm_interp = interpax.CubicSpline(jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30), extrapolate=True, check=False)
+        # lnMclm_interp = interpax.Akima1DInterpolator(jnp.log(r_array_here), jnp.log(Mclm_here + 1e-30), extrapolate=True, check=False)
+        # lnMclm_interp = interpax.PchipInterpolator(jnp.log(r_array_here), jnp.nan_to_num(jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30)), extrapolate=True, check=False)
+        # dlnMclm_dr = lnMclm_interp.derivative(nu=1)(jnp.log(r_array_here))
+
+        # def lnMclm_interp(x, xp, yp):
+        #   return jnp.interp(x, xp, yp)
+        # lnMclm_interp = (jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30), extrapolate=True, check=False)
+        dlnMclm_dr = jax.vmap(jax.grad(lambda x_val: jnp.interp(x_val, jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30))))(jnp.log(r_array_here))
+        # f_prime_vec = jax.vmap(f_prime)(x_grid)
+
         dMclm_dr = dlnMclm_dr * Mclm_here / r_array_here
-        rho_clm = dMclm_dr / (4*jnp.pi*r_array_here**2)      
+        rho_clm = dMclm_dr / (4*jnp.pi*r_array_here**2)   
         return jnp.clip(rho_clm, 0, 1e30)
 
 
@@ -786,9 +801,14 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_rho_dmb(self, jr, jz, jM, r_array_here=None):
-        '''This is the total matter profile with all the components (Eq.2.2)'''    
-        rho_dmb = self.get_rho_gas_normed(jr, jz, jM, r_array_here=r_array_here) + \
-            self.get_rho_cga(jr, jz, jM, r_array_here=r_array_here) + self.get_rho_clm(jz, jM, r_array_here=r_array_here)[jr]
+        '''This is the total matter profile with all the components (Eq.2.2)'''   
+        if self.backreaction: 
+            rho_dmb = self.get_rho_gas_normed(jr, jz, jM, r_array_here=r_array_here) + \
+                self.get_rho_cga(jr, jz, jM, r_array_here=r_array_here) + self.get_rho_clm(jz, jM, r_array_here=r_array_here)[jr]
+        else:
+            rho_dmb = self.get_rho_gas_normed(jr, jz, jM, r_array_here=r_array_here) + \
+                self.get_rho_cga(jr, jz, jM, r_array_here=r_array_here) + self.get_rho_nfw_normed(jr, jz, jM, r_array_here=r_array_here) * self.fclm_mat[jz, jM]
+
         return rho_dmb
 
     @partial(jit, static_argnums=(0,))

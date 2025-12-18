@@ -66,12 +66,12 @@ analysis:
   zmax_for_Cls: 1.6
   nz_for_Cls: 128
 
-  fsky_yy: 0.4
-  fsky_ky: 0.4
-  fsky_kk: 0.4
-  fsky_yg: 0.35
-  fsky_kg: 0.35
-  fsky_gg: 0.4
+  fsky_yy: 0.125
+  fsky_ky: 0.125
+  fsky_kk: 0.125
+  fsky_yg: 0.125
+  fsky_kg: 0.125
+  fsky_gg: 0.125
 
   sigma_epsilon_SN_bins:
     - 0.26

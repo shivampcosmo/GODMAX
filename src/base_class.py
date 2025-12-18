@@ -258,7 +258,7 @@ class base_class:
         self.nell = len(self.ell_array)
         self.do_corr_2h_mm = halo_params_dict.get('do_corr_2h_mm',True)
 
-
+        self.backreaction = analysis_dict.get('backreaction', True)
         self.model_galaxies = analysis_dict.get('model_galaxies',True)
         self.model_tSZ = analysis_dict.get('model_tSZ',True)
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
