@@ -534,14 +534,35 @@ class Profiles(base_class):
         return Mnfw
 
     @partial(jit, static_argnums=(0,))
-    def get_Mh_Mstar(self, jz, jM, Mstar_array=None): 
+    def get_Mh_Mstar(self, jz, jM, Mstar_array=None):#, zevol_type=None): 
         npoints = self.num_points_gal_cal
         aval = self.scale_fac_a_array[jz]
-        log10M1 = self.log10M1_fshmr + self.log10M1_a_fshmr * (aval - 1)
-        Mstar0 = 10**(self.log10Mstar0_fshmr + self.log10Mstar0_a_fshmr * (aval - 1))
-        beta = self.beta_fshmr + self.beta_a_fshmr * (aval - 1)
-        delta = self.delta_fshmr + self.delta_a_fshmr * (aval - 1)
-        gamma = self.gamma_fshmr + self.gamma_a_fshmr * (aval - 1)
+        zval = self.z_array[jz]
+        indz_fid = 0
+        for jb in range(self.nbins_lens):
+            if zval > self.
+
+        
+        # if zevol_type is None:
+        # z0 = 0.75
+        # log10M1 = jnp.clip(self.log10M1_fshmr * (zval/z0)**self.log10M1_a_fshmr, 10, 15)
+        # Mstar0 = 10**(self.log10Mstar0_fshmr + self.log10Mstar0_a_fshmr * (aval - 1))        
+        # beta = self.beta_fshmr * (zval/z0)**self.beta_a_fshmr
+        # delta = self.delta_fshmr * (zval/z0)**self.delta_a_fshmr
+        # gamma = self.gamma_fshmr * (zval/z0)**self.gamma_a_fshmr
+
+        # log10M1 = self.log10M1_fshmr
+        # Mstar0 = 10**(self.log10Mstar0_fshmr)
+        # beta = self.beta_fshmr
+        # delta = self.delta_fshmr
+        # gamma = self.gamma_fshmr
+
+        # else:
+        # log10M1 = self.log10M1_fshmr + self.log10M1_a_fshmr * (aval - 1)
+        # Mstar0 = 10**(self.log10Mstar0_fshmr + self.log10Mstar0_a_fshmr * (aval - 1))
+        # beta = self.beta_fshmr + self.beta_a_fshmr * (aval - 1)
+        # delta = self.delta_fshmr + self.delta_a_fshmr * (aval - 1)
+        # gamma = self.gamma_fshmr + self.gamma_a_fshmr * (aval - 1)
 
         if Mstar_array is None:
             Mstar_array = jnp.logspace(8, 14, npoints)

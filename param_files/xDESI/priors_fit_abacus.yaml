@@ -1,7 +1,25 @@
 # Prior Min and Max Values
 prior_uniform:
+  # log10M1_fshmr: 11.05 14.5
+  # log10M1_a_fshmr: -3.0 3.0
+  # delta_fshmr: 0.001 1.5
+  # delta_a_fshmr: -2.0 2.0
+  # beta_fshmr: 0.001 1.5
+  # beta_a_fshmr: -1.0 1.0
+  # gamma_fshmr: 0.01 3.0
+  # gamma_a_fshmr: -1.0 1.0
+  # siglogMstar_Ncen: 0.1 0.9
+  # alphasat_Nsat: 0.5 2.0
+  # Bcut_Nsat: 1.0 3.0
+  # Bsat_Nsat: 5.0 15.0
+  # betacut_Nsat: 0.1 1.0
+  # betasat_Nsat: 0.1 1.0
+
+
   log10M1_fshmr: 11.05 14.5
   log10M1_a_fshmr: -3.0 3.0
+  log10Mstar0_fshmr: 10.0 13.5  
+  log10Mstar0_a_fshmr: -1.0 1.0
   delta_fshmr: 0.001 1.5
   delta_a_fshmr: -2.0 2.0
   beta_fshmr: 0.001 1.5

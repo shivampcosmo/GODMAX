@@ -47,22 +47,86 @@ sim_params:
 
 
 ##### TEST2######
-  log10M1_fshmr: 12.55
-  log10M1_a_fshmr: 0.38
-  log10Mstar0_fshmr: 10.72
-  log10Mstar0_a_fshmr: 0.55
-  beta_fshmr: 0.4
-  beta_a_fshmr: 0.2
-  delta_fshmr: 0.37
-  delta_a_fshmr: 0.21
-  gamma_fshmr: 1.79
-  gamma_a_fshmr: -0.72
-  siglogMstar_Ncen: 0.7
-  alphasat_Nsat: 1.19
-  Bcut_Nsat: 1.69
-  Bsat_Nsat: 9.01
-  betacut_Nsat: 0.6
-  betasat_Nsat: 0.3
+  log10M1_fshmr_array: 
+    - 12.55
+    - 12.55
+    - 12.55
+    - 12.55
+  log10M1_a_fshmr_array: 
+    - 0.38
+    - 0.38
+    - 0.38
+    - 0.38
+  log10Mstar0_fshmr_array: 
+    - 10.72
+    - 10.72
+    - 10.72
+    - 10.72
+  log10Mstar0_a_fshmr_array: 
+    - 0.55
+    - 0.55
+    - 0.55
+    - 0.55
+  beta_fshmr_array: 
+    - 0.4
+    - 0.4
+    - 0.4
+    - 0.4
+  beta_a_fshmr_array: 
+    - 0.2
+    - 0.2
+    - 0.2
+    - 0.2
+  delta_fshmr_array: 
+    - 0.37
+    - 0.37
+    - 0.37
+    - 0.37
+  delta_a_fshmr_array: 
+    - 0.21
+    - 0.21
+    - 0.21
+    - 0.21
+  gamma_fshmr_array: 
+    - 1.79
+    - 1.79
+    - 1.79
+    - 1.79
+  gamma_a_fshmr_array: 
+    - -0.72
+    - -0.72
+    - -0.72
+    - -0.72
+  siglogMstar_Ncen_array: 
+    - 0.7
+    - 0.7
+    - 0.7
+    - 0.7
+  alphasat_Nsat_array: 
+    - 1.19
+    - 1.19
+    - 1.19
+    - 1.19
+  Bcut_Nsat_array: 
+    - 1.69
+    - 1.69
+    - 1.69
+    - 1.69
+  Bsat_Nsat_array: 
+    - 9.01
+    - 9.01
+    - 9.01
+    - 9.01
+  betacut_Nsat_array: 
+    - 0.6
+    - 0.6
+    - 0.6
+    - 0.6
+  betasat_Nsat_array: 
+    - 0.3
+    - 0.3
+    - 0.3
+    - 0.3
 
 
 
