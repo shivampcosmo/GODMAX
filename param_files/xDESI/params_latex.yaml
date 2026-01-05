@@ -1,0 +1,59 @@
+latex_names:
+latex_names:
+  log10M1_fshmr_bin1: "\\log_{10}M_1^{1}"
+  log10M1_fshmr_bin2: "\\log_{10}M_1^{2}"
+  log10M1_fshmr_bin3: "\\log_{10}M_1^{3}"
+
+  log10M1_a_fshmr_bin1: "\\log_{10}M_1^{1}(a)"
+  log10M1_a_fshmr_bin2: "\\log_{10}M_1^{2}(a)"
+  log10M1_a_fshmr_bin3: "\\log_{10}M_1^{3}(a)"
+
+  log10Mstar0_fshmr_bin1: "\\log_{10}M_{*,0}^{1}"
+  log10Mstar0_fshmr_bin2: "\\log_{10}M_{*,0}^{2}"
+  log10Mstar0_fshmr_bin3: "\\log_{10}M_{*,0}^{3}"
+
+  log10Mstar0_a_fshmr_bin1: "\\log_{10}M_{*,0}^{1}(a)"
+  log10Mstar0_a_fshmr_bin2: "\\log_{10}M_{*,0}^{2}(a)"
+  log10Mstar0_a_fshmr_bin3: "\\log_{10}M_{*,0}^{3}(a)"
+
+  beta_fshmr_bin1: "\\beta^{1}"
+  beta_fshmr_bin2: "\\beta^{2}"
+  beta_fshmr_bin3: "\\beta^{3}"
+
+  beta_a_fshmr_bin1: "\\beta^{1}(a)"
+  beta_a_fshmr_bin2: "\\beta^{2}(a)"
+  beta_a_fshmr_bin3: "\\beta^{3}(a)"
+
+  delta_fshmr_bin1: "\\delta^{1}"
+  delta_fshmr_bin2: "\\delta^{2}"
+  delta_fshmr_bin3: "\\delta^{3}"
+
+  gamma_fshmr_bin1: "\\gamma^{1}"
+  gamma_fshmr_bin2: "\\gamma^{2}"
+  gamma_fshmr_bin3: "\\gamma^{3}"
+
+  siglogMstar_Ncen_bin1: "\\sigma_{logM_*}^{1}"
+  siglogMstar_Ncen_bin2: "\\sigma_{logM_*}^{2}"
+  siglogMstar_Ncen_bin3: "\\sigma_{logM_*}^{3}"
+
+  Bcut_Nsat_bin1: "B_{cut}^{1}"
+  Bcut_Nsat_bin2: "B_{cut}^{2}"
+  Bcut_Nsat_bin3: "B_{cut}^{3}"
+
+  Bsat_Nsat_bin1: "B_{sat}^{1}"
+  Bsat_Nsat_bin2: "B_{sat}^{2}"
+  Bsat_Nsat_bin3: "B_{sat}^{3}"
+
+  betacut_Nsat_bin1: "\\beta_{cut}^{1}"
+  betacut_Nsat_bin2: "\\beta_{cut}^{2}"
+  betacut_Nsat_bin3: "\\beta_{cut}^{3}"
+
+  betasat_Nsat_bin1: "\\beta_{sat}^{1}"
+  betasat_Nsat_bin2: "\\beta_{sat}^{2}"
+  betasat_Nsat_bin3: "\\beta_{sat}^{3}"
+
+  alphasat_Nsat_bin1: "\\alpha_{sat}^{1}"
+  alphasat_Nsat_bin2: "\\alpha_{sat}^{2}"
+  alphasat_Nsat_bin3: "\\alpha_{sat}^{3}"
+
+  alpha_gg : "\\alpha_{gg}"

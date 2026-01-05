@@ -47,13 +47,14 @@ class Profiles(base_class):
         self.get_hmf()
         self.get_conc_Mz()
         self.setup_main_calc()
+        self.setup_hod_params()  # Pre-compute HOD parameters for all redshifts
         self.get_DMO_profiles()
         self.run_stars_calc()
         self.run_gas_calc()
         self.run_clm_calc()
         self.run_cga_calc()
         self.run_dmb_calc()
-        
+
         if self.model_tSZ:
             self.run_pressure_calc()
 
@@ -136,16 +137,53 @@ class Profiles(base_class):
         """Setup main calculation parameters - optimized version."""
         self.r200c_mat = get_vmapped_func(self.get_M_to_R, 2)(
             jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
+
         self.rt_mat = self.r200c_mat * self.epsilon_rt
         self.Mc_mat = get_vmapped_func(self.get_Mc, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.beta_mat = get_vmapped_func(self.get_beta, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
+
         self.theta_co = get_vmapped_func(self.get_theta_co, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
         self.theta_ej = get_vmapped_func(self.get_theta_ej, 2)(jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
+
         self.r_co_mat = self.theta_co * self.r200c_mat
         self.r_ej_mat = self.theta_ej * self.r200c_mat
+
+    @timing_decorator
+    def setup_hod_params(self):
+        """Pre-compute HOD parameters for all redshifts - optimized version."""
+        # Vectorize the computation across all redshifts
+        if self.hod_params_model == 'perbin':
+            z_edges_lower = self.z_edges_bins_lens[:, 0]
+            z_edges_upper = self.z_edges_bins_lens[:, 1]
+
+            # Compute bin indices for all redshifts at once
+            def compute_bin_index(z):
+                bin_mask = (z > z_edges_lower) & (z < z_edges_upper)
+                indices = jnp.arange(bin_mask.shape[0])
+                return jnp.max(jnp.where(bin_mask, indices + 1, 0))
+
+            # Vectorize over all redshifts
+            bin_indices = vmap(compute_bin_index)(self.z_array)
+        else:
+            bin_indices = jnp.zeros_like(self.z_array).astype(int)
+
+        # Extract all parameters using computed indices
+        self.log10M1_fshmr_z = self.log10M1_fshmr_array[bin_indices]
+        self.log10M1_a_fshmr_z = self.log10M1_a_fshmr_array[bin_indices]
+        self.log10Mstar0_fshmr_z = self.log10Mstar0_fshmr_array[bin_indices]
+        self.log10Mstar0_a_fshmr_z = self.log10Mstar0_a_fshmr_array[bin_indices]
+        self.beta_fshmr_z = self.beta_fshmr_array[bin_indices]
+        self.beta_a_fshmr_z = self.beta_a_fshmr_array[bin_indices]
+        self.delta_fshmr_z = self.delta_fshmr_array[bin_indices]
+        self.delta_a_fshmr_z = self.delta_a_fshmr_array[bin_indices]
+        self.gamma_fshmr_z = self.gamma_fshmr_array[bin_indices]
+        self.gamma_a_fshmr_z = self.gamma_a_fshmr_array[bin_indices]
+        self.siglogMstar_Ncen_z = self.siglogMstar_Ncen_array[bin_indices]
+        self.Bsat_Nsat_z = self.Bsat_Nsat_array[bin_indices]
+        self.Bcut_Nsat_z = self.Bcut_Nsat_array[bin_indices]
+        self.betasat_Nsat_z = self.betasat_Nsat_array[bin_indices]
+        self.betacut_Nsat_z = self.betacut_Nsat_array[bin_indices]
+        self.alphasat_Nsat_z = self.alphasat_Nsat_array[bin_indices]
 
     @timing_decorator
     def get_DMO_profiles(self):
@@ -335,7 +373,7 @@ class Profiles(base_class):
         sigma = self.sigma_Mz_mat[jz, jM]
         z = self.z_array[jz]
         rho_treshold = mdef_delta * self.get_rho_c(z)
-        Delta_m = round(rho_treshold / self.get_rho_m(z))
+        Delta_m = jnp.round(rho_treshold / self.get_rho_m(z))
 
         fit_Delta = jnp.array([200, 300, 400, 600, 800, 1200, 1600, 2400, 3200])
         fit_A0 = jnp.array([0.186, 0.200, 0.212, 0.218, 0.248, 0.255, 0.260, 0.260, 0.260])
@@ -366,7 +404,7 @@ class Profiles(base_class):
         nu = delta_c / sigma
         z = self.z_array[jz]
         rho_treshold = mdef_delta * self.get_rho_c(z)
-        Delta_m = round(rho_treshold / self.get_rho_m(z))
+        Delta_m = jnp.round(rho_treshold / self.get_rho_m(z))
         fit_Delta = jnp.array([200, 300, 400, 600, 800, 1200, 1600, 2400, 3200])
         fit_alpha = jnp.array([0.368, 0.363, 0.385, 0.389, 0.393, 0.365, 0.379, 0.355, 0.327])
         fit_beta = jnp.array([0.589, 0.585, 0.544, 0.543, 0.564, 0.623, 0.637, 0.673, 0.702])
@@ -480,20 +518,21 @@ class Profiles(base_class):
         r200c = self.r200c_mat[jz, jM]
         rt = self.rt_mat[jz, jM]
         conc = self.conc_Mz_mat[jz, jM]
-        
+
         # Use provided radius or default
         r = r_array_here[jr] if r_array_here is not None else self.r_array[jr]
-        
+
         # Pre-compute ratios
         rs = r200c / conc
         x = r / rs
-        
-        # Conditionally apply truncation
-        if self.nfw_trunc:
-            y = r / rt
-            return (1 / (x * (1 + x)**2)) * (1 / (1 + y**2)**2)
-        else:
-            return 1 / (x * (1 + x)**2)
+
+        # Conditionally apply truncation using jnp.where
+        base_profile = 1 / (x * (1 + x)**2)
+        y = r / rt
+        truncation_factor = 1 / (1 + y**2)**2
+
+        # If nfw_trunc is True, multiply by truncation_factor, else use 1.0
+        return base_profile * jnp.where(self.nfw_trunc, truncation_factor, 1.0)
 
     @partial(jit, static_argnums=(0,))
     def get_nfw_norm(self, jz, jM):
@@ -533,41 +572,26 @@ class Profiles(base_class):
         Mnfw = self.logspace_trapezoidal_integral(self.get_rho_nfw_normed, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mnfw
 
+
     @partial(jit, static_argnums=(0,))
-    def get_Mh_Mstar(self, jz, jM, Mstar_array=None):#, zevol_type=None): 
+    def get_Mh_Mstar(self, jz, jM, Mstar_array=None):
         npoints = self.num_points_gal_cal
         aval = self.scale_fac_a_array[jz]
-        zval = self.z_array[jz]
-        indz_fid = 0
-        for jb in range(self.nbins_lens):
-            if zval > self.
 
-        
-        # if zevol_type is None:
-        # z0 = 0.75
-        # log10M1 = jnp.clip(self.log10M1_fshmr * (zval/z0)**self.log10M1_a_fshmr, 10, 15)
-        # Mstar0 = 10**(self.log10Mstar0_fshmr + self.log10Mstar0_a_fshmr * (aval - 1))        
-        # beta = self.beta_fshmr * (zval/z0)**self.beta_a_fshmr
-        # delta = self.delta_fshmr * (zval/z0)**self.delta_a_fshmr
-        # gamma = self.gamma_fshmr * (zval/z0)**self.gamma_a_fshmr
-
-        # log10M1 = self.log10M1_fshmr
-        # Mstar0 = 10**(self.log10Mstar0_fshmr)
-        # beta = self.beta_fshmr
-        # delta = self.delta_fshmr
-        # gamma = self.gamma_fshmr
-
-        # else:
-        # log10M1 = self.log10M1_fshmr + self.log10M1_a_fshmr * (aval - 1)
-        # Mstar0 = 10**(self.log10Mstar0_fshmr + self.log10Mstar0_a_fshmr * (aval - 1))
-        # beta = self.beta_fshmr + self.beta_a_fshmr * (aval - 1)
-        # delta = self.delta_fshmr + self.delta_a_fshmr * (aval - 1)
-        # gamma = self.gamma_fshmr + self.gamma_a_fshmr * (aval - 1)
+        # Compute evolved parameters
+        log10M1 = self.log10M1_fshmr_z[jz] + self.log10M1_a_fshmr_z[jz] * (aval - 1)
+        Mstar0 = 10**(self.log10Mstar0_fshmr_z[jz] + self.log10Mstar0_a_fshmr_z[jz] * (aval - 1))
+        beta = self.beta_fshmr_z[jz] + self.beta_a_fshmr_z[jz] * (aval - 1)
+        delta = self.delta_fshmr_z[jz] + self.delta_a_fshmr_z[jz] * (aval - 1)
+        gamma = self.gamma_fshmr_z[jz] + self.gamma_a_fshmr_z[jz] * (aval - 1)
 
         if Mstar_array is None:
             Mstar_array = jnp.logspace(8, 14, npoints)
+
+        # Compute halo mass relation
         log10Mh = log10M1 + beta * jnp.log10(Mstar_array / Mstar0) + ((Mstar_array/Mstar0)**delta)/(1 + (Mstar_array/Mstar0)**(-gamma)) - 0.5
         return 10**log10Mh
+
 
 
     @partial(jit, static_argnums=(0,))
@@ -587,7 +611,7 @@ class Profiles(base_class):
         log10mthresh = jnp.log10(self.Mthresh_array[jz])
         log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
         num = log10mthresh - log10Mstar
-        denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+        denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
         val = 0.5 * (1 - jax.lax.erf(num / denom))
         return val
 
@@ -596,31 +620,30 @@ class Profiles(base_class):
         log10mthresh = jnp.log10(self.Mthresh_array[jz])
         Mval = self.M_array[jM]
         Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
-        Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
-        Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
+        Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
+        Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
         Ncen = self.get_Ncen(jz, jM)
-        val = Ncen * ((Mval / Msat)**self.alphasat_Nsat) * jnp.exp(-(Mcut / Mval))
+        val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
         return val
 
     @partial(jit, static_argnums=(0,))
     def get_Mthresh(self, jz):
         npoints = self.num_points_gal_cal
         nbar_inp = self.nbar_gal_comoving_array[jz]
-
         def get_Ncen(jz, jM, log10mthresh):
             log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
             num = log10mthresh - log10Mstar
-            denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+            denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
             val = 0.5 * (1 - jax.lax.erf(num / denom))
             return val
 
         def get_Nsat(jz, jM, log10mthresh):
             Mval = self.M_array[jM]
             Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
-            Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
-            Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
+            Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
+            Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
             Ncen = get_Ncen(jz, jM, log10mthresh)
-            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat) * jnp.exp(-(Mcut / Mval))
+            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
             return val
 
         Mthresh_array = jnp.logspace(9, 14, 2*npoints)
@@ -640,7 +663,7 @@ class Profiles(base_class):
         def get_Ncen(jz, jM, log10mthresh):
             log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
             num = log10mthresh - log10Mstar
-            denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+            denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
             val = 0.5 * (1 - jax.lax.erf(num / denom))
             return val
 
@@ -656,21 +679,22 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_fstar_sat(self, jz, jM):
-        npoints = self.num_points_gal_cal        
+        npoints = self.num_points_gal_cal      
+
         def get_Ncen(jz, jM, log10mthresh):
             log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
             num = log10mthresh - log10Mstar
-            denom = jnp.sqrt(2) * self.siglogMstar_Ncen
+            denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
             val = 0.5 * (1 - jax.lax.erf(num / denom))
             return val
 
         def get_Nsat(jz, jM, log10mthresh):
             Mval = self.M_array[jM]
             Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh)
-            Msat = (1e12 * self.h) * self.Bsat_Nsat * (Mh_Mthresh / 1e12)**self.betasat_Nsat
-            Mcut = (1e12 * self.h) * self.Bcut_Nsat * (Mh_Mthresh / 1e12)**self.betacut_Nsat
+            Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
+            Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
             Ncen = get_Ncen(jz, jM, log10mthresh)
-            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat) * jnp.exp(-(Mcut / Mval))
+            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
             return val
 
         log10mthresh = jnp.log10(self.Mthresh_array[jz])
@@ -808,28 +832,30 @@ class Profiles(base_class):
         '''Collison less matter profile (includes dark matter and satellite galaxies)'''
         if r_array_here is None:
             r_array_here = self.r_array
-            zeta = (jnp.interp(jnp.log(r_array_here[jr]), jnp.log(self.r_array), self.zeta_mat[:,jz, jM]))
+            zeta = jnp.interp(jnp.log(r_array_here[jr]), jnp.log(self.r_array), self.zeta_mat[:,jz, jM])
         else:
             zeta = self.zeta_mat[:,jz, jM]
-        if r_array_here is None:
-            r_array_new = self.r_array/zeta        
-        else:
-            r_array_new = r_array_here/zeta
 
+        r_array_new = r_array_here / zeta
         M_clm = self.fclm_mat[jz, jM] * self.get_Mnfw(jr, jz, jM, r_array_new)
         return jnp.clip(M_clm, 1e-30)
 
 
     @partial(jit, static_argnums=(0,))
     def get_rho_dmb(self, jr, jz, jM, r_array_here=None):
-        '''This is the total matter profile with all the components (Eq.2.2)'''   
-        if self.backreaction: 
-            rho_dmb = self.get_rho_gas_normed(jr, jz, jM, r_array_here=r_array_here) + \
-                self.get_rho_cga(jr, jz, jM, r_array_here=r_array_here) + self.get_rho_clm(jz, jM, r_array_here=r_array_here)[jr]
-        else:
-            rho_dmb = self.get_rho_gas_normed(jr, jz, jM, r_array_here=r_array_here) + \
-                self.get_rho_cga(jr, jz, jM, r_array_here=r_array_here) + self.get_rho_nfw_normed(jr, jz, jM, r_array_here=r_array_here) * self.fclm_mat[jz, jM]
+        '''This is the total matter profile with all the components (Eq.2.2)'''
+        # Common components
+        rho_gas = self.get_rho_gas_normed(jr, jz, jM, r_array_here=r_array_here)
+        rho_cga = self.get_rho_cga(jr, jz, jM, r_array_here=r_array_here)
 
+        # Compute both options for the third component
+        rho_clm_backreaction = self.get_rho_clm(jz, jM, r_array_here=r_array_here)[jr]
+        rho_clm_no_backreaction = self.get_rho_nfw_normed(jr, jz, jM, r_array_here=r_array_here) * self.fclm_mat[jz, jM]
+
+        # Choose based on backreaction flag
+        rho_clm = jnp.where(self.backreaction, rho_clm_backreaction, rho_clm_no_backreaction)
+
+        rho_dmb = rho_gas + rho_cga + rho_clm
         return rho_dmb
 
     @partial(jit, static_argnums=(0,))

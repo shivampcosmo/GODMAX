@@ -46,105 +46,57 @@ sim_params:
   n_nt: 0.3
 
   # If you want to model proper galaxies, these are true (see the settings in the analysis section)
-  # log10M1_fshmr: 12.35
-  # log10M1_a_fshmr: 0.28
-  # log10Mstar0_fshmr: 10.72
-  # log10Mstar0_a_fshmr: 0.55
-  # beta_fshmr: 0.44
-  # beta_a_fshmr: 0.18
-  # delta_fshmr: 0.57
-  # delta_a_fshmr: 0.17
-  # gamma_fshmr: 1.56
-  # gamma_a_fshmr: 2.51
-  # siglogMstar_Ncen: 0.25
-  # alphasat_Nsat: 1.0
-  # Bcut_Nsat: 1.69
-  # Bsat_Nsat: 9.01
-  # betacut_Nsat: 0.6
-  # betasat_Nsat: 0.74
-
+  # You can also vary them per-redshift bin by providing arrays of values, i.e. add another entry in the array for each redshift bin
+  # In that case, set "hod_params_model: perbin" in the analysis setting and ensure that total entries here should be equal to number of redshift bins + 1, where:
+  # - the first entry corresponds to the default value (also used for z < zmin of first bin and z > zmax of last bin)
+  # - subsequent entries correspond to each redshift bin in order.
   log10M1_fshmr_array: 
     - 12.35
-    - 12.35
-    - 12.35
-    - 12.35
+
   log10M1_a_fshmr_array: 
     - 0.28
-    - 0.28
-    - 0.28
-    - 0.28
+
   log10Mstar0_fshmr_array: 
     - 10.72
-    - 10.72
-    - 10.72
-    - 10.72
+
   log10Mstar0_a_fshmr_array: 
     - 0.55
-    - 0.55
-    - 0.55
-    - 0.55
+
   beta_fshmr_array: 
     - 0.44
-    - 0.44
-    - 0.44
-    - 0.44
+
   beta_a_fshmr_array: 
     - 0.18
-    - 0.18
-    - 0.18
-    - 0.18
+
   delta_fshmr_array: 
     - 0.57
-    - 0.57
-    - 0.57
-    - 0.57
+
   delta_a_fshmr_array: 
     - 0.17
-    - 0.17
-    - 0.17
-    - 0.17
+
   gamma_fshmr_array: 
     - 1.56
-    - 1.56
-    - 1.56
-    - 1.56
+
   gamma_a_fshmr_array: 
     - 2.51
-    - 2.51
-    - 2.51
-    - 2.51
+
   siglogMstar_Ncen_array: 
     - 0.25
-    - 0.25
-    - 0.25
-    - 0.25
+
   alphasat_Nsat_array: 
     - 1.0
-    - 1.0
-    - 1.0
-    - 1.0
+
   Bcut_Nsat_array: 
     - 1.69
-    - 1.69
-    - 1.69
-    - 1.69
+
   Bsat_Nsat_array: 
     - 9.01
-    - 9.01
-    - 9.01
-    - 9.01
+
   betacut_Nsat_array: 
     - 0.6
-    - 0.6
-    - 0.6
-    - 0.6
+    
   betasat_Nsat_array: 
     - 0.74
-    - 0.74
-    - 0.74
-    - 0.74
-
-
 
   # If you want some simple stellar profiles, use these:
   eta_star: 0.3
@@ -161,6 +113,7 @@ other_params:
 
   alpha_ky: 1.0
   alpha_gy: 1.0
+  alpha_gg: 1.0
 
   Delta_z_bias_array:
     - 0.0
@@ -215,6 +168,8 @@ analysis:
   verbose_time: False  
   analysis_coords: fourier
   tSZ_transition_model: poweradd
+  gg_transition_model: poweradd
+  hod_params_model: combined
 
   nbar_gal_comoving_zarray:
     - 0.01
