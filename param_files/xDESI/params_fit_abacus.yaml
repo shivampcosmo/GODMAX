@@ -23,80 +23,94 @@ sim_params:
     - 4.3486
     - 2.2274
     - 2.0907
+    - 2.3413
 
   Bsat_Nsat_array: 
     - 9.01
     - 6.7124
     - 9.8093
     - 10.7319
+    - 10.3329
 
   alphasat_Nsat_array: 
     - 1.19
     - 0.9053
     - 1.6872
     - 1.0483
+    - 1.1953
 
   beta_fshmr_array: 
     - 0.4
     - 0.4186
     - 0.3016
     - 0.619
+    - 0.858
 
   betacut_Nsat_array: 
     - 0.6
     - 1.0425
     - 0.9445
     - 1.2872
+    - 1.2281
 
   betasat_Nsat_array: 
     - 0.3
     - 0.6231
     - 0.8992
     - 0.5976
+    - 0.6144
 
   delta_fshmr_array: 
     - 0.37
     - 0.5337
     - 0.8247
     - 0.5177
+    - 0.4893
 
   gamma_fshmr_array: 
     - 1.79
     - 0.6581
     - 1.8305
     - 1.7547
+    - 1.8496
 
   log10M1_a_fshmr_array: 
     - 0.0
     - -1.2424
     - -0.6887
     - -1.3134
+    - -2.4661
 
   log10M1_fshmr_array: 
     - 12.55
     - 14.5913
     - 14.6232
     - 14.5384
+    - 13.7882
 
   log10Mstar0_a_fshmr_array: 
     - 0.0
     - -0.8895
     - 0.3987
     - 1.2078
+    - 0.0667
 
   log10Mstar0_fshmr_array: 
     - 10.72
     - 10.7122
     - 11.3793
     - 10.9762
+    - 9.9229
 
   siglogMstar_Ncen_array: 
     - 0.7
     - 0.2277
     - 0.218
     - 0.2525
+    - 0.2338
 
   gamma_a_fshmr_array: 
+    - -0.0
     - -0.0
     - -0.0
     - -0.0
@@ -107,13 +121,14 @@ sim_params:
     - 0.0
     - 0.0
     - 0.0
+    - 0.0
 
   delta_a_fshmr_array: 
     - 0.0
     - 0.0
     - 0.0
     - 0.0
-
+    - 0.0
 
 halo_params:
 
@@ -121,7 +136,7 @@ halo_params:
   nr: 24
 
   zmin: 0.01
-  zmax: 1.0
+  zmax: 1.2
   nz: 64
 
   lg10_Mmin: 10.5
@@ -148,7 +163,7 @@ analysis:
   hod_params_model: perbin
 
   zmin_for_Cls: 0.01
-  zmax_for_Cls: 1.0
+  zmax_for_Cls: 1.2
   nz_for_Cls: 128
 
   fsky_yy: 0.4

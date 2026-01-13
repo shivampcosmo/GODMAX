@@ -39,7 +39,7 @@ if ji<10:
     ldir = f'/mnt/ceph/users/spandey/abacus/AbacusSummit_base_c000_ph00{ji}'
 else:
     ldir = f'/mnt/ceph/users/spandey/abacus/AbacusSummit_base_c000_ph0{ji}'
-zvals = [[0.3, 0.35, 0.4], [0.45, 0.5, 0.575], [0.65, 0.725, 0.8]]
+zvals = [[0.3, 0.35, 0.4], [0.45, 0.5, 0.575], [0.65, 0.725, 0.8], [0.875,0.95,1.025,1.1]]
 
 fsky = (1/8.)
 
@@ -109,7 +109,7 @@ for jz, zval_group in tqdm(enumerate(zvals)):
 
     print('Running NaMaster for Cl_gg...')
     lmax = nside
-    b = nmt.NmtBin.from_lmax_linear(lmax, nlb=100)
+    b = nmt.NmtBin.from_lmax_linear(lmax, nlb=200)
     leff = b.get_effective_ells()
     pos_data = np.array([f['data']['RA'], f['data']['DEC']])
     w_data = np.ones_like(f['data']['RA'])
@@ -140,7 +140,7 @@ for jz, zval_group in tqdm(enumerate(zvals)):
 
 
 import pickle as pk
-with open(f'/mnt/ceph/users/spandey/abacus/abacus_LRG_nz_Clgg_v4_deltaell_100_AbacusSummit_base_c000_ph00{ji}.pkl', 'wb') as f:
+with open(f'/mnt/ceph/users/spandey/abacus/abacus_LRG_nz_Clgg_v5_deltaell_200_AbacusSummit_base_c000_ph00{ji}.pkl', 'wb') as f:
     pk.dump({'nz_gal_all': nz_gal_all, 'Cl_gg_all': Cl_gg_all,'Ngal_all':Ngal_all,  
             'nbar_comoving': nbar_comoving, 'zcens_comoving': zcens_comoving,
             'zmin_all': zmin_all, 'zmax_all': zmax_all, 'zvals': zvals}, f)

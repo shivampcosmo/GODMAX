@@ -16,6 +16,6 @@ source ~/miniconda3/bin/activate ili-sbi
 
 cd "/mnt/ceph/users/spandey/paste_godmax/GODMAX/notebooks/xDESI";
 echo "$PWD";
-time srun python run_fit_abacus_test.py 200 3000 800 2400 2 '[3]';
+time srun python run_fit_abacus_test.py 200 3000 800 2400 2 '[3]' 200;
 echo "done";
 

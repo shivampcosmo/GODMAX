@@ -45,7 +45,7 @@ for (( JDEVICE=0; JDEVICE<TOTAL_DEVICES; JDEVICE++ )); do
 #SBATCH --mem=256G
 #SBATCH -C rome
 #SBATCH -p cmbas
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --job-name=${JOB_NAME}
 #SBATCH --output=${LOG_DIR}/%x.%j.out
 #SBATCH --error=${LOG_DIR}/%x.%j.err

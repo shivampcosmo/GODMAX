@@ -17,121 +17,118 @@ sim_params:
   log10_Mc0 : 13.75
   mu_beta : 0.0762
 
-  log10M1_fshmr_array: 
-    - 12.55
-    - 12.55
-    - 14.15
-    - 12.55
 
-  log10M1_a_fshmr_array: 
-    - 0.0
-    - 0.0
-    - 0.0
-    - 0.0
+  Bcut_Nsat_array: 
+    - 1.69
+    - 4.3486
+    - 2.2274
+    - 2.0907
+    - 2.0907
 
-  log10Mstar0_fshmr_array: 
-    - 10.72
-    - 10.72
-    - 12.13
-    - 10.72
+  Bsat_Nsat_array: 
+    - 9.01
+    - 6.7124
+    - 9.8093
+    - 10.7319
+    - 10.7319
 
-  log10Mstar0_a_fshmr_array: 
-    - 0.0
-    - 0.0
-    - 0.43
-    - 0.0
+  alphasat_Nsat_array: 
+    - 1.19
+    - 0.9053
+    - 1.6872
+    - 1.0483
+    - 1.0483
 
   beta_fshmr_array: 
     - 0.4
-    - 0.4
-    - 0.29
-    - 0.4
+    - 0.4186
+    - 0.3016
+    - 0.619
+    - 0.619
 
-  beta_a_fshmr_array: 
-    - 0.0
-    - 0.0
-    - 0.0
-    - 0.0
+  betacut_Nsat_array: 
+    - 0.6
+    - 1.0425
+    - 0.9445
+    - 1.2872
+    - 1.2872
+
+  betasat_Nsat_array: 
+    - 0.3
+    - 0.6231
+    - 0.8992
+    - 0.5976
+    - 0.5976
 
   delta_fshmr_array: 
     - 0.37
-    - 0.37
-    - 0.932
-    - 0.37
-
-  delta_a_fshmr_array: 
-    - 0.0
-    - 0.0
-    - 0.0
-    - 0.0
+    - 0.5337
+    - 0.8247
+    - 0.5177
+    - 0.5177
 
   gamma_fshmr_array: 
     - 1.79
-    - 1.79
-    - 0.9619
-    - 1.79
+    - 0.6581
+    - 1.8305
+    - 1.7547
+    - 1.7547
+
+  log10M1_a_fshmr_array: 
+    - 0.0
+    - -1.2424
+    - -0.6887
+    - -1.3134
+    - -1.3134    
+
+  log10M1_fshmr_array: 
+    - 12.55
+    - 14.5913
+    - 14.6232
+    - 14.5384
+    - 14.5384
+
+  log10Mstar0_a_fshmr_array: 
+    - 0.0
+    - -0.8895
+    - 0.3987
+    - 1.2078
+    - 1.2078
+
+  log10Mstar0_fshmr_array: 
+    - 10.72
+    - 10.7122
+    - 11.3793
+    - 10.9762
+    - 10.9762
+
+  siglogMstar_Ncen_array: 
+    - 0.7
+    - 0.2277
+    - 0.218
+    - 0.2525
+    - 0.2525
 
   gamma_a_fshmr_array: 
     - -0.0
     - -0.0
     - -0.0
     - -0.0
+    - -0.0
 
-  siglogMstar_Ncen_array: 
-    - 0.7
-    - 0.7
-    - 0.28
-    - 0.7
+  beta_a_fshmr_array: 
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
 
-  alphasat_Nsat_array: 
-    - 1.19
-    - 1.19
-    - 1.34
-    - 1.19
-
-  Bcut_Nsat_array: 
-    - 1.69
-    - 1.69
-    - 4.259
-    - 1.69
-
-  Bsat_Nsat_array: 
-    - 9.01
-    - 9.01
-    - 9.98
-    - 9.01
-
-  betacut_Nsat_array: 
-    - 0.6
-    - 0.6
-    - 1.15
-    - 0.6
-
-  betasat_Nsat_array: 
-    - 0.3
-    - 0.3
-    - 0.42
-    - 0.3
-
-
-
-  # log10M1_fshmr: 12.0
-  # log10M1_a_fshmr: 0.3
-  # log10Mstar0_fshmr: 10.72
-  # log10Mstar0_a_fshmr: 0.55
-  # beta_fshmr: 0.4
-  # beta_a_fshmr: 0.2
-  # delta_fshmr: 0.12
-  # delta_a_fshmr: 0.15
-  # gamma_fshmr: 1.56
-  # gamma_a_fshmr: 2.51
-  # siglogMstar_Ncen: 0.25
-  # alphasat_Nsat: 1.0
-  # Bcut_Nsat: 1.69
-  # Bsat_Nsat: 9.01
-  # betacut_Nsat: 0.6
-  # betasat_Nsat: 0.74
-
+  delta_a_fshmr_array: 
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
 
   alpha_nt : 0.05
 
@@ -141,7 +138,7 @@ halo_params:
   nr: 24
 
   zmin: 0.01
-  zmax: 1.0
+  zmax: 1.2
   nz: 64
 
   lg10_Mmin: 10.5
@@ -165,9 +162,10 @@ analysis:
   analysis_coords: fourier
   tSZ_transition_model : response
   gg_transition_model: response
+  hod_params_model: perbin
 
   zmin_for_Cls: 0.01
-  zmax_for_Cls: 1.0
+  zmax_for_Cls: 1.2
   nz_for_Cls: 128
 
   fsky_yy: 0.4

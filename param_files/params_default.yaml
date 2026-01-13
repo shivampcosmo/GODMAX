@@ -175,7 +175,8 @@ analysis:
     - 0.01
     - 2.0
     - 64
-  nbar_gal_comoving_val: 5e-4
+  nbar_gal_comoving_val: 
+    - 5e-4
 
   nz_source_info_dict:
     nbins: 1
@@ -185,6 +186,7 @@ analysis:
       - 128
     nz0:
       - 1.0
+      
   nz_lens_info_dict:
     nbins_lens: 1
     z_edges_lens:

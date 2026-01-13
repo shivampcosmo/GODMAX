@@ -5,7 +5,7 @@
 #SBATCH --mem=256G
 #SBATCH -C rome
 #SBATCH -p cmbas
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --job-name=measure_6_12_14
 #SBATCH --output=/mnt/ceph/users/spandey/paste_godmax/GODMAX/notebooks/xDESI/run_scripts/slurm_scripts/slurm_scripts/logs/%x.%j.out
 #SBATCH --error=/mnt/ceph/users/spandey/paste_godmax/GODMAX/notebooks/xDESI/run_scripts/slurm_scripts/slurm_scripts/logs/%x.%j.err

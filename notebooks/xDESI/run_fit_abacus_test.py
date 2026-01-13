@@ -101,7 +101,8 @@ num_warmup = int(sys.argv[3])
 num_samples = int(sys.argv[4])
 prior_version_to_run = int(sys.argv[5])
 # Parse bin indices from sys.argv[6], e.g., '[1,2,3]' or '[2]'
-bins_to_fit_str = sys.argv[6] if len(sys.argv) > 6 else '[1,2,3]'
+bins_to_fit_str = sys.argv[6] if len(sys.argv) > 6 else '[1,2,3,4]'
+delta_ell_bins = int(sys.argv[7]) if len(sys.argv) > 7 else 100
 # Convert string to list of integers (1-indexed from user, convert to 0-indexed)
 bins_to_fit = [int(b)-1 for b in bins_to_fit_str.strip('[]').split(',')]
 print(f"Fitting bins (0-indexed): {bins_to_fit}")
@@ -158,7 +159,9 @@ cosmo_jax = Cosmology(
 scale_fac_a_array = 1.0 / (1.0 + zarray_lens)
 
 
-df_sims = pk.load(open(os.path.abspath(abs_path_data + '/xDESI/abacus_LRG_nz_Clgg_v4_combined_16sims.pkl'), 'rb'))
+# df_sims = pk.load(open(os.path.abspath(abs_path_data + '/xDESI/abacus_LRG_nz_Clgg_v4_combined_16sims.pkl'), 'rb'))
+df_sims = pk.load(open(os.path.abspath(abs_path_data + f'/xDESI/abacus_LRG_nz_Clgg_v5_deltaell_{delta_ell_bins}_combined_16sims.pkl'), 'rb'))
+
 
 zvals = df_sims['zvals']
 nbins_lens = len(zvals)
@@ -240,7 +243,7 @@ Pkz_test = get_Pkz(sim_params_dict, halo_params_dict, analysis_dict, other_param
 Cls_test = get_Cl(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, Pkz_obj=Pkz_test)
 
 
-df_sims = pk.load(open(os.path.abspath(abs_path_data + '/xDESI/abacus_LRG_nz_Clgg_v4_combined_16sims.pkl'), 'rb'))
+# df_sims = pk.load(open(os.path.abspath(abs_path_data + '/xDESI/abacus_LRG_nz_Clgg_v4_combined_16sims.pkl'), 'rb'))
 Cls_sims = df_sims['Cl_gg_all']
 len_tot_ell = len(Cls_sims['l_array'])
 
@@ -253,7 +256,8 @@ l_array_sims = l_array_sims[indsel_ell]
 bin_to_zkey = {
     0: 'z0.300_0.400',
     1: 'z0.450_0.575',
-    2: 'z0.650_0.800'
+    2: 'z0.650_0.800',
+    3: 'z0.875_1.100'
 }
 
 # Load data only for selected bins
@@ -326,8 +330,8 @@ def model():
             # Start with the default array
             param_array = jnp.array(sim_params_dict[array_name])
             
-            # Vary indices 1, 2, 3 (keep index 0 fixed)
-            for bin_idx in range(1, 4):  # bins 1, 2, 3
+            # Vary indices 1, 2, 3, 4 (keep index 0 fixed)
+            for bin_idx in range(1, nbins_lens+1):  # bins 1, 2, 3, 4
                 prior_key = f'{param_base_name}_bin{bin_idx}'
                 
                 # Check if priors exist for this parameter and bin
@@ -489,17 +493,12 @@ def get_value(x, return_model=False):
         # Start with the default array
         param_array = jnp.array(sim_params_dict[array_name])
         
-        # Vary indices 1, 2, 3 (keep index 0 fixed)
-        for bin_idx in range(1, 4):  # bins 1, 2, 3
+        # Vary indices 1, 2, 3, 4 (keep index 0 fixed)
+        for bin_idx in range(1, nbins_lens+1):  # bins 1, 2, 3, 4
             prior_key = f'{param_base_name}_bin{bin_idx}'
             
             # Check if priors exist for this parameter and bin
             if prior_key in prior_min_all_dict and prior_key in prior_max_all_dict:
-                prior_min = prior_min_all_dict[prior_key]
-                prior_max = prior_max_all_dict[prior_key]
-                
-                # Sample the parameter value
-                # param_val = Uniform(prior_key, prior_min, prior_max)
                 indsel = params_vary_names.index(prior_key)
                 param_val = x[indsel]
                 
@@ -530,7 +529,7 @@ def get_value(x, return_model=False):
 
 chi2_good, model_good = get_value(xmin, return_model=True)
 print(chi2_good)
-colors = ['blue', 'green', 'red']
+
 
 # Build plot data for selected bins only
 plot_data = {
@@ -551,6 +550,6 @@ saved = {'samps': samps, 'names': names, 'labels': [latex_vars[param][0] for par
 # Create filename with bin information
 bins_str = '_'.join([str(b+1) for b in bins_to_fit])  # Convert back to 1-indexed for filename
 
-pk.dump(saved, open(abs_path_results + f'/xDESI/mcmc_fit_abacus_v4_16sims_deltaell_100_{num_samples}samples_ellrange_{ell_min}_{ell_max}_bins_{bins_str}_nparams_{len(param_vary_names_final)}_v{prior_version_to_run}.pkl', 'wb'))
+pk.dump(saved, open(abs_path_results + f'/xDESI/mcmc_fit_abacus_v5_16sims_deltaell_{delta_ell_bins}_{num_samples}samples_ellrange_{ell_min}_{ell_max}_bins_{bins_str}_nparams_{len(param_vary_names_final)}_v{prior_version_to_run}.pkl', 'wb'))
 
 
