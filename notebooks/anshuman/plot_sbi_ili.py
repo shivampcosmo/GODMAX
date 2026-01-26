@@ -16,7 +16,7 @@ logging.getLogger('getdist').setLevel(logging.ERROR)
 # LaTeX labels for the plot axes
 labels = [r"\theta_{ej,0}", r"\nu_{\theta_{ej},M}", r"\nu_{\theta_{ej},z}", r"\mu_{\beta}"]
 names = ["p1", "p2", "p3", "p4"] # GetDist internal identifiers
-truth_values = [2.0, 0.0, 0.0, 0.6]
+truth_values = [2.0, -0.1, 0.0, 0.6]
 
 # The order here must match the custom_colors list below
 tracers = ['g2y', 'g2kappa', 'g2tau']#, 'JOINT']

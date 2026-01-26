@@ -20,9 +20,9 @@ from ili.utils import load_nde_sbi, Uniform
 # =============================================================================
 BASE_DIR = '/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav'
 CSV_FILES = [
-    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/anshuman/lhs_samples.csv',
-    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/anshuman/round2_samples.csv',
-    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/anshuman/round3/round3_samples.csv'
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/twoparams/lhs_samples.csv',
+#    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/anshuman/round2_samples.csv',
+#    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/anshuman/round3/round3_samples.csv'
 ]
 NSIDE = 512
 SCALES = [4.0, 8.0, 16.0, 32.0, 64.0]
@@ -82,18 +82,18 @@ for csv in CSV_FILES:
         if os.path.exists(cache_file):
             v = np.load(cache_file)
         else:
-            s_path = os.path.join(BASE_DIR, f"sample_{sid}")
+            s_path = os.path.join(BASE_DIR, "twoparams", f"sample_{sid}")
             v = extract_moments(s_path)
             if v is not None: np.save(cache_file, v)
             
         if v is not None:
-            theta_train.append([row['theta_ej_0'], row['nu_theta_ej_M'], row['nu_theta_ej_z'], row['mu_beta']])
+            theta_train.append([row['theta_ej_0'], row['mu_beta']])
             x_train.append(v)
 
 x_train = np.array(x_train).astype(np.float32)
 theta_train = np.array(theta_train).astype(np.float32)
 
-np.save('theta_all_70.npy', theta_train)
+np.save('theta.npy', theta_train)
 
 # =============================================================================
 # 2. LTU-ILI TRAINING LOOP (DIRECT VECTORS)
@@ -113,7 +113,7 @@ for name, idx in stat_map.items():
     loader = StaticNumpyLoader(
         in_dir='./',
         x_file=f'x_{name}.npy',
-        theta_file='theta_all_70.npy',
+        theta_file='theta.npy',
         xobs_file=f'xobs_{name}.npy'
     )
 
@@ -123,14 +123,14 @@ for name, idx in stat_map.items():
     nets = load_nde_sbi(
     engine='NPE', 
     model='nsf',     # Switch to pure NSF for flexibility
-    repeats=4,       # Use 4 repeats to reduce the chance of a 'bad' seed
+    repeats=3,       # Use 4 repeats to reduce the chance of a 'bad' seed
     hidden_features=32, # Keep this lower (32-48) to avoid overfitting 70 samples
-    num_transforms=5,
+    num_transforms=4,
     )
     
     runner = InferenceRunner.load(
         backend='sbi', engine='NPE',
-        prior=Uniform(low=[1.0, -0.3, -3.0, 0.01], high=[6.0, 0.0, 3.0, 1.5]),
+        prior=Uniform(low=[1.0, 0.01], high=[6.0, 1.5]),
         nets=nets, out_dir=Path(f'./sbi_logs_{name}')
     )
 
@@ -150,7 +150,7 @@ xo_tensor = torch.from_numpy(x_obs).float().reshape(1, -1)
 next_theta = joint_posterior.sample((20,), x=xo_tensor).detach().cpu().numpy()
 
 pd.DataFrame(next_theta, 
-             columns=['theta_ej_0', 'nu_theta_ej_M', 'nu_theta_ej_z', 'mu_beta']
-            ).to_csv('round4_samples.csv', index_label='sample_id')
+             columns=['theta_ej_0', 'mu_beta']
+            ).to_csv('round2_samples.csv', index_label='sample_id')
 
-print("\nFinished. Generated round4_samples.csv with 20 new simulation points.")
+print("\nFinished. Generated round2_samples.csv with 20 new simulation points.")

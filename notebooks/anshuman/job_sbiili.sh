@@ -15,4 +15,4 @@
 conda activate godmax_env
 
 # Run the bridge script
-python3 sbi_ili.py
+python3 sbi_and_activelearning.py
