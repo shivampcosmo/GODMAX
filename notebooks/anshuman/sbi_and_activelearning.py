@@ -48,7 +48,7 @@ def extract_moments(path):
                 gal_data = mock_gals_dict[chunk_idx]
                 if gal_data.size > 0:
                     pix = hp.ang2pix(NSIDE, gal_data[:,0], gal_data[:,1], lonlat=True)
-                    total_gmap += np.bincount(pix, minlength=12*NSIDE**2)
+                    gmap += np.bincount(pix, minlength=12*NSIDE**2)
     
     dg = (gmap / np.mean(gmap) - 1.0) if np.mean(gmap) > 0 else np.zeros_like(gmap)
     vec = []
