@@ -8,6 +8,9 @@ from astropy import constants as const
 import interpax
 from jax_cosmo.scipy.integrate import simps
 import time
+from astropy import constants as const
+import astropy.units as u
+
 
 class get_Cl(get_Pkz):
     """
@@ -83,11 +86,18 @@ class get_Cl(get_Pkz):
         else: self.logPkgmlz_2d_interp, self.logPkgglz_2d_interp, self.logPkgylz_2d_interp, self.logPkgm_nfw_lz_2d_interp = EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable()
 
         # Get the window functions for different probes:
-        self.pzs_inp_mat = vmap(self.get_photoz_biased_nz)(jnp.arange(self.nbins))
-        self.Wk_gravonly_mat = get_vmapped_func(self.get_weak_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
-        self.nla_mat = get_vmapped_func(self.get_nla_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T        
-        self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
+        if self.is_cmb_lensing:
+            self.Wk_mat = get_vmapped_func(self.get_cmb_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
+        else:
+            self.pzs_inp_mat = vmap(self.get_photoz_biased_nz)(jnp.arange(self.nbins))
+            self.Wk_gravonly_mat = get_vmapped_func(self.get_weak_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
+            self.nla_mat = get_vmapped_func(self.get_nla_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T        
+            self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
         self.Wy_array = (1.0 / (1.0 + self.z_array_for_Cls))
+        oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
+        self.const_coeff_tau = (((const.sigma_T * oneMpc).to(u.cm ** 3)).value)/(self.cosmo_params['H0']/100.)
+        self.Wtau_array = self.const_coeff_tau * (1.0 / (1.0 + self.z_array_for_Cls))
+
         if self.model_galaxies:
             self.Wg_mat = vmap(self.get_nz_lens_interp)(jnp.arange(self.nbins_lens))
         else: self.Wg_mat = jnp.zeros((1,1))
@@ -174,7 +184,6 @@ class get_Cl(get_Pkz):
         value = jnp.exp(Pk_interp_obj(jnp.log(self.ell_array[jl]), self.z_array_for_Cls[jz]))        
         return value 
     
-
     @partial(jit, static_argnums=(0,))
     def get_photoz_biased_nz(self, jb):
         """
@@ -184,13 +193,27 @@ class get_Cl(get_Pkz):
         norm_val = jsi.trapezoid(val_biased, x=self.z_array_nz)
         return val_biased / norm_val
 
-
     @partial(jit, static_argnums=(0,))
     def get_nz_lens_interp(self, jb):
         nz_jb = self.pzs_inp_mat_inp_lens[jb,:]
         nz_interp = jnp.interp(self.z_array_for_Cls, self.z_array_nz_lens, nz_jb)
         norm_val = jsi.trapezoid(nz_interp, x=self.z_array_for_Cls)
         return nz_interp / norm_val
+
+    @partial(jit, static_argnums=(0,))
+    def get_cmb_lensing_kernel(self, jb, jz):
+        """
+        Returns a weak lensing kernel
+
+        Note: this function handles differently nzs that correspond to extended redshift
+        distribution, and delta functions.
+        """
+        z = self.z_array_for_Cls[jz]
+        chi = self.chi_array_for_Cls[jz]
+
+        radial_kernel_cmb = jnp.clip(self.chi_CMB - chi, 0) / jnp.clip(self.chi_CMB, 0.1)
+        constant_factor_cmb = 3.0 * (100.)**2 * self.cosmo_jax.Omega_m / (2.0 * ((const.c.value * 1e-3)**2))
+        return constant_factor_cmb * radial_kernel_cmb * (1.0 + z) * chi
 
 
     @partial(jit, static_argnums=(0,))
@@ -259,6 +282,7 @@ class get_Cl(get_Pkz):
                 (probe == 1, (1. + self.mult_shear_bias_array[jb]) * (self.Wk_mat[jb] / (self.chi_array_for_Cls**2))),
                 (probe == 2, self.Wg_mat[jb] / (self.dchi_dz_array_for_Cls * self.chi_array_for_Cls**2)),
                 (probe == 3, self.Wy_array / (self.chi_array_for_Cls**2)),
+                (probe == 4, self.Wtau_array / (self.chi_array_for_Cls**2))
             ]
             
             # Default value if no condition matches

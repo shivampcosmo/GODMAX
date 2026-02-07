@@ -296,6 +296,9 @@ class base_class:
         self.z_array_for_Cls = jnp.linspace(self.zmin_for_Cls, self.zmax_for_Cls, self.nz_for_Cls)
         self.scale_fac_a_array_for_Cls = 1./(1. + self.z_array_for_Cls)
 
+        self.is_cmb_lensing = analysis_dict.get('is_cmb_lensing', False)
+        a_CMB = 1/(1 + 1100)
+        self.chi_CMB = radial_comoving_distance(self.cosmo_jax, a_CMB)
         nz_info_dict = analysis_dict.get('nz_source_info_dict', None)
         try:
             self.nbins = nz_info_dict['nbins']

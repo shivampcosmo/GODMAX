@@ -139,6 +139,7 @@ analysis:
     - 64
   nbar_gal_comoving_val: 5e-4
 
+  is_cmb_lensing: True
   nz_source_info_dict:
     nbins: 1
     z_array_source:
