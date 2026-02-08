@@ -150,6 +150,6 @@ dmypy.json
 *.jpg
 *.jpeg
 
-# Ignore any folder named logs (anywhere in the repo)
-**/logs/
+# Ignore any directory with 'logs' in its name
+**/*logs*/
 
