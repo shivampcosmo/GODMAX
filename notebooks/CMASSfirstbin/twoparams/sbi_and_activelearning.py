@@ -20,8 +20,12 @@ from ili.validation.metrics import PosteriorCoverage
 # =============================================================================
 BASE_DIR = '/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin'
 CSV_FILES = [
-    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/lhs_samples.csv'#,
-    #'/work/hdd/bdne/aacharya2/GODMAX/notebooks/twoparams/round2_samples.csv'
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/lhs_samples.csv',
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/round2_samples.csv',
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/round3_samples.csv',
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/round4_samples.csv',
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/round5_samples.csv',
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/round6_samples.csv'
     ]
 NSIDE = 512
 SCALES = [4.0, 8.0, 16.0, 32.0, 64.0]
@@ -54,14 +58,25 @@ def extract_moments(path):
     vec = []
     for th in SCALES:
         f = np.radians(th/60.)
+        # Smoothing with EXPLICIT LMAX for consistency
         gs = hp.smoothing(dg, fwhm=f, lmax=LMAX, verbose=False)
         ys = hp.smoothing(ymap, fwhm=f, lmax=LMAX, verbose=False)
         ts = hp.smoothing(tmap, fwhm=f, lmax=LMAX, verbose=False)
         ks = hp.smoothing(kmap, fwhm=f, lmax=LMAX, verbose=False)
 
+        # 3-point moments <ggTracer> (indices 0-14 in output vector)
         vec.extend([np.mean(gs**2 * ys), np.mean(gs**2 * ts), np.mean(gs**2 * ks)])
-    return np.array(vec)
 
+    for th in SCALES:
+        f = np.radians(th/60.)
+        gs = hp.smoothing(dg, fwhm=f, lmax=LMAX, verbose=False)
+        ys = hp.smoothing(ymap, fwhm=f, lmax=LMAX, verbose=False)
+        ts = hp.smoothing(tmap, fwhm=f, lmax=LMAX, verbose=False)
+        ks = hp.smoothing(kmap, fwhm=f, lmax=LMAX, verbose=False)
+
+        # 2-point moments <gTracer> (indices 15-29 in output vector)
+        vec.extend([np.mean(gs * ys), np.mean(gs * ts), np.mean(gs * ks)])
+    return np.array(vec)
 print("Extracting reference run...")
 # Reference is in original location
 x_obs = extract_moments(os.path.join(BASE_DIR, 'reference_run')).astype(np.float32)
@@ -70,8 +85,14 @@ np.save('x_obs.npy', x_obs)
 theta_train, x_train = [], []
 for csv in CSV_FILES:
     df = pd.read_csv(csv)
-    # Offset logic remains for potential future rounds
-    offset = 0 
+    
+    # Determine folder offset based on the round
+    if "lhs" in csv: offset = 0
+    elif "round2" in csv: offset = 30
+    elif "round3" in csv: offset = 50
+    elif "round4" in csv: offset = 70
+    elif "round5" in csv: offset = 90
+    elif "round6" in csv: offset =110
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Loading {os.path.basename(csv)}"):
         sid = int(row['sample_id']) + offset
@@ -98,37 +119,68 @@ np.save('theta.npy', theta_train)
 # =============================================================================
 # 2. LTU-ILI TRAINING LOOP
 # =============================================================================
+'''
+#standardize the statistics
+x_mean = np.mean(x_train, axis=0)
+x_std = np.std(x_train, axis=0)
+x_train = (x_train - x_mean) / (x_std + 1e-6)
+x_obs = (x_obs - x_mean) / (x_std + 1e-6)
+'''
 stat_map = {
     'g2y': [0, 3, 6, 9, 12],
     'g2tau': [1, 4, 7, 10, 13],
     'g2kappa': [2, 5, 8, 11, 14],
-    'JOINT': list(range(15))
+    'gy': [15, 18, 21, 24, 27],
+    'gtau': [16, 19, 22, 25, 28],
+    'gkappa': [17, 20, 23, 26, 29],
+    'JOINT': list(range(30)),
+    # Individual Tracer Totals (2pt + 3pt)
+    'y_total': [0, 3, 6, 9, 12, 15, 18, 21, 24, 27],
+    'tau_total': [1, 4, 7, 10, 13, 16, 19, 22, 25, 28],
+    'kappa_total': [2, 5, 8, 11, 14, 17, 20, 23, 26, 29],
+
+    # Category Totals (All tracers combined)
+    'all_3pt': list(range(0, 15)),
+    'all_2pt': list(range(15, 30)),
 }
+
+np.random.seed(42)
+all_indices = np.arange(len(theta_train))
+np.random.shuffle(all_indices)
+
+val_idx = all_indices[:20]
+train_idx = all_indices#[20:]
+
+theta_val = theta_train[val_idx]
+theta_train_set = theta_train[train_idx]
 
 for name, idx in stat_map.items():
     print(f"\n--- Training NPE: {name} ---")
-    np.save(f'x_{name}.npy', x_train[:, idx])
-    np.save(f'xobs_{name}.npy', x_obs[idx]) # Restored tracer-specific save
+
+    # Split the statistics
+    xt_full = x_train[:, idx]
+    xt_train = xt_full[train_idx]
+    #xt_train = xt_train + 0.01 * np.random.randn(*xt_train.shape).astype(np.float32)
+    xt_val = xt_full[val_idx]
+    xo = x_obs[idx]
+
+    np.save(f'x_{name}.npy', xt_train)
+    np.save(f'xobs_{name}.npy', xo)
+    np.save(f'theta_train_{name}.npy', theta_train_set)
 
     loader = StaticNumpyLoader(
         in_dir='./',
         x_file=f'x_{name}.npy',
-        theta_file='theta.npy',
+        theta_file=f'theta_train_{name}.npy',
         xobs_file=f'xobs_{name}.npy'
     )
 
-    # Architecture from your 4-param script
-    nets = load_nde_sbi(
-        engine='NPE',
-        model='nsf',
-        repeats=4,
-        hidden_features=32,
-        num_transforms=5,
-    )
+    # STABLE ARCHITECTURE: Reduced transforms to prevent "Peaky" bias and singular matrices
+    nets = load_nde_sbi(engine='NPE', model='nsf', repeats=2, hidden_features=32, num_transforms=3) + \
+           load_nde_sbi(engine='NPE', model='maf', repeats=6, hidden_features=32, num_transforms=3)
 
     runner = InferenceRunner.load(
         backend='sbi', engine='NPE',
-        # Updated Prior for 2 parameters
         prior=Uniform(low=[1.0, 0.01], high=[6.0, 1.5]),
         nets=nets, out_dir=Path(f'./sbi_logs_{name}')
     )
@@ -137,25 +189,54 @@ for name, idx in stat_map.items():
 
     with open(f'ili_posterior_{name}.pkl', 'wb') as f:
         pk.dump(posterior, f)
+
+    # --- VALIDATION: Using Hold-out Set ---
+    '''
+    labels = [r"\theta_{ej,0}", r"\mu_{\beta}"]
+    val_dir = Path(f'./validation_{name}')
+    val_dir.mkdir(exist_ok=True)
+
+    print(f"Running resilient validation for {name}...")
     
-    # --- Integrated Coverage Test (Fast Look: 10 random samples) ---
-    labels = [r"\theta_{ej,0}",r"\mu_{\beta}"]
-    if name != 'JOINT':
-        print(f"Running quick coverage check for {name}...")
-        val_dir = Path(f'./validation_{name}')
-        val_dir.mkdir(exist_ok=True)
+    successful_indices = []
+    # We loop through the 20 samples in the hold-out set
+    for i in range(len(theta_val)):
+        xo_single = torch.from_numpy(xt_val[i]).float().reshape(1, -1)
+        try:
+            # We test if the model can sample from this observation without hanging
+            # If it takes more than a few seconds, it's likely a rejection loop
+            _ = posterior.sample((100,), x=xo_single, show_progress_bars=False)
+            successful_indices.append(i)
+        except Exception as e:
+            print(f"Skipping Sample {i} for {name}: Model cannot reconcile this simulation.")
 
-        # Select 10 random indices for speed
-        np.random.seed(42)
-        idx_val = np.random.choice(len(theta_train), 10, replace=False)
+    # Only run coverage on the simulations the model successfully sampled
+    if len(successful_indices) > 0:
+        print(f"Collected valid samples for {len(successful_indices)}/20 validation points.")
 
-        metric = PosteriorCoverage(num_samples=1000, labels=labels, out_dir=val_dir,
-            plot_list=["histogram", "coverage"])
+        # Filter the validation data to only include the successful ones
+        xt_val_successful = torch.from_numpy(xt_val[successful_indices]).float()
+        theta_val_successful = torch.from_numpy(theta_val[successful_indices]).float()
 
-        metric(posterior=posterior, x=xt[idx_val], theta=theta_train[idx_val])
+        try:
+            # Note: sample_method='direct' is key to staying out of the rejection trap
+            metric = PosteriorCoverage(
+                num_samples=200, 
+                labels=labels, 
+                out_dir=val_dir,
+                plot_list=["histogram", "coverage", "tarp"],
+                sample_method='direct'
+            )
+            
+            # The metric now receives only the data points it can handle
+            metric(posterior=posterior, x=xt_val_successful, theta=theta_val_successful)
+        except Exception as e:
+            print(f"Skipping coverage plotting for {name}: {e}")
+    '''
 # =============================================================================
 # 3. ROUND 2 PROPOSAL (Next 20 Samples)
 # =============================================================================
+
 with open('ili_posterior_JOINT.pkl', 'rb') as f:
     joint_posterior = pk.load(f)
 
@@ -165,6 +246,7 @@ next_theta = joint_posterior.sample((20,), x=xo_tensor).detach().cpu().numpy()
 
 pd.DataFrame(next_theta,
              columns=['theta_ej_0', 'mu_beta']
-            ).to_csv('round2_samples.csv', index_label='sample_id')
+            ).to_csv('round7_samples.csv', index_label='sample_id')
 
-print("\nFinished. Generated round2_samples.csv for the 2-parameter project.")
+print("\nFinished. Generated round7_samples.csv for the 2-parameter project.")
+

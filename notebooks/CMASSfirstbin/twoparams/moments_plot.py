@@ -8,7 +8,7 @@ import os
 # Assuming these were saved by your 2-parameter SBI script
 theta_train = np.load('theta.npy')
 SCALES = [4.0, 8.0, 16.0, 32.0, 64.0]
-TRACERS = ['g2y', 'g2tau', 'g2kappa']
+TRACERS = ['g2y', 'g2tau', 'g2kappa','gy', 'gtau', 'gkappa']
 
 # =============================================================================
 # 2. PLOTTING
@@ -28,14 +28,14 @@ for name in TRACERS:
     # Pick 9 random indices excluding the best one
     all_indices = np.arange(len(ratios))
     other_indices = np.delete(all_indices, best_idx)
-    random_indices = np.random.choice(other_indices, 9, replace=False)
+    random_indices = np.random.choice(other_indices, 15, replace=False)
     
     plt.figure(figsize=(10, 7))
     
-    # Plot the 9 random samples first (thin lines)
+    # Plot the 15 random samples first (thin lines)
     for idx in random_indices:
         te0, mb = theta_train[idx]
-        plt.plot(SCALES, ratios[idx], color='green', alpha=0.5, lw=5, 
+        plt.plot(SCALES, ratios[idx], color='green', alpha=0.5, lw=3, 
                  label=None) # No label for gray lines to keep legend clean
 
     # Plot the BEST match (thick blue line)
@@ -45,12 +45,12 @@ for name in TRACERS:
              label=rf'BEST MATCH: $\theta_{{ej,0}}={te0_best:.2f}, \mu_\beta={mb_best:.2f}$')
 
     # Add a dummy line for the "Other Samples" to the legend
-    plt.plot([], [], color='green', alpha=0.5, lw=5, label='9 Random Samples')
+    plt.plot([], [], color='green', alpha=0.5, lw=3, label='15 Random Samples')
 
     # Formatting
     plt.axhline(1.0, color='red', linestyle='--', lw=2, label=r'Reference ($\theta_{ej,0}=2.0$, $\mu_{\beta}=0.6$)')
     plt.xlabel(r'$\theta_{\rm smooth}$ [arcmin]', fontsize=14)
-    plt.ylabel(rf'$\langle gg {name[2:]} \rangle / \langle gg {name[2:]} \rangle_{{\rm ref}}$', fontsize=14)
+    plt.ylabel(rf'$\langle {name} \rangle / \langle {name} \rangle_{{\rm ref}}$', fontsize=14)
     plt.xscale('log')
     plt.xticks(SCALES, [str(s) for s in SCALES])
     
@@ -62,7 +62,7 @@ for name in TRACERS:
     plt.grid(alpha=0.2)
     
     plt.tight_layout()
-    plt.savefig(f'moments_ratio_{name}.png', dpi=300)
+    plt.savefig(f'momentsplots/moments_ratio_{name}.png', dpi=300)
     plt.show()
 
-print("Plots generated. Look for 'moments_ratio_...png' files.")
+print("Plots generated. Look for 'momentsplots/moments_ratio_...png' files.")

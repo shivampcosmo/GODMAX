@@ -2,12 +2,12 @@
 #SBATCH --account=bdne-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
-#SBATCH --time=00:40:00
+#SBATCH --time=00:45:00
 #SBATCH --gpus=1
 #SBATCH --mem=400G
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=anshumana@berkeley.edu
-#SBATCH --array=0-119           # 30 samples * 4 splits = 120 tasks (0 to 119)
+#SBATCH --array=0-79           # 20 samples * 4 splits = 80 tasks (0 to 119)
 #SBATCH --output=/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/run_scripts/logs/R2_%A_%a.out
 
 # Configuration
