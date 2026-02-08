@@ -60,7 +60,7 @@ class get_Cl(get_Pkz):
             self.Pkgg_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pgg_tot_mat).T
 
         # Get the interpolators:
-        self.cached_power_spectra = jnp.zeros((4, 4, self.nell, self.nz_for_Cls))
+        self.cached_power_spectra = jnp.zeros((5, 5, self.nell, self.nz_for_Cls))
         log_ell = jnp.log(self.ell_array)
         self.logPkmmlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkmm_lz_mat), extrap=True)        
         self.cached_power_spectra = self.cached_power_spectra.at[0,0].set(vmap(lambda l: jnp.exp(self.logPkmmlz_2d_interp(l, self.z_array_for_Cls)))(log_ell))
@@ -83,7 +83,12 @@ class get_Cl(get_Pkz):
             self.logPkgm_nfw_lz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkgm_nfw_lz_mat), extrap=True)        
             self.cached_power_spectra = self.cached_power_spectra.at[2,1].set(vmap(lambda l: jnp.exp(self.logPkgm_nfw_lz_2d_interp(l, self.z_array_for_Cls)))(log_ell))
             self.cached_power_spectra = self.cached_power_spectra.at[1,2].set(self.cached_power_spectra[2,1])
-        else: self.logPkgmlz_2d_interp, self.logPkgglz_2d_interp, self.logPkgylz_2d_interp, self.logPkgm_nfw_lz_2d_interp = EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable()
+
+            self.logPkge_lz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkge_lz_mat), extrap=True)        
+            self.cached_power_spectra = self.cached_power_spectra.at[2,4].set(vmap(lambda l: jnp.exp(self.logPkge_lz_2d_interp(l, self.z_array_for_Cls)))(log_ell))
+            self.cached_power_spectra = self.cached_power_spectra.at[4,2].set(self.cached_power_spectra[2,4])
+
+        else: self.logPkgmlz_2d_interp, self.logPkgglz_2d_interp, self.logPkgylz_2d_interp, self.logPkgm_nfw_lz_2d_interp, self.logPkge_lz_2d_interp = EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable()
 
         # Get the window functions for different probes:
         if self.is_cmb_lensing:
@@ -133,6 +138,9 @@ class get_Cl(get_Pkz):
             # Get the Pge in the given k-array:
             self.Pge_zarray = vmap(self.get_Pge_interpz)(jnp.arange(self.nk))
             self.Pge_tot_mat = vmap(self.get_Pge_tot_ks)(jnp.arange(self.nbins_lens))
+
+            
+
             if self.ENABLE_TIMING:
                 print("Time to compute the Pge in the k-array: ", time.time() - ti)
                 ti = time.time()
@@ -148,6 +156,9 @@ class get_Cl(get_Pkz):
             if self.model_galaxies:
                 # self.Cl_gal_y_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins_lens), 0, 2, 3).T        
                 self.Cl_gal_y_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), 0, 2, 3).T
+
+                self.Cl_gal_tau_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), 0, 2, 4).T
+
                 if self.ENABLE_TIMING:
                     print("Time to compute the gal y: ", time.time() - ti)
         # if self.ENABLE_TIMING:
@@ -295,25 +306,6 @@ class get_Cl(get_Pkz):
         prefac_for_uk1 = compute_prefac(probe1, jb1)
         prefac_for_uk2 = compute_prefac(probe2, jb2)        
 
-        # Define the conditions and corresponding functions
-        # conditions = [
-        #     (jnp.logical_and(probe1 == 0, probe2 == 0), self.logPkmmlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 1, probe2 == 1), self.logPkmm_nfw_lz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 2), self.logPkgglz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 0), self.logPkgmlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 0, probe2 == 2), self.logPkgmlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 1), self.logPkgm_nfw_lz_2d_interp),
-        #     (jnp.logical_and(probe1 == 1, probe2 == 2), self.logPkgm_nfw_lz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 3), self.logPkgylz_2d_interp),
-        #     (jnp.logical_and(probe1 == 3, probe2 == 2), self.logPkgylz_2d_interp),
-        #     (jnp.logical_and(probe1 == 0, probe2 == 3), self.logPkymlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 3, probe2 == 0), self.logPkymlz_2d_interp),
-        # ]
-
-        # Compute Pk
-        # Pk = jnp.nan  # Default value if no condition matches
-        # for condition, func in conditions:
-        #     Pk = jnp.where(condition, jnp.exp(func(jnp.log(self.ell_array[jl]), self.z_array_for_Cls)), Pk)
         Pk = self.cached_power_spectra[probe1, probe2]
         fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array_for_Cls ** 2) * self.dchi_dz_array_for_Cls * Pk
         return jsi.trapezoid(fx, x=self.z_array_for_Cls)     
