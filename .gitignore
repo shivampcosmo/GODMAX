@@ -144,3 +144,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Ignore images
+*.png
+*.jpg
+*.jpeg
+
+# Ignore any folder named logs (anywhere in the repo)
+**/logs/
+
