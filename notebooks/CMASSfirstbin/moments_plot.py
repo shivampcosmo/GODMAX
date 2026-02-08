@@ -5,10 +5,10 @@ import os
 # =============================================================================
 # 1. LOAD DATA
 # =============================================================================
-# Assuming these were saved by your 2-parameter SBI script
+# Assuming these were saved by your 4-parameter SBI script
 theta_train = np.load('theta.npy')
 SCALES = [4.0, 8.0, 16.0, 32.0, 64.0]
-TRACERS = ['g2y', 'g2tau', 'g2kappa']
+TRACERS = ['g2y', 'g2tau', 'g2kappa', 'gy','gtau','gkappa']
 
 # =============================================================================
 # 2. PLOTTING
@@ -60,9 +60,10 @@ for name in TRACERS:
     plt.plot([], [], color='green', alpha=0.5, lw=5, label='10 Random Samples')
 
     # Formatting
-    plt.axhline(1.0, color='red', linestyle='--', lw=2, label='Reference (Truth)')
+    plt.axhline(1.0, color='red', linestyle='--', lw=2, 
+                label=r'Reference ($\theta_{ej,0}=2.0$,$\nu_{{\theta_{ej}}^M}=-0.1$, $\nu_{{\theta_{ej}}^z}=0.0$, $\mu_{\beta}=0.6$)')
     plt.xlabel(r'$\theta_{\rm smooth}$ [arcmin]', fontsize=14)
-    plt.ylabel(rf'$\langle gg {name[2:]} \rangle / \langle gg {name[2:]} \rangle_{{\rm ref}}$', fontsize=14)
+    plt.ylabel(rf'$\langle {name} \rangle / \langle {name} \rangle_{{\rm ref}}$', fontsize=14)
     plt.xscale('log')
     plt.xticks(SCALES, [str(s) for s in SCALES])
     
@@ -70,11 +71,11 @@ for name in TRACERS:
     plt.ylim(0.2, 2.0) 
     
     plt.title(f'Sample Ratios for {name}', fontsize=16)
-    plt.legend(fontsize=10, loc='best', frameon=True)
+    plt.legend(fontsize=10, loc='upper right', frameon=True)
     plt.grid(alpha=0.2)
     
     plt.tight_layout()
-    plt.savefig(f'moments_ratio_{name}.png', dpi=300)
+    plt.savefig(f'plotmoments/moments_ratio_{name}.png', dpi=300)
     plt.show()
 
-print("Plots generated. Look for 'moments_ratio_...png' files.")
+print("Plots generated. Look for 'plotmoments/moments_ratio_...png' files.")

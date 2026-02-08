@@ -102,17 +102,17 @@ for group in tracer_groups:
         contour_args=[{'alpha': 0.6}, {'alpha': 0.6}],
         # Solid Blue line for 3-point, Dashed Red line for 2-point
         line_args=[
-            {'lw': 2.5, 'ls': '-', 'color': comparison_colors[0]}, 
-            {'lw': 2.5, 'ls': '--', 'color': comparison_colors[1]}
+            {'lw': 2.5, 'color': comparison_colors[0]}, 
+            {'lw': 2.5, 'color': comparison_colors[1]}
         ]
     )
 
     # ADD TRUTH LINES (Dotted Red)
     for i in range(len(names)):
-        g.subplots[i, i].axvline(truth_values[i], color='red', ls=':', lw=1.5, zorder=10)
+        g.subplots[i, i].axvline(truth_values[i], color='black', ls='--', lw=2, zorder=10)
         for j in range(i):
-            g.subplots[i, j].axvline(truth_values[j], color='red', ls=':', lw=1.2, zorder=10)
-            g.subplots[i, j].axhline(truth_values[i], color='red', ls=':', lw=1.2, zorder=10)
+            g.subplots[i, j].axvline(truth_values[j], color='black', ls='--', lw=2, zorder=10)
+            g.subplots[i, j].axhline(truth_values[i], color='black', ls='--', lw=2, zorder=10)
 
     output_fn = f"plotcontours/contour_comparison_{group['title']}.png" #
     g.export(output_fn)

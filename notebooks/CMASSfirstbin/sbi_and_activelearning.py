@@ -16,7 +16,7 @@ from ili.inference import InferenceRunner
 from ili.utils import load_nde_sbi, Uniform
 from ili.validation.metrics import PosteriorCoverage
 # =============================================================================
-# 1. DATA AGGREGATION (70 samples so far)
+# 1. DATA AGGREGATION
 # =============================================================================
 BASE_DIR = '/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin'
 CSV_FILES = [
@@ -55,28 +55,18 @@ def extract_moments(path):
     vec = []
     for th in SCALES:
         f = np.radians(th/60.)
-        # Smoothing with EXPLICIT LMAX for consistency
         gs = hp.smoothing(dg, fwhm=f, lmax=LMAX, verbose=False)
         ys = hp.smoothing(ymap, fwhm=f, lmax=LMAX, verbose=False)
         ts = hp.smoothing(tmap, fwhm=f, lmax=LMAX, verbose=False)
         ks = hp.smoothing(kmap, fwhm=f, lmax=LMAX, verbose=False)
-
-        # 3-point moments <ggTracer> (indices 0-14 in output vector)
+        # 3-point
         vec.extend([np.mean(gs**2 * ys), np.mean(gs**2 * ts), np.mean(gs**2 * ks)])
-
-    for th in SCALES:
-        f = np.radians(th/60.)
-        gs = hp.smoothing(dg, fwhm=f, lmax=LMAX, verbose=False)
-        ys = hp.smoothing(ymap, fwhm=f, lmax=LMAX, verbose=False)
-        ts = hp.smoothing(tmap, fwhm=f, lmax=LMAX, verbose=False)
-        ks = hp.smoothing(kmap, fwhm=f, lmax=LMAX, verbose=False)
-
-        # 2-point moments <gTracer> (indices 15-29 in output vector)
+        # 2-point
         vec.extend([np.mean(gs * ys), np.mean(gs * ts), np.mean(gs * ks)])
-
+        
     return np.array(vec)
 
-print("Extracting reference run (Unscaled)...")
+print("Extracting reference run...")
 x_obs = extract_moments(os.path.join(BASE_DIR, 'reference_run')).astype(np.float32)
 np.save('x_obs.npy', x_obs)
 
@@ -87,6 +77,7 @@ for csv in CSV_FILES:
     if "lhs" in csv: offset = 0
     elif "round2" in csv: offset = 30
     elif "round3" in csv: offset = 60
+    elif "round4" in csv: offset = 90
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Loading {os.path.basename(csv)}"):
         sid = int(row['sample_id']) + offset
@@ -112,14 +103,15 @@ np.save('theta.npy', theta_train)
 # 2. LTU-ILI TRAINING LOOP (DIRECT VECTORS)
 # =============================================================================
 stat_map = {
-    'g2y': [0, 3, 6, 9, 12],
-    'g2tau': [1, 4, 7, 10, 13],
-    'g2kappa': [2, 5, 8, 11, 14],
-    'gy': [15, 18, 21, 24, 27],
-    'gtau': [16, 19, 22, 25, 28],
-    'gkappa': [17, 20, 23, 26, 29],
-    'JOINT': list(range(30))
+    'g2y': [0, 3, 6, 9, 12], 'g2tau': [1, 4, 7, 10, 13], 'g2kappa': [2, 5, 8, 11, 14],
+    'gy': [15, 18, 21, 24, 27], 'gtau': [16, 19, 22, 25, 28], 'gkappa': [17, 20, 23, 26, 29],
+    'JOINT': list(range(30)),
+    'y_total': [0, 3, 6, 9, 12, 15, 18, 21, 24, 27],
+    'tau_total': [1, 4, 7, 10, 13, 16, 19, 22, 25, 28],
+    'kappa_total': [2, 5, 8, 11, 14, 17, 20, 23, 26, 29],
+    'all_3pt': list(range(0, 15)), 'all_2pt': list(range(15, 30)),
 }
+
 for name, idx in stat_map.items():
     print(f"\n--- Training Unscaled NPE: {name} ---")
     xt = x_train[:, idx]
@@ -134,13 +126,8 @@ for name, idx in stat_map.items():
         xobs_file=f'xobs_{name}.npy'
     )
 
-    nets = load_nde_sbi(
-    engine='NPE',
-    model='nsf',     # Switch to pure NSF for flexibility
-    repeats=4,       # Use 4 repeats to reduce the chance of a 'bad' seed
-    hidden_features=32, # Keep this lower (32-48) to avoid overfitting 70 samples
-    num_transforms=5,
-    )
+    nets = load_nde_sbi(engine='NPE', model='nsf', repeats=4, hidden_features=64, num_transforms=3) + \
+           load_nde_sbi(engine='NPE', model='maf', repeats=4, hidden_features=64, num_transforms=3)
 
     runner = InferenceRunner.load(
         backend='sbi', engine='NPE',

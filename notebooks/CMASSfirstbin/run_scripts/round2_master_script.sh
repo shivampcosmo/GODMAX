@@ -2,7 +2,7 @@
 #SBATCH --account=bdne-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
-#SBATCH --time=00:30:00
+#SBATCH --time=00:45:00
 #SBATCH --gpus=1
 #SBATCH --mem=400G
 #SBATCH --mail-type=FAIL
