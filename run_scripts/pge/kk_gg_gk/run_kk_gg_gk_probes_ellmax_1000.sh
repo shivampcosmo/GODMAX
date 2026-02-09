@@ -3,10 +3,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=15
-#SBATCH --time=00:10:00
+#SBATCH --time=09:00:00
 #SBATCH --partition=ghx4
 #SBATCH --mem=128G
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --job-name=kk_gg_gk_1000_hf
 #SBATCH --output=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/%x.%j.out
 #SBATCH --error=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/%x.%j.err
@@ -31,7 +31,7 @@ fi
 unset __conda_setup
 # <<< conda initialize <<<
 # conda activate /u/spandey3/.conda/envs/myjax
-conda activate /u/spandey3/.conda/envs/godmax
+conda activate /u/spandey3/.conda/envs/gdmf
 which python
 # module load nccl
 # module load cudatoolkit
@@ -53,5 +53,6 @@ cd /projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/
 # time srun --export=ALL python sample_params_v1.py "kk,gg,gk" 1000
 # time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=1000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4
 # time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=1000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True
-time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=1000 --num_warmup=6000 --num_samples=6000 --num_chains=4 --max_tree_depth=4 --bao_prior=True --model_matter="halofit"
+# time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=1000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True --model_matter="halofit"
+time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=1000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=False --model_matter="halofit"
 echo "done"

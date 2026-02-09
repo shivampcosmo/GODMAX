@@ -3,15 +3,16 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=15
-#SBATCH --time=6:00:00
+#SBATCH --time=3:00:00
 #SBATCH --partition=ghx4
 #SBATCH --mem=128G
 #SBATCH --gpus-per-node=1
-#SBATCH --job-name=kk_gg_gk_4000
+#SBATCH --job-name=kk_gg_gk_2000
 #SBATCH --output=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/infer/%x.%j.out
 #SBATCH --error=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/infer/%x.%j.err
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export JAX_TRACEBACK_FILTERING=off
+
 
 
 module purge
@@ -30,13 +31,28 @@ else
 fi
 unset __conda_setup
 # <<< conda initialize <<<
-conda activate /u/spandey3/.conda/envs/myjax
+# conda activate /u/spandey3/.conda/envs/myjax
+conda activate /u/spandey3/.conda/envs/gdmf
+
 which python
-module load nccl
-module load cudatoolkit
-nvidia-smi
-export XLA_FLAGS=--xla_gpu_enable_command_buffer=
+# module load nccl
+# module load cudatoolkit
+
+# nvidia-smi
+
+# which python
+# export XLA_FLAGS=--xla_gpu_enable_command_buffer=
+export MALLOC_CHECK_=3  # Detect heap corruption
+export PYTHONMALLOC=debug
+export XLA_PYTHON_CLIENT_PREALLOCATE=false  # Prevent JAX from grabbing all GPU memory
+# export XLA_PYTHON_CLIENT_MEM_FRACTION=.8
+export NCCL_DEBUG=INFO
+# export CUDA_LAUNCH_BLOCKING=1  # Slower but helps pinpoint errors
+export JAX_DEBUG_NANS=True
+# export JAX_DISABLE_JIT=True  # Slower but easier to debug
+
 cd /projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/
-time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="kk,gg,gk" --lmax=4000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --nsel=1024
-time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="kk,gg,gk" --lmax=4000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True --nsel=1024
+# time srun --export=ALL python sample_params_v1.py "gg,gk,ge" 4000
+time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="kk,gg,gk" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --nsel=1024
+# time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="kk,gg,gk" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True --nsel=1024
 echo "done"

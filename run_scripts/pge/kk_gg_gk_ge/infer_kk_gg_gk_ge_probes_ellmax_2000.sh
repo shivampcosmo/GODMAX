@@ -7,7 +7,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --mem=128G
 #SBATCH --gpus-per-node=1
-#SBATCH --job-name=all_2000
+#SBATCH --job-name=kk_gg_gk_ge_2000
 #SBATCH --output=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/infer/%x.%j.out
 #SBATCH --error=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/infer/%x.%j.err
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -51,9 +51,8 @@ export NCCL_DEBUG=INFO
 export JAX_DEBUG_NANS=True
 # export JAX_DISABLE_JIT=True  # Slower but easier to debug
 
-which python
 export XLA_FLAGS=--xla_gpu_enable_command_buffer=
 cd /projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/
-time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="ky,kk,gg,gy,gk,ge" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --nsel=1024
-# time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="ky,kk,gg,gy,gk,ge" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True --nsel=1024
+time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="kk,gg,gk,ge" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --nsel=1024
+# time srun --export=ALL python get_Pmm_YM_fbM_constraints.py --probes="kk,gg,gk,ge" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True --nsel=1024
 echo "done"

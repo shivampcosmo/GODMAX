@@ -1,12 +1,13 @@
 import sys, os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 from jax.lib import xla_bridge
-platform = xla_bridge.get_backend().platform
+# platform = xla_bridge.get_backend().platform
 import jax
 import jax.numpy as jnp
 from jax import vmap, grad, pmap
 print(jax.local_device_count(), jax.device_count())
-jax.config.update('jax_platform_name', platform)
+# jax.config.update('jax_platform_name', platform)
+jax.config.update('jax_platform_name', 'gpu')
 jax.config.update("jax_enable_x64", True)
 
 import pathlib
@@ -70,7 +71,7 @@ import astropy.units as u
 from astropy import constants as const
 
 
-def get_samps(fname, param_acorr='sigma8', true_val=0.8, ess_thresh = 100, acorr_min=0.035, acorr_max = 0.05, nchains = 96, ind_frac_rm = 0.0, names=None, labels=None):
+def get_samps(fname, param_acorr='sigma8', true_val=None, ess_thresh = 100, acorr_min=0.035, acorr_max = 0.05, nchains = 96, ind_frac_rm = 0.0, names=None, labels=None):
     df = pk.load(open(fname,'rb'))
     sig8 = df[param_acorr]
     
@@ -92,8 +93,9 @@ def get_samps(fname, param_acorr='sigma8', true_val=0.8, ess_thresh = 100, acorr
         if ess_jc < ess_thresh:
             ind_del.append(jc)  
         else:
-            if np.abs(np.mean(sig8_rs[jc,:]) - true_val)/np.std(sig8_rs[jc,:]) > 5:
-                ind_del.append(jc)      
+            if true_val is not None:
+                if np.abs(np.mean(sig8_rs[jc,:]) - true_val)/np.std(sig8_rs[jc,:]) > 5:
+                    ind_del.append(jc)      
             
     
     ind_del = np.array(ind_del)    
@@ -308,6 +310,7 @@ def get_Pmm_YM_fb_rho(sim_params_dict, halo_params_dict, analysis_dict, other_pa
     rho_baryon_mat = profiles_test.rho_gas_mat + profiles_test.rho_cga_mat + ((profiles_test.fstar_sat_mat/profiles_test.fclm_mat)[None,:,:])*profiles_test.rho_clm_mat
     rho_tot_mat = profiles_test.rho_dmb_mat
     rho_baryon_mat_z0 = rho_baryon_mat[:,indz,:]
+    rho_gas_mat_z0 = profiles_test.rho_gas_mat[:,indz,:]
     rho_tot_mat_z0 = rho_tot_mat[:,indz,:]
     
     
@@ -327,8 +330,7 @@ def get_Pmm_YM_fb_rho(sim_params_dict, halo_params_dict, analysis_dict, other_pa
         interprho = interp1d(np.log(profiles_test.r_array), np.log(rho_baryon_jM), fill_value='extrapolate')
         rhob_jM = np.exp(interprho(np.log(r_array_jM)))
         rhob_int_jM = np.trapezoid(4 * np.pi * r_array_jM**3 * rhob_jM, np.log(r_array_jM))
-    
-    
+        
         rho_tot_jM = rho_tot_mat_z0[:,jM]
         interprho = interp1d(np.log(profiles_test.r_array), np.log(rho_tot_jM), fill_value='extrapolate')
         rhotot_jM = np.exp(interprho(np.log(r_array_jM)))
@@ -336,7 +338,7 @@ def get_Pmm_YM_fb_rho(sim_params_dict, halo_params_dict, analysis_dict, other_pa
     
         fb_model[jM] = rhob_int_jM/rhotot_int_jM
 
-    return Pmm_ratio, Y_model, fb_model, Pkz_test.kPk_array, M_array, profiles_test.r_array, rho_baryon_mat_z0, rho_tot_mat_z0
+    return Pmm_ratio, Y_model, fb_model, Pkz_test.kPk_array, M_array, profiles_test.r_array, rho_baryon_mat_z0, rho_tot_mat_z0, rho_gas_mat_z0
     
 
 
@@ -374,7 +376,8 @@ num_warmup = args.num_warmup
 num_samples = args.num_samples
 num_chains= args.num_chains
 max_tree_depth = args.max_tree_depth
-wbao_prior = args.bao_prior
+# wbao_prior = args.bao_prior
+wbao_prior = False
 init_strategy = args.init_strategy
 run_this_script = True
 nsel = args.nsel
@@ -403,7 +406,7 @@ save_infer_dir = abs_path_results + '/pge/inference/'
 probes_forecast_all_str = '_'.join(probes_forecast)
 
 
-savefname_out_dict = save_infer_dir + f'infer_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}_nsel_{nsel}.pkl'
+savefname_out_dict = save_infer_dir + f'infer_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}_nsel_{nsel}_v3.pkl'
 # if wbao_prior:
 #     savefname_out_dict = save_infer_dir + f'infer_v5_{probes_forecast_all_str}_scval_{sc_val}_samples_{num_samples}_warmup_{num_warmup}_num_chains_{num_chains*n_parallel}_treedepth_{max_tree_depth}_wbaoprior_{wbao_prior}_nsel_{nsel}.pkl'
 # else:
@@ -414,10 +417,10 @@ savefname_out_dict = save_infer_dir + f'infer_v5_{probes_forecast_all_str}_scval
 # if os.path.exists(savefname_out):
 
 sim_params_dict, halo_params_dict, analysis_dict, other_params_dict = get_dicts_default()
-Pmm_ratio_fid, Y_model_fid, fb_model_fid, k_array, M_array, r_array_fid, rho_baryon_mat_z0_fid, rho_tot_mat_z0_fid = get_Pmm_YM_fb_rho(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
+Pmm_ratio_fid, Y_model_fid, fb_model_fid, k_array, M_array, r_array_fid, rho_baryon_mat_z0_fid, rho_tot_mat_z0_fid, rho_gas_mat_z0_fid = get_Pmm_YM_fb_rho(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
 
 
-samps, keys = get_samps(savefname_out, ess_thresh = 60)
+samps, keys = get_samps(savefname_out, ess_thresh = 30)
 
 nsamp_tot = samps.shape[0]
 indsel = np.sort(np.random.randint(0, nsamp_tot, nsel))
@@ -427,6 +430,7 @@ Pmm_ratio_all_samp = []
 Y_M_model_all_samp = []
 fb_M_model_all_samp = []
 rho_b_model_all_samp = []
+rho_g_model_all_samp = []
 rho_tot_model_all_samp = []
 
 for jind, map_ind in enumerate(indsel):
@@ -450,11 +454,12 @@ for jind, map_ind in enumerate(indsel):
     for jb in range(analysis_dict['nz_source_info_dict']['nbins'] - 1):
         other_params_dict['mult_shear_bias_array'][jb] = saved_bestfit[f'mult_shear_bias_array_{jb}']
 
-    Pmm_ratio, Y_model, fb_model, k_array, M_array, r_array, rho_baryon_mat_z0, rho_tot_mat_z0 = get_Pmm_YM_fb_rho(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
+    Pmm_ratio, Y_model, fb_model, k_array, M_array, r_array, rho_baryon_mat_z0, rho_tot_mat_z0, rho_gas_mat_z0 = get_Pmm_YM_fb_rho(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
     Pmm_ratio_all_samp.append(Pmm_ratio)
     Y_M_model_all_samp.append(Y_model)
     fb_M_model_all_samp.append(fb_model)
     rho_b_model_all_samp.append(rho_baryon_mat_z0)
+    rho_g_model_all_samp.append(rho_gas_mat_z0)
     rho_tot_model_all_samp.append(rho_tot_mat_z0)
     
     if np.mod(jind, 10) == 0:
@@ -463,14 +468,18 @@ for jind, map_ind in enumerate(indsel):
         out_dict['Pmm_ratio_fid'] = Pmm_ratio_fid
         out_dict['Y_model_fid'] = Y_model_fid
         out_dict['fb_model_fid'] = fb_model_fid
+
+        out_dict['rho_baryon_mat_z0_fid'] = rho_baryon_mat_z0_fid
+        out_dict['rho_tot_mat_z0_fid'] = rho_tot_mat_z0_fid
+        out_dict['rho_gas_mat_z0_fid'] = rho_gas_mat_z0_fid
         
         out_dict['Pmm_ratio_all_samp'] = np.array(Pmm_ratio_all_samp)
         out_dict['Y_M_model_all_samp'] = np.array(Y_M_model_all_samp)
         out_dict['fb_M_model_all_samp'] = np.array(fb_M_model_all_samp)
         out_dict['rho_b_model_all_samp'] = np.array(rho_b_model_all_samp)
+        out_dict['rho_g_model_all_samp'] = np.array(rho_g_model_all_samp)
         out_dict['rho_tot_model_all_samp'] = np.array(rho_tot_model_all_samp)
 
-        
         out_dict['k_array'] = k_array
         out_dict['r_array'] = r_array                
         out_dict['M_array'] = M_array
@@ -487,12 +496,16 @@ out_dict['Pmm_ratio_fid'] = Pmm_ratio_fid
 out_dict['Y_model_fid'] = Y_model_fid
 out_dict['fb_model_fid'] = fb_model_fid
 
+out_dict['rho_baryon_mat_z0_fid'] = rho_baryon_mat_z0_fid
+out_dict['rho_tot_mat_z0_fid'] = rho_tot_mat_z0_fid
+out_dict['rho_gas_mat_z0_fid'] = rho_gas_mat_z0_fid
+
 out_dict['Pmm_ratio_all_samp'] = Pmm_ratio_all_samp
 out_dict['Y_M_model_all_samp'] = Y_M_model_all_samp
 out_dict['fb_M_model_all_samp'] = fb_M_model_all_samp
 out_dict['rho_b_model_all_samp'] = np.array(rho_b_model_all_samp)
+out_dict['rho_g_model_all_samp'] = np.array(rho_g_model_all_samp)
 out_dict['rho_tot_model_all_samp'] = np.array(rho_tot_model_all_samp)
-
 
 out_dict['k_array'] = k_array
 out_dict['M_array'] = M_array

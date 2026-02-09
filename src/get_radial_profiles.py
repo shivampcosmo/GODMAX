@@ -762,8 +762,10 @@ class Profiles(base_class):
         else:
             Mclm_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.Mclm_mat[:, jz, jM])))
         
-        lnMclm_interp = interpax.CubicSpline(jnp.log(r_array_here), jnp.log(Mclm_here + 1e-30), extrapolate=True, check=False)
-        dlnMclm_dr = lnMclm_interp.derivative(nu=1)(jnp.log(r_array_here))
+        # lnMclm_interp = interpax.CubicSpline(jnp.log(r_array_here), jnp.log(Mclm_here + 1e-30), extrapolate=True, check=False)
+        # dlnMclm_dr = lnMclm_interp.derivative(nu=1)(jnp.log(r_array_here))
+        
+        dlnMclm_dr = jax.vmap(jax.grad(lambda x_val: jnp.interp(x_val, jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30))))(jnp.log(r_array_here))
         dMclm_dr = dlnMclm_dr * Mclm_here / r_array_here
         rho_clm = dMclm_dr / (4*jnp.pi*r_array_here**2)      
         return jnp.clip(rho_clm, 0, 1e30)
