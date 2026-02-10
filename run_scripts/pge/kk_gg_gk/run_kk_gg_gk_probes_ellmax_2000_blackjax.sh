@@ -7,7 +7,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --mem=128G
 #SBATCH --gpus-per-node=4
-#SBATCH --job-name=kk_gg_gk_2000_hf
+#SBATCH --job-name=kk_gg_gk_2000_hf_bj
 #SBATCH --output=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/%x.%j.out
 #SBATCH --error=/projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/logs/%x.%j.err
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -54,5 +54,5 @@ cd /projects/bdne/spandey3/Pge_GODMAX/GODMAX/run_scripts/pge/
 # time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=1000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4
 # time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=1000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True
 # time srun --export=ALL python sample_params_v5.py --probes="kk,gg,gk" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=True --model_matter="halofit"
-time srun --export=ALL python sample_params_v6.py --probes="kk,gg,gk" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=24 --max_tree_depth=4 --bao_prior=False --model_matter="halofit"
+time srun --export=ALL python sample_params_v6_blackjax.py --probes="kk,gg,gk" --lmax=2000 --num_warmup=6000 --num_samples=6000 --num_chains=20 --max_tree_depth=4 --bao_prior=False --model_matter="halofit"
 echo "done"

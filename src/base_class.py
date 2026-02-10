@@ -268,6 +268,10 @@ class base_class:
         self.symbolic_hmf = analysis_dict.get('symbolic_hmf', False)
         self.symbolic_pk = analysis_dict.get('symbolic_pk', False)
 
+        # Optimization flags for memory-intensive zeta calculation
+        self.use_scan_zeta = analysis_dict.get('use_scan_zeta', False)
+        self.n_zeta_points = analysis_dict.get('n_zeta_points', 8)
+
         self.angles_data_array = jnp.array(analysis_dict.get('angles_data_array', jnp.logspace(jnp.log10(2.5), jnp.log10(250), 20)))
         self.nt_out = len(self.angles_data_array)
 

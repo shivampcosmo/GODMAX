@@ -252,7 +252,7 @@ class get_Cl(get_Pkz):
         """        
 
         # Handle the first probe condition
-        @jit
+        # @jit
         def compute_prefac(probe, jb):
             conditions = [
                 (probe == 0, (1. + self.mult_shear_bias_array[jb]) * (self.Wk_mat[jb] / (self.chi_array_for_Cls**2))),
