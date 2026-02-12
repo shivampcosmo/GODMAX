@@ -228,7 +228,7 @@ zmax_maps, zmin_maps = 0.5, 0.3
 snaps_in_shell = snap_num_all[(zval_all < zmax_maps) & (zval_all > zmin_maps)]
 
 # =============================================================================
-# 4. REDSHIFT LOOP (Corrected for Physics alignment within your structure)
+# 4. REDSHIFT LOOP
 # =============================================================================
 for snap_num in snaps_in_shell:
     if PROFILE_TIMING: z_slice_start_time = time.perf_counter()
