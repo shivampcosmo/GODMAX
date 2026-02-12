@@ -1,20 +1,12 @@
 # =============================================================================
-# 1-3. IMPORTS, HELPERS, AND INITIALIZATION (PRESERVED EXACTLY AS PROVIDED)
+# 1. IMPORTS AND SETUP (WITH CONDA cuSPARSE & cuDNN ENFORCEMENT)
 # =============================================================================
 import os
 import sys
 import ctypes
 import glob
-import pathlib
-import re
-import gc
-import yaml
-import warnings
-import time
-from multiprocessing import Pool, cpu_count
-import ast
-from deepmerge import always_merger
 
+# --- THE cuSPARSE & cuDNN CONDA FIX ---
 conda_lib_dir = os.path.join(sys.prefix, "lib")
 def force_load_lib(name_pattern):
     libs = glob.glob(os.path.join(conda_lib_dir, name_pattern))
@@ -29,6 +21,15 @@ def force_load_lib(name_pattern):
 force_load_lib("libcusparse.so*")
 force_load_lib("libcudnn.so*")
 
+import pathlib
+import re
+import gc
+import yaml
+import warnings
+import time
+from multiprocessing import Pool, cpu_count
+import ast
+
 warnings.filterwarnings("ignore")
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
@@ -40,6 +41,7 @@ import jax_cosmo.background as bkgrd
 platform = xla_bridge.get_backend().platform
 jax.config.update('jax_platform_name', platform)
 jax.config.update("jax_enable_x64", True)
+print(f"JAX backend: {platform}, Total devices: {jax.device_count()}, Local devices: {jax.local_device_count()}")
 
 import numpyro
 numpyro.set_platform("gpu")
@@ -54,11 +56,12 @@ import pickle as pk
 import h5py as h5
 import argparse
 
+# --- Argument Parsing ---
 parser = argparse.ArgumentParser()
 parser.add_argument("--nside", type=int)
 parser.add_argument("--jdevice", type=int)
 parser.add_argument("--ndevices", type=int)
-parser.add_argument("--is_reference", action="store_true")
+parser.add_argument("--is_reference", action="store_true", help="Use default YAML params")
 parser.add_argument("--theta_ej_0", type=float)
 parser.add_argument("--nu_theta_ej_M", type=float)
 parser.add_argument("--nu_theta_ej_z", type=float)
@@ -67,10 +70,16 @@ parser.add_argument("--sample_id", type=int)
 args = parser.parse_args()
 
 plt.rcParams['text.usetex'] = True
+
 curr_path = pathlib.Path().absolute()
 project_base = curr_path.parents[1]
+abs_path_data = project_base / "data"
+abs_path_src = project_base / "src"
+abs_path_results = project_base / "results"
 abs_path_params = project_base / "param_files"
-sys.path.append(str(project_base / "src"))
+
+for path in [curr_path, abs_path_data, abs_path_src, abs_path_results, abs_path_params]:
+    sys.path.append(str(path))
 
 from get_radial_profiles import Profiles
 from get_sim_maps import setup_sim_map, get_sim_map
@@ -79,32 +88,14 @@ import helpers.constants as constants
 # =============================================================================
 # 2. HELPER FUNCTIONS
 # =============================================================================
-def split_array_power_ratio(arr, num_parts, power_val=0.5):
-    """Splits an array into parts with sizes proportional to j^power_val."""
-    n_total = arr.shape[0]
-    j_values = np.arange(1, num_parts + 1)
-    weights = j_values**power_val
-    sum_of_weights = np.sum(weights)
-    ideal_sizes = (n_total / sum_of_weights) * weights
-    int_sizes = np.floor(ideal_sizes).astype(int)
-    remainder = n_total - np.sum(int_sizes)
-    fractional_parts = ideal_sizes - int_sizes
-    indices_to_increment = np.argsort(fractional_parts)[-remainder:]
-    int_sizes[indices_to_increment] += 1
-    split_indices = np.cumsum(int_sizes)[:-1]
-    return np.split(arr, split_indices)
-
 def split_array_uniform(arr, num_parts):
-    """Splits an array into parts with nearly equal numbers of halos."""
     return np.array_split(arr, num_parts)
 
 def read_yaml(file_path):
-    """Reads a YAML file and returns its content."""
     with open(file_path, 'r') as file:
         return yaml.safe_load(file)
 
 def generate_dicts(data):
-    """Extracts parameter dictionaries from the main data dictionary."""
     return data.get('sim_params', {}), data.get('halo_params', {}), \
            data.get('analysis', {}), data.get('other_params', {})
 
@@ -188,9 +179,9 @@ def process_halos_in_batches(M_all_chunk, ra_all_chunk, dec_all_chunk, z_all_chu
     with Pool(cpu_count()) as pool:
         for batch_start in range(0, n_halos, batch_size):
             batch_end = min(batch_start + batch_size, n_halos)
-            if PROFILE_TIMING: print(f"Processing halo batch {batch_start//batch_size + 1}")
             batch_args = [(jhalo, ra_all_np, dec_all_np, halo_cat_R200c_np, halo_cat_DV_np, max_paint_R200c_factor, nside, pixel_dtype) for jhalo in range(batch_start, batch_end)]
-            batch_results = [r for r in pool.map(process_halo, batch_args) if r is not None]
+            batch_results = pool.map(process_halo, batch_args)
+            batch_results = [r for r in batch_results if r is not None]
             if batch_results:
                 batch_data = concatenate_batch_results(batch_results, M_all_chunk, z_all_chunk, vlos_all_chunk, halo_cat_DV_np, halo_cat_R200c_np, max_paint_R200c_factor, pixel_dtype)
                 if batch_data is not None: all_results.append(batch_data)
@@ -201,25 +192,35 @@ def process_halos_in_batches(M_all_chunk, ra_all_chunk, dec_all_chunk, z_all_chu
 PROFILE_TIMING = True
 if PROFILE_TIMING: script_start_time = time.perf_counter()
 
+# =============================================================================
+# 3. INITIALIZATION & SETUP
+# =============================================================================
 nside, jdevice, Ndevices = args.nside, args.jdevice, args.ndevices
+if PROFILE_TIMING: setup_start_time = time.perf_counter()
+
 yaml_file_path = f'{str(abs_path_params)}/params_default.yaml'
 data = read_yaml(yaml_file_path)
-if not args.is_reference:
-    new_data = read_yaml(f'{str(abs_path_params)}/xCMASS/params_fit_test.yaml')
-    data = always_merger.merge(data, new_data)
-
 sim_params_dict, halo_params_dict, analysis_dict, other_params_dict = generate_dicts(data)
+
+if args.is_reference:
+    save_folder = "reference_run"
+else:
+    sim_params_dict.update({'theta_ej_0': args.theta_ej_0, 'nu_theta_ej_M': args.nu_theta_ej_M, 'nu_theta_ej_z': args.nu_theta_ej_z, 'mu_beta': args.mu_beta})
+    save_folder = f"sample_{args.sample_id}"
+
+halo_params_dict.update({'rmin': 0.00075, 'rmax': 10.0, 'nr': 48, 'zmin': 0.005, 'zmax': 2.1, 'nz':31, 'lg10_Mmin': 10.75, 'lg10_Mmax': 16.0, 'nM': 40})
 cosmo_params_dict = {'w0': -1.0, 'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.049, 'sigma8': 0.834, 'ns': 0.9624}
-sim_params_dict['cosmo'] = cosmo_params_dict
 
-Prof_base = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
+Prof_test = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
 mock_params_setup = {'nside': nside, 'get_ymap': True, 'get_taumap': True, 'get_kappamap': True, 'get_baryonifiedmap': True, 'get_galmap': True, 'smooth_profiles': True}
-Prof_test = setup_sim_map(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, mock_params_setup, Profiles_obj=Prof_base)
+Prof_test = setup_sim_map(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, mock_params_setup, Profiles_obj=Prof_test)
 
-chi_CMB = bkgrd.radial_comoving_distance(Prof_base.cosmo_jax, 1.0 / (1.0 + 1089.0)).item()
+chi_CMB = bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + 1089.0)).item()
 c_light = 299792.458
-rho_m_comoving = Prof_base.get_rho_m(0.0)
-part_mass = float((rho_m_comoving * (1000)**3)/2048**3)
+rho_m = Prof_test.get_rho_m(0.0)
+part_mass = float((rho_m * (1000)**3)/2048**3)
+
+if PROFILE_TIMING: setup_end_time = time.perf_counter(); print(f"[PROFILE] Setup: {setup_end_time - setup_start_time:.2f}s")
 
 sim_file_path = '/work/hdd/bdne/spandey3/backlight/fiducial/100'
 zlist = np.loadtxt(f'{sim_file_path}/zlist.txt')
@@ -234,21 +235,24 @@ for snap_num in snaps_in_shell:
     if PROFILE_TIMING: z_slice_start_time = time.perf_counter()
     snap_num_current = snap_num
     zval = zval_all[snap_num_all == snap_num][0]
-    save_map_fname = f'/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin/reference_run/allmaps_nside{args.nside}_z{zval:.3f}_split{args.jdevice}.pkl'
+    save_map_fname = f'/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin/{save_folder}/allmaps_nside{args.nside}_z{zval:.3f}_split{args.jdevice}.pkl'
 
     if not os.path.exists(save_map_fname):
         if PROFILE_TIMING: print(f"\nProcessing z = {zval:.3f}")
-        chi_v = bkgrd.radial_comoving_distance(Prof_base.cosmo_jax, 1.0 / (1.0 + zval)).item()
+        chi_v = bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + zval)).item()
+        
+        # Physics Correction: Calculate Snapshot thickness for volume integration 
         dz_snapshot = (zmax_maps - zmin_maps) / len(snaps_in_shell)
-        H_z = cosmo_params_dict['H0'] * Prof_base.get_Ez(zval)
+        H_z = cosmo_params_dict['H0'] * Prof_test.get_Ez(zval)
         dchi_snapshot = (c_light / H_z) * dz_snapshot
-
+        
+        # Matter Density Normalization
         vol_shell_pix = (4.0/3.0) * np.pi * ((chi_v + dchi_snapshot/2)**3 - (chi_v - dchi_snapshot/2)**3) / (12 * nside**2)
-        mean_mass_per_pix = rho_m_comoving * vol_shell_pix
+        mean_mass_per_pix = rho_m * vol_shell_pix
 
         map_tot_orig = hp.read_map(f'{sim_file_path}/compressed_massMaps/massSheet_tot_z_{int(snap_num)}.fits.gz', verbose=False)
         map_tot_orig_ds = hp.ud_grade(np.array(map_tot_orig * part_mass), nside, power=-2)
-        # Matter overdensity: Dimensionless (10^-6 scale)
+        # Convert raw mass to dimensionless overdensity delta = (rho - rho_bar)/rho_bar
         delta_sheet = (map_tot_orig_ds / mean_mass_per_pix) - 1.0
 
         if PROFILE_TIMING: load_start = time.perf_counter()
@@ -269,9 +273,9 @@ for snap_num in snaps_in_shell:
             sl = slice(i*100000, (i+1)*100000)
             Mc, rac, decc, vc = M_s[sl], ra_s[sl], dec_s[sl], vlos_s[sl]
             zc = z_s[sl]
-            rho_c = constants.RHO_CRIT_0_KPC3 * Prof_base.get_Ez(zc[0])**2 * 1e9
+            rho_c = constants.RHO_CRIT_0_KPC3 * Prof_test.get_Ez(zc[0])**2 * 1e9
             R200c = (Mc * 3.0 / (4.0 * jnp.pi * 200 * rho_c))**(1.0/3.0)
-            DA = bkgrd.angular_diameter_distance(Prof_base.cosmo_jax, 1./(1.+zc))
+            DA = bkgrd.angular_diameter_distance(Prof_test.cosmo_jax, 1./(1.+zc))
 
             res = process_halos_in_batches(Mc, rac, decc, zc, vc, R200c, DA, 3.0, nside)
             if res:
@@ -280,21 +284,15 @@ for snap_num in snaps_in_shell:
 
                 map_rhom_dmb += np.nan_to_num(mock_map.rhommap_final)
                 map_rhom_dmo += np.nan_to_num(mock_map.rhom_dmo_map_final)
-
-                # Line-of-sight integration weights 
+                # Volume integration: Weight LOS quantities by shell thickness
                 map_ymap += np.nan_to_num(mock_map.ymap_final) * dchi_snapshot
                 map_tau += np.nan_to_num(mock_map.taumap_final) * dchi_snapshot
-
-                # Corrected Baryonic Halo Overdensity: (Rho_Baryon - Rho_DMO) / Rho_Background
-                diff_delta = (np.nan_to_num(mock_map.rhommap_final) - np.nan_to_num(mock_map.rhom_dmo_map_final)) / mean_mass_per_pix
-                map_kappa_halo += diff_delta
-
+                # Overdensity fix: (rho_halo - rho_bar)/rho_bar
+                map_kappa_halo += (np.nan_to_num(mock_map.rhommap_final) - np.nan_to_num(mock_map.rhom_dmo_map_final)) / mean_mass_per_pix
                 mock_gals_all[i] = mock_map.final_galaxy_catalog
                 jax.clear_caches(); gc.collect()
 
         weight_k = (1.5 * (cosmo_params_dict['H0']/c_light)**2 * cosmo_params_dict['Om0']) * ((chi_CMB - chi_v)/chi_CMB) * (1.0 + zval) * chi_v * dchi_snapshot
-        
-        # FINAL KAPPA: Matter (DMO) + Halo Baryonic Difference
         map_kappa = (delta_sheet + map_kappa_halo) * weight_k
 
         if PROFILE_TIMING:
@@ -302,11 +300,7 @@ for snap_num in snaps_in_shell:
             save_start = time.perf_counter()
 
         with open(save_map_fname, 'wb') as f:
-            pk.dump({'mock_gals_all': mock_gals_all, 'map_ymap': map_ymap, 'map_tau': map_tau, 'map_kappa': map_kappa,
+            pk.dump({'mock_gals_all': mock_gals_all, 'map_ymap': map_ymap, 'map_tau': map_tau, 'map_kappa': map_kappa, 
                      'map_rhom_dmb': map_rhom_dmb, 'map_rhom_dmo': map_rhom_dmo}, f)
 
-        if PROFILE_TIMING:
-            print(f"[PROFILE] Save & z-total: {time.perf_counter() - save_start:.2f}s | {time.perf_counter() - z_slice_start_time:.2f}s total")
-
-if PROFILE_TIMING:
-    print(f"\n[PROFILE] TOTAL EXECUTION: {time.perf_counter() - script_start_time:.2f}s")
+        if PROFILE_TIMING: print(f"[PROFILE] Save & total: {time.perf_counter() - z_slice_start_time:.2f}s")
