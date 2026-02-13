@@ -87,7 +87,6 @@ ne0_cm3 = (sim_p['cosmo']['Ob0'] * 1.8784e-29 * h**2) / (1.14 * 1.6726e-24)
 base_test = base_class(sim_p, halo_p, anal_p, other_p)
 Prof_test = Profiles(sim_p, halo_p, anal_p, other_p, base_class_obj=base_test)
 
-# Clean inputs to prevent spike propagation
 Prof_test.Ncen_mat = jnp.nan_to_num(Prof_test.Ncen_mat)
 Prof_test.Nsat_mat = jnp.nan_to_num(Prof_test.Nsat_mat)
 
