@@ -143,7 +143,7 @@ for label, th_full, map_key, y_label in stats:
     chi2 = np.mean((cl_sim[valid] - th[valid])**2 / variance)
     
     plt.figure(figsize=(10, 8))
-    plt.plot(l_range, np.abs(cl_sim), 'ko', markersize=2, alpha=0.3, label=f'Sim (RedChi2={chi2:.2e})')
+    plt.plot(l_range, np.abs(cl_sim), color='black', lw=2, alpha=0.7, label=f'Sim (RedChi2={chi2:.2e})')
     plt.plot(l_range, th, 'r-', lw=2.5, label='Theory')
     
     plt.xscale('log')
