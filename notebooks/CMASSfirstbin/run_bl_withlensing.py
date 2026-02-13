@@ -235,7 +235,7 @@ else:
 
 # =================================================================
 # SETTINGS: 
-# 1. Physics Grid: Must be wide (11.5) for HOD to work correctly.
+# 1. Physics Grid: Must be wide (11.75) for HOD to work correctly.
 # 2. Load Speed: Controlled separately by LOAD_MASS_CUT (1e13).
 # =================================================================
 halo_params_dict.update({
@@ -243,7 +243,7 @@ halo_params_dict.update({
     'zmin': 0.001, 'zmax': 2.1, 'nz':31,
     'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32  # Correct wide physics grid
 })
-LOAD_MASS_CUT = 1e13  # Fast loading cut (matches your old logic)
+LOAD_MASS_CUT = 1e13  # Fast loading cut
 
 cosmo_params_dict = {'w0': -1.0, 'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.049, 'sigma8': 0.834, 'ns': 0.9624}
 
