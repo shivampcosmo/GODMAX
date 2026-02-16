@@ -148,6 +148,9 @@ class setup_sim_map(Profiles):
             if get_baryonified_map:
                 self._setup_DMOmap()
         
+        if get_galmap:
+            self._setup_galmap()
+        
     def _setup_tau_interpolator(self):
         """Setup tau(z) interpolator"""
         tauz_array = vmap(self.get_tau_z)(jnp.arange(len(self.z_array))).astype(jnp.float32)
@@ -254,6 +257,24 @@ class setup_sim_map(Profiles):
             extrap=[-20, -20]
         )
         if self.profile_timing: self.timing_results['kappa_map_interpolator_creation'] = time.perf_counter() - start_time
+
+    def _setup_galmap(self):
+        """Setup Ncen, Nsat interpolator"""
+        # tauz_array = vmap(self.get_tau_z)(jnp.arange(len(self.z_array))).astype(jnp.float32)
+        self.logNcen_interp = interpax.Interpolator2D(
+            self.z_array.astype(jnp.float32), 
+            jnp.log(self.M_array).astype(jnp.float32),
+            jnp.log(self.Ncen_mat + 1e-20).astype(jnp.float32),
+            # nan=-20, posinf=-20, neginf=-20, 
+            extrap=[-20, -20]
+        )
+        self.logNsat_interp = interpax.Interpolator2D(
+            self.z_array.astype(jnp.float32), 
+            jnp.log(self.M_array).astype(jnp.float32),
+            jnp.log(self.Nsat_mat + 1e-20).astype(jnp.float32),
+            # nan=-20, posinf=-20, neginf=-20, 
+            extrap=[-20, -20]
+        )
 
     def _compute_projections(self, mat_physical, profile_name):
         """Compute 2D projections for a given physical matrix"""
@@ -642,7 +663,7 @@ class get_sim_map(Profiles):
     def _setup_galaxy_catalog(self, mock_params_dict):
         """Setup galaxy catalog generation"""
         if self.profile_timing: start_time = time.perf_counter()
-        self.mass_grid = self.M_array.astype(jnp.float32)
+        self.mass_grid = self.M_array.astype(jnp.float64)
         self.z_grid = self.z_array.astype(jnp.float32)
         self.r_comoving_grid = (self.r_array * 1000).astype(jnp.float32)
         
@@ -657,7 +678,7 @@ class get_sim_map(Profiles):
         if self.profile_timing: start_time = time.perf_counter()
         mean_ncen_all, mean_nsat_all = self.Ncen_mat, self.Nsat_mat
         max_mean_nsat = jnp.max(mean_nsat_all)
-        max_gals_per_halo = int(jnp.ceil(max_mean_nsat + 10 * jnp.sqrt(max_mean_nsat))) + 1
+        max_gals_per_halo = int(jnp.ceil(max_mean_nsat + 10 * jnp.sqrt(max_mean_nsat))) + 10
         
         NUM_HALOS = len(mock_params_dict['halo_ra'])
         key = PRNGKey(mock_params_dict.get('random_seed', 42))
@@ -677,7 +698,7 @@ class get_sim_map(Profiles):
             jnp.array(mock_params_dict['halo_ra'], dtype=jnp.float32),
             jnp.array(mock_params_dict['halo_dec'], dtype=jnp.float32),
             jnp.array(mock_params_dict['halo_z'], dtype=jnp.float32),
-            jnp.array(mock_params_dict['halo_M'], dtype=jnp.float32)
+            jnp.array(mock_params_dict['halo_M'], dtype=jnp.float64)
         )
         padded_galaxy_catalog.block_until_ready()
         if self.profile_timing: self.timing_results['galaxy_population'] = time.perf_counter() - start_time
@@ -735,11 +756,15 @@ class get_sim_map(Profiles):
     @partial(jit, static_argnums=(0,))
     def get_hod_params(self, mass, z):
         """Get HOD parameters for M200c mass definition"""
-        log_m = jnp.log10(mass)
-        m_min = 12.0
-        m1_prime = 13.5
-        mean_ncen = 0.5 * (1 + jax.scipy.special.erf((log_m - m_min) / 0.2))
-        mean_nsat = jnp.where(log_m > m_min, mean_ncen * ((mass / (10**m1_prime))**1.0), 0.0)
+        # log_m = jnp.log10(mass)
+        # m_min = 12.0
+        # m1_prime = 13.5
+        # mean_ncen = 0.5 * (1 + jax.scipy.special.erf((log_m - m_min) / 0.2))
+        # mean_nsat = jnp.where(log_m > m_min, mean_ncen * ((mass / (10**m1_prime))**1.0), 0.0)
+        # mean_ncen = jnp.exp(self.logNcen)
+        mean_ncen = jnp.nan_to_num(jnp.exp(self.logNcen_interp(z, jnp.log(mass))))
+        mean_nsat = jnp.nan_to_num(jnp.exp(self.logNsat_interp(z, jnp.log(mass))))
+
         return mean_ncen, mean_nsat
 
     @partial(jit, static_argnums=(0,))
@@ -862,7 +887,8 @@ class get_sim_map(Profiles):
         ncen = jnp.clip(poisson(key_hod, mean_ncen), 0, 1)
         nsat = poisson(split(key_hod, 2)[1], mean_nsat)
         nsat = jnp.minimum(nsat, max_gals - 1)
-        
+
+
         # Initialize galaxy catalog
         pad_value = -1.0
         gal_catalog = jnp.full((max_gals, 6), pad_value, dtype=jnp.float32)
@@ -888,7 +914,8 @@ class get_sim_map(Profiles):
         
         # Update catalog
         sat_indices = jnp.arange(1, max_gals)
-        sat_mask = (sat_indices <= nsat) & (ncen > 0)
+        # sat_mask = (sat_indices <= nsat) & (ncen > 0)
+        sat_mask = (sat_indices <= nsat)
         gal_catalog = gal_catalog.at[1:, 0].set(jnp.where(sat_mask, sats_ra, pad_value))
         gal_catalog = gal_catalog.at[1:, 1].set(jnp.where(sat_mask, sats_dec, pad_value))
         gal_catalog = gal_catalog.at[1:, 2].set(jnp.where(sat_mask, sats_z, pad_value))
@@ -897,3 +924,4 @@ class get_sim_map(Profiles):
         gal_catalog = gal_catalog.at[1:, 5].set(jnp.where(sat_mask, 1.0, 0.0))
         
         return gal_catalog
+

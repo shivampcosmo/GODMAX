@@ -259,15 +259,15 @@ class Profiles(base_class):
         Ptot_mat = get_vmapped_func(self.get_Ptot, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
             
         # Convert to physical coordinates
-        Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 4)
+        self.Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 4)
         
         # Calculate non-thermal pressure
         Pnt_fac = get_vmapped_func(self.get_Pnt_fac, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-        Pnt_mat = Pnt_fac * Ptot_mat
+        # Pnt_mat = Pnt_fac * Ptot_mat
         
         # Calculate thermal pressure more efficiently
-        Pth_mat = Ptot_mat * jnp.maximum(0, 1 - Pnt_fac)
-        Pth_mat_physical = Ptot_mat_physical * jnp.maximum(0, 1 - Pnt_fac)
+        # Pth_mat = Ptot_mat * jnp.maximum(0, 1 - Pnt_fac)
+        Pth_mat_physical = self.Ptot_mat_physical * jnp.maximum(0, 1 - Pnt_fac)
         
         # Convert to electron pressure (factor 1.932)
         self.Pe_mat_physical = Pth_mat_physical/1.932
