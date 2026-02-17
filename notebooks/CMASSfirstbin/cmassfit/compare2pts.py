@@ -84,21 +84,20 @@ Z_MAX = 2.1
 
 halo_p.update({
     'rmin': 0.001, 'rmax': 10.0, 'nr': 48,
-    'zmin': Z_MIN, 'zmax': Z_MAX, 'nz': 64, 
-    'lg10_Mmin': 9.0, 'lg10_Mmax': 16.0,  # Wide range to support low threshold
-    'nM': 64,
-    'backreaction': False # Disable for DMO
+    'zmin': Z_MIN, 'zmax': Z_MAX, 'nz': 31, 
+    'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0,  # Wide range to support low threshold
+    'nM': 32,
 })
 
 # Remove density input (we will set threshold manually)
 if 'nbar_gal_comoving_val' in anal_p: del anal_p['nbar_gal_comoving_val']
 
 anal_p.update({
-    'zmin_for_Cls': Z_MIN, 'zmax_for_Cls': Z_MAX, 'nz_for_Cls': 64,
-    'num_points_trapz_int': 64
+    'zmin_for_Cls': Z_MIN, 'zmax_for_Cls': Z_MAX, 
+#    'nz_for_Cls': 64,'num_points_trapz_int': 64
 })
 
-# Lens Distribution (Masked window, as before)
+# Lens Distribution (Masked window)
 z_array_lens = np.linspace(Z_MIN, Z_MAX, 128)
 hist_z = np.zeros_like(z_array_lens)
 mask_z = (z_array_lens >= 0.3) & (z_array_lens <= 0.5)
