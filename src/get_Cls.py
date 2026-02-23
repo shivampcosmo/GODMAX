@@ -161,9 +161,9 @@ class get_Cl(get_Pkz):
 
                 if self.ENABLE_TIMING:
                     print("Time to compute the gal y: ", time.time() - ti)
-        # if self.ENABLE_TIMING:
-        #     print("Time to compute the angular power spectra: ", time.time() - ti)
-        #     ti = time.time()
+            if self.ENABLE_TIMING:
+                print("Time to compute SZ angular power spectra: ", time.time() - ti)
+                ti = time.time()
 
     @partial(jit, static_argnums=(0,))
     def get_P_lz(self, jl, jz, Pk_mat):

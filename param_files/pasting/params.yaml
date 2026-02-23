@@ -10,10 +10,10 @@ sim_params:
     
   log10_Mstar0_theta_ej: 15.0
   theta_ej_0: 2.0
-  nu_theta_ej_M: -0.1
-  nu_theta_ej_z: -0.1
+  nu_theta_ej_M: 0.0
+  nu_theta_ej_z: 0.0
   log10_Mc0 : 13.75
-  mu_beta : 0.0762
+  mu_beta : 0.5
 
   # log10M1_fshmr: 12.35
   # log10M1_a_fshmr: 0.28
@@ -79,9 +79,9 @@ sim_params:
   # betacut_Nsat: 0.6
   # betasat_Nsat: 0.3
 
-  log10M1_fshmr: 15.5
+  log10M1_fshmr: 16.0
   log10M1_a_fshmr: 0.0
-  log10Mstar0_fshmr: 15.5
+  log10Mstar0_fshmr: 16.0
   log10Mstar0_a_fshmr: 0.0
   beta_fshmr: 0.4
   beta_a_fshmr: 0.0
@@ -89,7 +89,7 @@ sim_params:
   delta_a_fshmr: 0.0
   gamma_fshmr: 0.3
   gamma_a_fshmr: 0.0
-  siglogMstar_Ncen: 0.7
+  siglogMstar_Ncen: 0.75
   alphasat_Nsat: 1.9
   Bcut_Nsat: 1.7
   Bsat_Nsat: 9.0
@@ -119,7 +119,7 @@ analysis:
   tSZ_transition_model : poweradd
 
   zmin_for_Cls: 0.01
-  zmax_for_Cls: 1.6
+  zmax_for_Cls: 0.799
   nz_for_Cls: 128
 
   fsky_yy: 0.4
