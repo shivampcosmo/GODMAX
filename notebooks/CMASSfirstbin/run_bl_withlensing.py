@@ -243,7 +243,7 @@ halo_params_dict.update({
     'zmin': 0.001, 'zmax': 2.1, 'nz':31,
     'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32  # Correct wide physics grid
 })
-LOAD_MASS_CUT = 1e13  # Fast loading cut
+LOAD_MASS_CUT = 10**12.75  # Fast loading cut
 
 cosmo_params_dict = {'w0': -1.0, 'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.049, 'sigma8': 0.834, 'ns': 0.9624}
 
@@ -312,7 +312,7 @@ for snap_num in snaps_in_shell:
         ldir = f'{sim_file_path}/halos/{snap_num}/'
         files_all = os.listdir(ldir)
         
-        # FAST LOADING: Pass aggressive mass cut (1e13) here
+        # FAST LOADING: Pass aggressive mass cut here
         open_data_partial = partial(open_data, Mlim=LOAD_MASS_CUT)
         
         with Pool(cpu_count()) as pool:
