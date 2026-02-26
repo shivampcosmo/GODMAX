@@ -223,7 +223,7 @@ if PROFILE_TIMING:
     script_start_time = time.perf_counter()
 
 nside, jdevice, Ndevices = args.nside, args.jdevice, args.ndevices
-yaml_file_path = f'{str(abs_path_params)}/params_default.yaml'
+yaml_file_path = f'{str(abs_path_params)}/params_anshuman.yaml'
 data = read_yaml(yaml_file_path)
 sim_params_dict, halo_params_dict, analysis_dict, other_params_dict = generate_dicts(data)
 
@@ -251,12 +251,23 @@ if PROFILE_TIMING:
     setup_start_time = time.perf_counter()
 
 Prof_test = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
+'''
+# Force the Stellar Mass threshold so it doesn't default to 10^14
+TARGET_STELLAR_MASS = 10.75
+Prof_test.Mthresh_array = jnp.ones(halo_params_dict['nz']) * 10**TARGET_STELLAR_MASS
+Prof_test.Ncen_mat = jnp.stack([Prof_test.get_Ncen(jz, jnp.arange(halo_params_dict['nM'])) for jz in range(halo_params_dict['nz'])])
+Prof_test.Nsat_mat = jnp.stack([Prof_test.get_Nsat(jz, jnp.arange(halo_params_dict['nM'])) for jz in range(halo_params_dict['nz'])])
+# ---------------------------------
+'''
 mock_params_dict_setup = {'nside': nside, 'get_ymap': True, 'get_kSZmap': True, 'get_taumap': True, 'get_kappamap': True, 'get_baryonifiedmap': True, 'get_galmap': True, 'smooth_profiles': True}
 Prof_test = setup_sim_map(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, mock_params_dict_setup, Profiles_obj=Prof_test)
 
 rho_m = Prof_test.get_rho_m(0.0); part_mass = float((rho_m * (1000)**3)/2048**3)
 chi_CMB = bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + 1089.0)).item()
+print("rho_m is: ", rho_m)
+print("chi_CMB is: ", chi_CMB)
 c_light = 299792.458
+H0_over_h = 100.0 # km/s per Mpc/h
 
 if PROFILE_TIMING:
     setup_end_time = time.perf_counter()
@@ -291,10 +302,12 @@ for snap_num in snaps_in_shell:
         
         # --- PHYSICS PREP ---
         chi_v = bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + zval)).item()
+        print("chi_v is:", chi_v)
         dz_snapshot = (zmax_maps - zmin_maps) / len(snaps_in_shell)
-        dchi_snapshot = (c_light / (cosmo_params_dict['H0'] * Prof_test.get_Ez(zval))) * dz_snapshot
+        dchi_snapshot = (c_light / (H0_over_h * Prof_test.get_Ez(zval))) * dz_snapshot
+        print("and dchi_snapshot is:", dchi_snapshot)
         mean_mass_per_pix = rho_m * (4.0/3.0) * np.pi * ((chi_v + dchi_snapshot/2)**3 - (chi_v - dchi_snapshot/2)**3) / (12 * nside**2)
-
+        print("and mean_mass_per_pix is: ",mean_mass_per_pix)
         # --- DIFFERENTIAL SHELL CALCULATION ---
         map_tot_orig = hp.read_map(f'{sim_file_path}/compressed_massMaps/massSheet_tot_z_{int(snap_num)}.fits.gz', verbose=False)
         curr_idx = np.where(sorted_snaps == snap_num)[0][0]
@@ -387,7 +400,8 @@ for snap_num in snaps_in_shell:
                 
                 jax.clear_caches(); gc.collect()
 
-        weight_k = (1.5 * (cosmo_params_dict['H0']/c_light)**2 * cosmo_params_dict['Om0']) * ((chi_CMB - chi_v)/chi_CMB) * (1.0 + zval) * chi_v * dchi_snapshot
+        weight_k = (1.5 * (H0_over_h/c_light)**2 * cosmo_params_dict['Om0']) * ((chi_CMB - chi_v)/chi_CMB) * (1.0 + zval) * chi_v * dchi_snapshot
+        print("weight_k is: ", weight_k)
         map_kappa *= weight_k
 
         saved_data = {
