@@ -115,8 +115,8 @@ cosmo_jax = Cosmology(
     wa=0.
 )
 
-Z_MIN, Z_MAX = 0.005, 2.0
-zarray_lens = np.linspace(0.001, 0.8, 40)
+Z_MIN, Z_MAX = 0.001, 2.1
+zarray_lens = np.linspace(0.001, 2.1, 31)
 
 zmin_gal, zmax_gal = 0.3, 0.5
 
@@ -162,7 +162,7 @@ other_params_dict['mult_shear_bias_array'] = jnp.zeros(1)
 ks = np.geomspace(1e-2, 50, 80)
 analysis_dict['k_array_survey'] = jnp.array(ks / h)
 
-lmin_th, lmax_th, dl_log_array = 30.0, 8800.0, 0.1
+lmin_th, lmax_th, dl_log_array = 80.0, 8800.0, 0.23025851
 l_array_all = np.exp(np.arange(np.log(lmin_th), np.log(lmax_th), dl_log_array))
 dl_array = l_array_all[1:] - l_array_all[:-1]
 l_array_survey = (l_array_all[1:] + l_array_all[:-1]) / 2.
@@ -177,7 +177,7 @@ analysis_dict['k_array_survey'] = jnp.array(ks)
 
 halo_params_dict.update({
     'rmin': 0.005, 'rmax': 10.0, 'nr': 48,
-    'zmin': Z_MIN, 'zmax': Z_MAX, 'nz': 51,
+    'zmin': Z_MIN, 'zmax': Z_MAX, 'nz': 31,
     'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32
 })
 
