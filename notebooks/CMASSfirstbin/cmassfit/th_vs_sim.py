@@ -116,10 +116,9 @@ cosmo_jax = Cosmology(
 )
 
 Z_MIN, Z_MAX = 0.001, 2.1
-zarray_lens = np.linspace(0.001, 2.1, 31)
+zarray_lens = np.linspace(Z_MIN, Z_MAX, 31)
 
 zmin_gal, zmax_gal = 0.3, 0.5
-
 zmin_max_edges = np.linspace(zmin_gal, zmax_gal + 0.001, 21)
 zcen = 0.5 * (zmin_max_edges[1:] + zmin_max_edges[:-1])
 
