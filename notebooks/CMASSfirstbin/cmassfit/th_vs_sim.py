@@ -257,7 +257,12 @@ try:
         elif label in ['gy', 'gtau']:
             th *= beam_ell    # Apply beam: gas maps were smoothed in sim
 
-        cl_sim = cl_sim_raw / (pixwin[2:]**2)
+        #cl_sim = cl_sim_raw / (pixwin[2:]**2)
+        if label == 'gg':
+            cl_sim = cl_sim_raw / (pixwin[2:]**2)
+        else:
+            # Cross-spectra: gal map has pixwin, gas/kappa maps are sampled/smoothed
+            cl_sim = cl_sim_raw / pixwin[2:]
 
         ell_check = 200
         idx_sim = np.argmin(np.abs(l_range_int - ell_check))
