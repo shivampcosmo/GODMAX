@@ -71,7 +71,7 @@ for fname in tqdm(pkl_files, desc="Aggregating"):
 mask = (maps['kappa'] != 0.0)
 fsky = np.sum(mask) / npix
 if fsky < 1e-6:
-    fsky = 0.5745
+    fsky = 1.0
 
 if total_galaxies_sim > 0:
     mean_gal = np.sum(maps['gal'][mask]) / np.sum(mask)
@@ -158,9 +158,6 @@ analysis_dict['nz_source_info_dict'] = nz_source_info_dict
 other_params_dict['Delta_z_bias_array'] = jnp.zeros(1)
 other_params_dict['mult_shear_bias_array'] = jnp.zeros(1)
 
-ks = np.geomspace(1e-2, 50, 80)
-analysis_dict['k_array_survey'] = jnp.array(ks / h)
-
 lmin_th, lmax_th, dl_log_array = 80.0, 8800.0, 0.23025851
 l_array_all = np.exp(np.arange(np.log(lmin_th), np.log(lmax_th), dl_log_array))
 dl_array = l_array_all[1:] - l_array_all[:-1]
@@ -171,13 +168,13 @@ analysis_dict['dl_array_survey'] = jnp.array(dl_array)
 
 analysis_dict['symbolic_pk'] = True
 analysis_dict['symbolic_hmf'] = True
-ks = np.geomspace(1e-2, 50, 80)
+ks = np.geomspace(1e-3, 100, 200)
 analysis_dict['k_array_survey'] = jnp.array(ks)
 
 halo_params_dict.update({
     'rmin': 0.005, 'rmax': 10.0, 'nr': 48,
     'zmin': Z_MIN, 'zmax': Z_MAX, 'nz': 31,
-    'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32
+    'lg10_Mmin': 12.75, 'lg10_Mmax': 16.0, 'nM': 32
 })
 
 # =============================================================================
@@ -192,7 +189,7 @@ print("3. Computing Theory...")
 try:
     base_test = base_class(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
     Prof_test = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, base_class_obj=base_test)
-    
+    '''
     M_halo_cut = 10**12.75
     mass_grid = Prof_test.M_array
     hard_mask = jnp.where(mass_grid >= M_halo_cut, 1.0, 0.0)
@@ -205,7 +202,7 @@ try:
 
     Prof_test.Ncen_mat = Ncen_standard * hard_mask_2d
     Prof_test.Nsat_mat = Nsat_standard * hard_mask_2d
-
+    '''
     pkz_test = get_Pkz(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, Profiles_obj=Prof_test)
 
     from astropy import constants as const
