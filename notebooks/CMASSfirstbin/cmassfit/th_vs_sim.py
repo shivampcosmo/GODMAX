@@ -141,9 +141,9 @@ V_comoving = (4.0 / 3.0) * np.pi * (chi_max**3 - chi_min**3) * fsky
 nbar_sim = total_galaxies_sim / V_comoving
 print(f"   -> nbar from sim: {nbar_sim:.4e} (Mpc/h)^-3")
 
-nz_comoving = np.full_like(zarray_lens, nbar_sim)
-analysis_dict['nbar_gal_comoving_zarray'] = zarray_lens
-analysis_dict['nbar_gal_comoving_val'] = nz_comoving
+#nz_comoving = np.full_like(zarray_lens, nbar_sim)
+#analysis_dict['nbar_gal_comoving_zarray'] = zarray_lens
+#analysis_dict['nbar_gal_comoving_val'] = nz_comoving
 
 nz_lens_info_dict = {}
 nz_lens_info_dict['z_array_lens'] = zarray_lens
