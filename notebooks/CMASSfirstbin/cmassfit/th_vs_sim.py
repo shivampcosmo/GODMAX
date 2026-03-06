@@ -132,6 +132,8 @@ nz_f[indsel] = 0.0
 nz_f_norm = nz_f / np.trapezoid(nz_f, zcen)
 nz_f_norm_interp = interp1d(zcen, nz_f_norm, fill_value=0.0, bounds_error=False)
 hist_z = nz_f_norm_interp(zarray_lens)
+hist_z = hist_z/hist_z.sum()
+print("check sum of hist_z: ",np.sum(hist_z))
 
 chi_min = float(radial_comoving_distance(cosmo_jax, jnp.atleast_1d(1.0 / (1.0 + zmin_gal)))[0])
 chi_max = float(radial_comoving_distance(cosmo_jax, jnp.atleast_1d(1.0 / (1.0 + zmax_gal)))[0])
@@ -174,7 +176,7 @@ analysis_dict['k_array_survey'] = jnp.array(ks)
 halo_params_dict.update({
     'rmin': 0.005, 'rmax': 10.0, 'nr': 48,
     'zmin': Z_MIN, 'zmax': Z_MAX, 'nz': 31,
-    'lg10_Mmin': 12.75, 'lg10_Mmax': 16.0, 'nM': 32
+    'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32
 })
 
 # =============================================================================
@@ -189,8 +191,8 @@ print("3. Computing Theory...")
 try:
     base_test = base_class(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
     Prof_test = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, base_class_obj=base_test)
-    '''
-    M_halo_cut = 10**12.75
+    
+    M_halo_cut = 10**13.2
     mass_grid = Prof_test.M_array
     hard_mask = jnp.where(mass_grid >= M_halo_cut, 1.0, 0.0)
     hard_mask_2d = jnp.tile(hard_mask, (halo_params_dict['nz'], 1))
@@ -202,7 +204,42 @@ try:
 
     Prof_test.Ncen_mat = Ncen_standard * hard_mask_2d
     Prof_test.Nsat_mat = Nsat_standard * hard_mask_2d
-    '''
+
+    # =========================================================================
+    # MIMIC SIMULATION: 3x R200c GAS TRUNCATION
+    # =========================================================================
+    # 1. Expand r_array (nr,) to (nr, 1, 1) 
+    #    and r200c_mat (nz, nM) to (1, nz, nM) for JAX broadcasting
+    r_3d = Prof_test.r_array[:, None, None]
+    r200c_3d = Prof_test.r200c_mat[None, :, :]
+
+    # 2. Create the mask: 1.0 inside 3*R200c, 0.0 outside
+    #    The resulting mask will automatically broadcast to shape (nr, nz, nM)
+    gas_truncation_mask = jnp.where(r_3d <= 3.0 * r200c_3d, 1.0, 0.0)
+
+    # 3. Apply the mask directly to the internal 3D gas profiles.
+    #    This cleanly amputates the outskirts exactly like the simulation's painter does,
+    #    without altering the underlying Rmax normalization grid.
+    if hasattr(Prof_test, 'rho_gas_mat'):
+        Prof_test.rho_gas_mat = Prof_test.rho_gas_mat * gas_truncation_mask
+
+    if hasattr(Prof_test, 'rho_gas_mat_physical'):
+        Prof_test.rho_gas_mat_physical = Prof_test.rho_gas_mat_physical * gas_truncation_mask
+
+    # Depending on how tau is evaluated in get_Pkzs, it might use ne_mat
+    if hasattr(Prof_test, 'ne_mat'):
+        Prof_test.ne_mat = Prof_test.ne_mat * gas_truncation_mask
+
+    if hasattr(Prof_test, 'ne_mat_physical'):
+        Prof_test.ne_mat_physical = Prof_test.ne_mat_physical * gas_truncation_mask
+
+    if hasattr(Prof_test, 'Pe_mat_physical'):
+        Prof_test.Pe_mat_physical = Prof_test.Pe_mat_physical * gas_truncation_mask
+
+    if hasattr(Prof_test, 'y3d_mat'):
+        Prof_test.y3d_mat = Prof_test.y3d_mat * gas_truncation_mask
+    # =========================================================================
+
     pkz_test = get_Pkz(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, Profiles_obj=Prof_test)
 
     from astropy import constants as const
