@@ -116,7 +116,7 @@ cosmo_jax = Cosmology(
 )
 
 Z_MIN, Z_MAX = 0.001, 2.1
-zarray_lens = np.linspace(Z_MIN, Z_MAX, 31)
+zarray_lens = np.linspace(Z_MIN, Z_MAX, 255)
 
 zmin_gal, zmax_gal = 0.3, 0.5
 zmin_max_edges = np.linspace(zmin_gal, zmax_gal + 0.001, 21)
@@ -141,9 +141,9 @@ V_comoving = (4.0 / 3.0) * np.pi * (chi_max**3 - chi_min**3) * fsky
 nbar_sim = total_galaxies_sim / V_comoving
 print(f"   -> nbar from sim: {nbar_sim:.4e} (Mpc/h)^-3")
 
-#nz_comoving = np.full_like(zarray_lens, nbar_sim)
-#analysis_dict['nbar_gal_comoving_zarray'] = zarray_lens
-#analysis_dict['nbar_gal_comoving_val'] = nz_comoving
+nz_comoving = np.full_like(zarray_lens, nbar_sim)
+analysis_dict['nbar_gal_comoving_zarray'] = zarray_lens
+analysis_dict['nbar_gal_comoving_val'] = nz_comoving
 
 nz_lens_info_dict = {}
 nz_lens_info_dict['z_array_lens'] = zarray_lens
@@ -192,7 +192,7 @@ try:
     base_test = base_class(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
     Prof_test = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, base_class_obj=base_test)
     
-    M_halo_cut = 10**13.2
+    M_halo_cut = 10**12.75
     mass_grid = Prof_test.M_array
     hard_mask = jnp.where(mass_grid >= M_halo_cut, 1.0, 0.0)
     hard_mask_2d = jnp.tile(hard_mask, (halo_params_dict['nz'], 1))
