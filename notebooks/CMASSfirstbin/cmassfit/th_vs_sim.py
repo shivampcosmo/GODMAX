@@ -64,11 +64,9 @@ for fname in tqdm(pkl_files, desc="Aggregating"):
             g_pix = hp.ang2pix(nside, ra, dec, lonlat=True)
             maps['gal'] += np.bincount(g_pix, minlength=npix)
 
-# fsky from kappa mask — kappa is zero only in unobserved pixels
+# fsky from kappa mask. kappa is zero only in unobserved pixels
 mask = (maps['kappa'] != 0.0)
 fsky = np.sum(mask) / npix
-if fsky < 1e-6:
-    fsky = 1.0
 
 if total_galaxies_sim > 0:
     # Convert raw galaxy counts to overdensity delta_g = n/nbar - 1
@@ -155,7 +153,7 @@ nz_lens_info_dict = {
 }
 analysis_dict['nz_lens_info_dict'] = nz_lens_info_dict
 
-# CMB lensing source — dummy n(z), projection handled internally
+# CMB lensing source: dummy n(z), projection handled internally
 analysis_dict['is_cmb_lensing'] = True
 analysis_dict['nz_source_info_dict'] = {
     'z_array_source': jnp.ones(1),
@@ -234,7 +232,7 @@ try:
     # Pmm_sup = P_halofit / P_halomodel_NFW corrects the matter field for
     # baryonic suppression and nonlinear effects beyond the NFW profile.
     # Galaxy positions are set by the HOD on halo centres and NFW satellite
-    # profiles — they are not suppressed by baryonic gas physics. Applying
+    # profiles, and thus are not suppressed by baryonic gas physics. Applying
     # Pmm_sup to Pgg and Pgm incorrectly suppresses galaxy power by ~16% at
     # k~0.3 h/Mpc, inflating sim/theory by ~1.19 for Pgm and ~1.42 for Pgg.
     # Note: Pgy_tot_mat already has no Pmm_sup in the poweradd model.
@@ -298,7 +296,7 @@ try:
 
         elif label == 'gkappa':
             # kappa map units: theory gives convergence in h-free units,
-            # sim stores it in (Mpc/h)^-2 — multiply by h^2 to match
+            # sim stores it in (Mpc/h)^-2. So,  multiply by h^2 to match
             th *= h**2
             # kappa map is painted with smooth profiles -> apply pixel beam to theory
             th *= beam_ell
