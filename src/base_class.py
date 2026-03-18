@@ -276,8 +276,37 @@ class base_class:
         self.nt_out = len(self.angles_data_array)
 
         # Comoving number density of the galaxies. This can be an array of redshifts and values. Basically M_star_threshold (mininum stellar mass) is obtained from this.
-        self.nbar_gal_comoving_z_array = analysis_dict.get('nbar_gal_comoving_zarray', jnp.linspace(0.01, 2.0, 64))                            
-        self.nbar_gal_comoving_val_array = analysis_dict.get('nbar_gal_comoving_val', jnp.zeros(64))                            
+        #self.nbar_gal_comoving_z_array = analysis_dict.get('nbar_gal_comoving_zarray', jnp.linspace(0.01, 2.0, 64))                            
+        #self.nbar_gal_comoving_val_array = analysis_dict.get('nbar_gal_comoving_val', jnp.zeros(64))
+
+        ###FIX: for passing nbar_gal_comoving_z_array as an array OR as start, stop and interpolation steps
+        # 1. Read Inputs
+        z_info = analysis_dict.get('nbar_gal_comoving_zarray', [0.01, 2.0, 64])
+        nbar_val_raw = analysis_dict.get('nbar_gal_comoving_val', 0.0)
+        nbar_val = float(nbar_val_raw) if isinstance(nbar_val_raw, (str, float, int)) else nbar_val_raw
+        # 2. Build the Redshift Grid (z_grid)
+        # We check if it's exactly 3 elements, AND the last element is strictly an integer > 3
+        if isinstance(z_info, list) and len(z_info) == 3 and isinstance(z_info[2], int) and z_info[2] > 3:
+            z_grid = jnp.linspace(z_info[0], z_info[1], z_info[2])
+        else:
+            # If it's like [0.5, 1.5, 2.5] or a list of 50 explicit redshifts, use it exactly as is
+            z_grid = jnp.array(z_info)
+
+        # 3. Build the Density Grid (nbar_grid) to perfectly match z_grid
+        if isinstance(nbar_val, float):
+            # If a single scalar was provided, stretch it to match z_grid's length
+            nbar_grid = jnp.full(len(z_grid), nbar_val)
+        else:
+            # If an actual list of densities (e.g. [5e-4, 4e-4, ...]) exists, use it
+            nbar_grid = jnp.array(nbar_val)
+        # 4. Save and Interpolate
+        self.nbar_gal_comoving_z_array = z_grid
+        self.nbar_gal_comoving_val_array = nbar_grid
+        # Now interpolation will work because len(z_grid) == len(nbar_grid)
+        self.nbar_gal_comoving_array = jnp.interp(self.z_array, self.nbar_gal_comoving_z_array,
+            self.nbar_gal_comoving_val_array)
+        #####END OF FIX####ANSHUMAN#####
+
         # Get the comoving number density of galaxies at these redshifts.
         try:
             self.nbar_gal_comoving_array = jnp.interp(self.z_array, self.nbar_gal_comoving_z_array, self.nbar_gal_comoving_val_array)
