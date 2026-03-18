@@ -30,7 +30,7 @@ import interpax
 from tqdm import tqdm
 import time
 from mcfitjax.transforms import Hankel
-from jax.random import PRNGKey, split, poisson, uniform, normal
+from jax.random import PRNGKey, split, poisson, uniform, normal, bernoulli
 from functools import partial
 from jax.scipy.ndimage import map_coordinates
 key = PRNGKey(42)
@@ -661,7 +661,12 @@ class get_sim_map(Profiles):
         return final_map
 
     def _setup_galaxy_catalog(self, mock_params_dict):
-        """Setup galaxy catalog generation"""
+        """Setup galaxy catalog generation.
+
+        Set mock_params_dict['use_poisson_centrals'] = True to use the old
+        Poisson-clip central sampling for A/B comparison diagnostics.
+        """
+        self._use_poisson_centrals = mock_params_dict.get('use_poisson_centrals', False)
         if self.profile_timing: start_time = time.perf_counter()
         self.mass_grid = self.M_array.astype(jnp.float64)
         self.z_grid = self.z_array.astype(jnp.float32)
@@ -769,18 +774,22 @@ class get_sim_map(Profiles):
 
     @partial(jit, static_argnums=(0,))
     def angular_diameter_distance(self, z):
-        """Angular diameter distance in comoving Mpc/h"""
-        H0 = 100.0
+        """Angular diameter distance in Mpc/h (physical, not comoving).
+
+        Uses the simulation cosmology from self.cosmo_params.
+        H0=100 gives distances in Mpc/h units by construction.
+        """
+        H0 = 100.0  # gives Mpc/h units
         c = 299792.458
-        Om0 = 0.3
-        
+        Om0 = self.cosmo_params['Om0']
+
         def E(z_prime):
             return jnp.sqrt(Om0 * (1 + z_prime)**3 + (1 - Om0))
-        
+
         z_arr = jnp.linspace(0, z, 100)
         integrand = 1.0 / E(z_arr)
         chi = jsi.trapezoid(integrand, z_arr)
-        
+
         return (c / H0) * chi / (1 + z)
 
     @partial(jit, static_argnums=(0,))
@@ -877,14 +886,30 @@ class get_sim_map(Profiles):
         
         return sat_ra, sat_dec, sat_z
 
-    def populate_one_halo(self, key, halo_ra, halo_dec, halo_z, halo_mass, max_gals, 
+    def populate_one_halo(self, key, halo_ra, halo_dec, halo_z, halo_mass, max_gals,
                           mass_grid, z_grid, r_comoving_grid, cdf_table):
-        """Populate one halo with galaxies"""
+        """Populate one halo with galaxies.
+
+        Central sampling uses Bernoulli(mean_ncen) to match the HOD theory
+        convention where <Ncen(M)> = 0.5*(1 - erf(...)).
+        The previous Poisson-clip approach gave <Ncen> = 1 - exp(-mean_ncen),
+        which underestimates centrals by ~37% at mean_ncen ~ 1.
+
+        Satellite sampling uses Poisson(mean_nsat) — unconditional on central,
+        consistent with the 1-halo pair-counting formula
+        2*Ncen*Nsat*uk + Nsat^2*uk^2 used in get_Pkzs.
+        """
         key_hod, key_sat_pos = split(key)
-        
+
         # Sample number of galaxies
         mean_ncen, mean_nsat = self.get_hod_params(halo_mass, halo_z)
-        ncen = jnp.clip(poisson(key_hod, mean_ncen), 0, 1)
+        # Bernoulli draw for central (matches theory <Ncen> = p)
+        # Set use_poisson_centrals=True in mock_params_dict for old (buggy) behavior
+        ncen = jnp.where(
+            getattr(self, '_use_poisson_centrals', False),
+            jnp.clip(poisson(key_hod, mean_ncen), 0, 1),          # old: biased low
+            bernoulli(key_hod, mean_ncen).astype(jnp.int32),       # new: correct
+        )
         nsat = poisson(split(key_hod, 2)[1], mean_nsat)
         nsat = jnp.minimum(nsat, max_gals - 1)
 

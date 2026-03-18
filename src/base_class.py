@@ -146,6 +146,7 @@ class base_class:
             )
         self.h = cosmo_params['H0'] / 100.
         self.Om0 = cosmo_params['Om0']
+        self.Ob0 = cosmo_params['Ob0']
         self.H0 = 100. * (u.km / (u.s * u.Mpc))
         self.rho_m_bar = self.cosmo_params['Om0'] * ((3 * (self.H0**2) / (8 * jnp.pi * G_new_rhom)).to(u.M_sun / (u.Mpc**3))).value
         self.init_power = sim_params_dict.get('init_power', True)
@@ -263,6 +264,9 @@ class base_class:
         self.model_tSZ = analysis_dict.get('model_tSZ',True)
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
+
+        self.lowpass_Pmm1h_lowk = analysis_dict.get('lowpass_Pmm1h_lowk', True)
+        self.kthresh_lowpass_Pmm1h_lowk = float(analysis_dict.get('kthresh_lowpass_Pmm1h_lowk', 1e-2))
 
         # Weather to use symbolic regression for Pk and HMF:
         self.symbolic_hmf = analysis_dict.get('symbolic_hmf', False)
