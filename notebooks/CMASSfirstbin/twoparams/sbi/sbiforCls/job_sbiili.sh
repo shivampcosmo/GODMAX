@@ -9,10 +9,10 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus=1
 #SBATCH --mem=200G
-#SBATCH --time=02:00:00
+#SBATCH --time=01:00:00
 
 # Activate your environment
 conda activate godmax_env
 
 # Run the bridge script
-python3 sbi_cls.py
+python3 sbi_activelearn_crossspec.py

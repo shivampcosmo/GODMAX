@@ -73,7 +73,7 @@ args = parser.parse_args()
 plt.rcParams['text.usetex'] = True
 
 curr_path = pathlib.Path().absolute()
-project_base = curr_path.parents[3]
+project_base = curr_path.parents[2]
 abs_path_data = project_base / "data"
 abs_path_src = project_base / "src"
 abs_path_results = project_base / "results"
@@ -99,6 +99,8 @@ def generate_dicts(data):
     analysis_dict = data.get('analysis', {})
     other_params_dict = data.get('other_params', {})
     return sim_params_dict, halo_params_dict, analysis_dict, other_params_dict
+
+# --- Functions for Parallel Halo Processing ---
 
 def open_data(file, Mlim=1e12):
     # Relies on global ldir being set in the loop
@@ -127,13 +129,13 @@ def open_data(file, Mlim=1e12):
 def concatenate_data(results):
     lengths = np.array([len(result[0]) for result in results])
     total_length = lengths.sum()
-    X_all, Y_all, Z_all = np.empty(total_length), np.empty(total_length), np.empty(total_length)
-    Vlos_all, M200_all = np.empty(total_length), np.empty(total_length)
+    X_all = np.empty(total_length); Y_all = np.empty(total_length); Z_all = np.empty(total_length)
+    Vlos_all = np.empty(total_length); M200_all = np.empty(total_length)
     end_ind_all = np.cumsum(lengths)
     start_ind_all = np.roll(end_ind_all, 1); start_ind_all[0] = 0
     for i, (start, end, result) in enumerate(zip(start_ind_all, end_ind_all, results)):
-        X_all[start:end], Y_all[start:end], Z_all[start:end] = result[0], result[1], result[2]
-        Vlos_all[start:end], M200_all[start:end] = result[3], result[4]
+        X_all[start:end] = result[0]; Y_all[start:end] = result[1]; Z_all[start:end] = result[2]
+        Vlos_all[start:end] = result[3]; M200_all[start:end] = result[4]
     return X_all, Y_all, Z_all, Vlos_all, M200_all
 
 def process_halo(args_in):
@@ -160,7 +162,7 @@ def concatenate_batch_results(results, M_all_chunk, z_all_chunk, vlos_all_chunk,
     halo_indices = np.empty(total_length, dtype=np.int32)
     end_indices = np.cumsum(lengths); start_indices = np.concatenate([[0], end_indices[:-1]])
     for i, (start, end, res) in enumerate(zip(start_indices, end_indices, results)):
-        nearby_pix_all[start:end], distances_pix_all[start:end], halo_indices[start:end] = res[0], res[1], res[2]
+        nearby_pix_all[start:end] = res[0]; distances_pix_all[start:end] = res[1]; halo_indices[start:end] = res[2]
     original_halo_indices = np.array([res[2] for res in results], dtype=np.int32)
     logM_ind_all = np.log(M_all_chunk[halo_indices]).astype(np.float32)
     z_ind_all = z_all_chunk[halo_indices].astype(np.float32)
@@ -171,10 +173,15 @@ def concatenate_batch_results(results, M_all_chunk, z_all_chunk, vlos_all_chunk,
 
 def final_concatenate_batches(all_results, pixel_dtype):
     total_pix = sum(len(res[0]) for res in all_results); total_halos = sum(len(res[2]) for res in all_results)
-    final_nearby_pix, final_distances = np.empty(total_pix, dtype=pixel_dtype), np.empty(total_pix, dtype=np.float32)
-    final_logM, final_z, final_vlos = np.empty(total_pix, dtype=np.float32), np.empty(total_pix, dtype=np.float32), np.empty(total_pix, dtype=np.float32)
-    final_start_ind, final_end_ind = np.empty(total_halos, dtype=np.int32), np.empty(total_halos, dtype=np.int32)
-    final_ang_dist, final_rp_max = np.empty(total_halos, dtype=np.float32), np.empty(total_halos, dtype=np.float32)
+    final_nearby_pix = np.empty(total_pix, dtype=pixel_dtype)
+    final_distances = np.empty(total_pix, dtype=np.float32)
+    final_logM = np.empty(total_pix, dtype=np.float32)
+    final_z = np.empty(total_pix, dtype=np.float32)
+    final_vlos = np.empty(total_pix, dtype=np.float32)
+    final_start_ind = np.empty(total_halos, dtype=np.int32)
+    final_end_ind = np.empty(total_halos, dtype=np.int32)
+    final_ang_dist = np.empty(total_halos, dtype=np.float32)
+    final_rp_max = np.empty(total_halos, dtype=np.float32)
     pix_offset, halo_offset = 0, 0
     for result in all_results:
         n_pix_batch, n_halo_batch = len(result[0]), len(result[2])
@@ -193,12 +200,13 @@ def final_concatenate_batches(all_results, pixel_dtype):
 
 def process_halos_in_batches(M_all_chunk, ra_all_chunk, dec_all_chunk, z_all_chunk, vlos_all_chunk, halo_cat_R200c, halo_cat_DA, max_paint_R200c_factor, nside, batch_size=1000):
     pixel_dtype = np.int32 if nside <= 8192 else np.int64
-    ra_all_np, dec_all_np = np.clip(np.array(ra_all_chunk, dtype=np.float32), 0.01, 359.99), np.clip(np.array(dec_all_chunk, dtype=np.float32), -89.99, 89.99)
-    halo_cat_R200c_np, halo_cat_DV_np = np.array(halo_cat_R200c, dtype=np.float32), np.array(halo_cat_DA, dtype=np.float32)
+    ra_all_np = np.clip(np.array(ra_all_chunk, dtype=np.float32), 0.01, 359.99); dec_all_np = np.clip(np.array(dec_all_chunk, dtype=np.float32), -89.99, 89.99)
+    halo_cat_R200c_np = np.array(halo_cat_R200c, dtype=np.float32); halo_cat_DV_np = np.array(halo_cat_DA, dtype=np.float32)
     n_halos = len(z_all_chunk); all_results = []
     with Pool(cpu_count()) as pool:
         for batch_start in range(0, n_halos, batch_size):
             batch_end = min(batch_start + batch_size, n_halos)
+            print(f"Processing halo batch {batch_start//batch_size + 1}/{(n_halos - 1)//batch_size + 1}...")
             batch_args = [(jhalo, ra_all_np, dec_all_np, halo_cat_R200c_np, halo_cat_DV_np, max_paint_R200c_factor, nside, pixel_dtype) for jhalo in range(batch_start, batch_end)]
             batch_results = pool.map(process_halo, batch_args); batch_results = [r for r in batch_results if r is not None]
             if batch_results:
@@ -241,12 +249,17 @@ print(f"  nu_theta_ej_M: {sim_params_dict.get('nu_theta_ej_M')}")
 print(f"  nu_theta_ej_z: {sim_params_dict.get('nu_theta_ej_z')}")
 print("="*30)
 
+# =================================================================
+# SETTINGS:
+# 1. Physics Grid: Must be wide (11.75) for HOD to work correctly.
+# 2. Load Speed: Controlled separately by LOAD_MASS_CUT (1e13).
+# =================================================================
 halo_params_dict.update({
     'rmin': 0.001, 'rmax': 10.0, 'nr': 48,
     'zmin': 0.001, 'zmax': 2.1, 'nz': 31,
-    'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32
+    'lg10_Mmin': 11.75, 'lg10_Mmax': 16.0, 'nM': 32  # Correct wide physics grid
 })
-LOAD_MASS_CUT = 10**12.75
+LOAD_MASS_CUT = 10**12.75  # Fast loading cut
 
 cosmo_params_dict = {'w0': -1.0, 'flat': True, 'H0': 67.11, 'Om0': 0.3175, 'Ob0': 0.049, 'sigma8': 0.834, 'ns': 0.9624}
 
@@ -258,12 +271,16 @@ Prof_test = setup_sim_map(sim_params_dict, halo_params_dict, analysis_dict, othe
 
 rho_m = Prof_test.get_rho_m(0.0); part_mass = float((rho_m * (1000)**3)/2048**3)
 chi_CMB = bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + 1089.0)).item()
+print("rho_m is: ", rho_m)
+print("chi_CMB is: ", chi_CMB)
 c_light = 299792.458
+H0_over_h = 100.0  # km/s per Mpc/h
 
 if PROFILE_TIMING:
     setup_end_time = time.perf_counter()
     print(f"\n[PROFILE] Initial setup time: {setup_end_time - setup_start_time:.2f} seconds")
 
+# --- Identify Redshift Slices to Process ---
 sim_file_path = '/work/hdd/bdne/spandey3/backlight/fiducial/100'
 zlist = np.loadtxt(f'{sim_file_path}/zlist.txt')
 snap_num_all, zval_all = zlist[:,0].astype(int), zlist[:,1]
@@ -277,80 +294,138 @@ zmax_maps, zmin_maps = 0.5, 0.3
 snaps_in_shell = snap_num_all[(zval_all < zmax_maps) & (zval_all > zmin_maps)]
 
 for snap_num in snaps_in_shell:
-    if PROFILE_TIMING: z_slice_start_time = time.perf_counter()
+    if PROFILE_TIMING:
+        z_slice_start_time = time.perf_counter()
+
     ind_snapnum = np.where(snap_num_all == snap_num)[0]
     zval = zval_all[ind_snapnum][0]
 
-    sdir = f'/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin/twoparams/wl/{save_folder}'
+    sdir = f'/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin/twoparams/{save_folder}'
     os.makedirs(sdir, exist_ok=True)
     save_map_fname = f'{sdir}/allmaps_nside{args.nside}_z{zval:.3f}_split{args.jdevice}.pkl'
 
     if not os.path.exists(save_map_fname):
         print(f"\nProcessing redshift slice: z = {zval:.3f}, snap_num = {snap_num}")
-        chi_v = bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + zval)).item()
-        dz_snapshot = (zmax_maps - zmin_maps) / len(snaps_in_shell)
-        dchi_snapshot = (c_light / (cosmo_params_dict['H0'] * Prof_test.get_Ez(zval))) * dz_snapshot
-        mean_mass_per_pix = rho_m * (4.0/3.0) * np.pi * ((chi_v + dchi_snapshot/2)**3 - (chi_v - dchi_snapshot/2)**3) / (12 * nside**2)
 
+        # --- PHYSICS PREP ---
+        chi_v = bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + zval)).item()
+        print("chi_v is:", chi_v)
+        dz_snapshot = (zmax_maps - zmin_maps) / len(snaps_in_shell)
+        dchi_snapshot = (c_light / (H0_over_h * Prof_test.get_Ez(zval))) * dz_snapshot
+        print("and dchi_snapshot is:", dchi_snapshot)
+        mean_mass_per_pix = rho_m * (4.0/3.0) * np.pi * ((chi_v + dchi_snapshot/2)**3 - (chi_v - dchi_snapshot/2)**3) / (12 * nside**2)
+        print("and mean_mass_per_pix is: ", mean_mass_per_pix)
+
+        # --- DIFFERENTIAL SHELL CALCULATION ---
         map_tot_orig = hp.read_map(f'{sim_file_path}/compressed_massMaps/massSheet_tot_z_{int(snap_num)}.fits.gz', verbose=False)
         curr_idx = np.where(sorted_snaps == snap_num)[0][0]
-        map_shell = map_tot_orig - hp.read_map(f'{sim_file_path}/compressed_massMaps/massSheet_tot_z_{int(sorted_snaps[curr_idx-1])}.fits.gz', verbose=False) if curr_idx > 0 else map_tot_orig
-        delta_sheet = (hp.ud_grade(np.array(map_shell * part_mass), nside, power=-2) / mean_mass_per_pix) - 1.0
+        if curr_idx > 0:
+            map_prev = hp.read_map(f'{sim_file_path}/compressed_massMaps/massSheet_tot_z_{int(sorted_snaps[curr_idx-1])}.fits.gz', verbose=False)
+            map_shell = map_tot_orig - map_prev
+        else:
+            map_shell = map_tot_orig
 
+        map_tot_orig_ds = hp.ud_grade(np.array(map_shell * part_mass), nside, power=-2)
+        delta_sheet = (map_tot_orig_ds / mean_mass_per_pix) - 1.0
+
+        # --- LOAD HALO DATA (FAST FILTERING) ---
         if PROFILE_TIMING: load_start_time = time.perf_counter()
-        global ldir
         ldir = f'{sim_file_path}/halos/{snap_num}/'
         files_all = os.listdir(ldir)
 
+        # FAST LOADING: Pass aggressive mass cut here
+        open_data_partial = partial(open_data, Mlim=LOAD_MASS_CUT)
+
         with Pool(cpu_count()) as pool:
-            results = pool.map(partial(open_data, Mlim=LOAD_MASS_CUT), files_all)
+            results = pool.map(open_data_partial, files_all)
         X_all, Y_all, Z_all, vlos_all, M200c_all = concatenate_data(results)
 
-        if PROFILE_TIMING: print(f"[PROFILE] Data loading for z={zval:.3f}: {time.perf_counter() - load_start_time:.2f} seconds")
+        if PROFILE_TIMING:
+            print(f"[PROFILE] Data loading for z={zval:.3f}: {time.perf_counter() - load_start_time:.2f} seconds")
 
+        # --- SELECTION & SORTING ---
         ra_all, dec_all = hp.vec2ang(np.array([X_all, Y_all, Z_all]).T, lonlat=True)
         z_all = zval * np.ones_like(ra_all)
         ra_all, dec_all = np.clip(ra_all, 0, 360), np.clip(dec_all, -90, 90)
 
-        indsel = np.where((M200c_all < 6e15) & (M200c_all > (10**12.0)))[0]
-        argsort = np.flip(np.argsort(M200c_all[indsel]))
-        Nsel = (len(argsort) // Ndevices) * Ndevices
-        argsort = argsort[:Nsel]
-        argsort_split = np.array_split(argsort, Ndevices)
-        argsort_here = argsort_split[jdevice]
-        final_indices = indsel[argsort_here]
+        # 1. Sort by mass (Largest first)
+        argsort = np.flip(np.argsort(M200c_all))
 
-        ra_all, dec_all, z_all, M200c_all, vlos_all = ra_all[final_indices], dec_all[final_indices], z_all[final_indices], M200c_all[final_indices], vlos_all[final_indices]
+        # 2. STRIDE SPLITTING (Ensures equal distribution across devices)
+        argsort_here = argsort[jdevice::Ndevices]
 
+        ra_all, dec_all, z_all, M200c_all, vlos_all = (
+            ra_all[argsort_here], dec_all[argsort_here], z_all[argsort_here],
+            M200c_all[argsort_here], vlos_all[argsort_here]
+        )
+
+        print(f"Number of halos for this device: {len(M200c_all)}")
+        if len(M200c_all) > 0:
+            print(f"Min, Mean, Max log10(M200c): {np.min(np.log10(M200c_all)):.2f}, {np.mean(np.log10(M200c_all)):.2f}, {np.max(np.log10(M200c_all)):.2f}, Mean z: {np.mean(z_all):.2f}")
+
+        # --- PAINTING ---
         nh_max = {8192: 4e3, 4096: 5e4, 2048: 5e5, 1024: 1e7, 512: 5e7}.get(nside, 1e5)
         num_chunks = int(np.ceil(len(M200c_all) / nh_max))
-        map_rhom_dmb = np.zeros(12 * nside**2, dtype=np.float32); map_rhom_dmo = np.zeros(12 * nside**2, dtype=np.float32)
-        map_kappa = np.zeros(12 * nside**2, dtype=np.float32); map_ymap = np.zeros(12 * nside**2, dtype=np.float32)
-        map_ksz = np.zeros(12 * nside**2, dtype=np.float32); map_tau = np.zeros(12 * nside**2, dtype=np.float32)
+
+        map_rhom_dmb = np.zeros(12 * nside**2, dtype=np.float32)
+        map_rhom_dmo = np.zeros(12 * nside**2, dtype=np.float32)
+        map_kappa = np.zeros(12 * nside**2, dtype=np.float32)
+        map_ymap = np.zeros(12 * nside**2, dtype=np.float32)
+        map_ksz = np.zeros(12 * nside**2, dtype=np.float32)
+        map_tau = np.zeros(12 * nside**2, dtype=np.float32)
         mock_gals_all = {}
 
         for i in tqdm(range(num_chunks), desc=f"Painting maps for z={zval:.3f}"):
             start, end = int(i * nh_max), int((i + 1) * nh_max)
             Mc, rac, decc, zc, vc = M200c_all[start:end], ra_all[start:end], dec_all[start:end], z_all[start:end], vlos_all[start:end]
+
             scale_fac = 1. / (1. + zc)
-            rho_treshold = 200 * constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(Prof_test.cosmo_jax, scale_fac) * 1e9
-            R200c, DA = (Mc * 3.0 / (4.0 * jnp.pi * rho_treshold))**(1.0/3.0), bkgrd.angular_diameter_distance(Prof_test.cosmo_jax, scale_fac)
+            rho_c_z = constants.RHO_CRIT_0_KPC3 * bkgrd.Esqr(Prof_test.cosmo_jax, scale_fac) * 1e9
+            rho_treshold = 200 * rho_c_z
+            R200c = (Mc * 3.0 / (4.0 * jnp.pi * rho_treshold))**(1.0 / 3.0)
+            DA = bkgrd.angular_diameter_distance(Prof_test.cosmo_jax, scale_fac)
+
             result = process_halos_in_batches(Mc, rac, decc, zc, vc, R200c, DA, 3.0, nside)
             if result:
                 m_p = {**mock_params_dict_setup, 'halo_z': jnp.array(zc), 'halo_ra': jnp.array(rac), 'halo_dec': jnp.array(decc), 'halo_M': jnp.array(Mc), 'halo_vlos': jnp.array(vc), 'nearby_pix_all': jnp.array(result[0]), 'start_ind': jnp.array(result[2]), 'end_ind': jnp.array(result[3]), 'pix_prop_all': (jnp.array([np.log(result[1]), result[5], result[4], result[6]]).T).astype(jnp.float32), 'ang_distance_all': jnp.array(result[7]), 'rp_max_all': jnp.array(result[8]), 'profile_timing': False}
                 mock_map = get_sim_map(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict, m_p, Profiles_obj=Prof_test)
-                map_ymap += np.nan_to_num(mock_map.ymap_final); map_tau += np.nan_to_num(mock_map.taumap_final); map_ksz += np.nan_to_num(mock_map.kszmap_final)
-                map_rhom_dmb += np.nan_to_num(mock_map.rhommap_final); map_rhom_dmo += np.nan_to_num(mock_map.rhom_dmo_map_final); mock_gals_all[i] = mock_map.final_galaxy_catalog
+
+                map_ymap += np.nan_to_num(mock_map.ymap_final)
+                map_tau += np.nan_to_num(mock_map.taumap_final)
+                map_ksz += np.nan_to_num(mock_map.kszmap_final)
+
+                map_rhom_dmb += np.nan_to_num(mock_map.rhommap_final)
+                map_rhom_dmo += np.nan_to_num(mock_map.rhom_dmo_map_final)
+                mock_gals_all[i] = mock_map.final_galaxy_catalog
+
+                # Correct Kappa Logic for multiple chunks
                 diff = (np.nan_to_num(mock_map.rhommap_final) - np.nan_to_num(mock_map.rhom_dmo_map_final)) / mean_mass_per_pix
-                map_kappa += (hp.smoothing(np.array(delta_sheet), sigma=mock_map.sigma_val, verbose=False) + diff) if i == 0 else diff
+                if i == 0:
+                    delta_sheet_np = np.array(delta_sheet)
+                    map_kappa += (hp.smoothing(delta_sheet_np, sigma=mock_map.sigma_val, verbose=False) + diff)
+                else:
+                    map_kappa += diff
+
                 jax.clear_caches(); gc.collect()
 
-        map_kappa *= (1.5 * (cosmo_params_dict['H0']/c_light)**2 * cosmo_params_dict['Om0']) * ((chi_CMB - chi_v)/chi_CMB) * (1.0 + zval) * chi_v * dchi_snapshot
-        saved_data = {'mock_gals_all': mock_gals_all, 'map_rhom_dmb': map_rhom_dmb, 'map_ymap': map_ymap, 'map_ksz': map_ksz, 'map_tau': map_tau, 'map_kappa': map_kappa, 'map_rhom_dmo': map_rhom_dmo, 'map_gy': map_ymap, 'map_gtau': map_tau, 'map_gkappa': map_kappa}
+        weight_k = (1.5 * (H0_over_h/c_light)**2 * cosmo_params_dict['Om0']) * ((chi_CMB - chi_v)/chi_CMB) * (1.0 + zval) * chi_v * dchi_snapshot
+        print("weight_k is: ", weight_k)
+        map_kappa *= weight_k
+
+        saved_data = {
+            'mock_gals_all': mock_gals_all, 'map_rhom_dmb': map_rhom_dmb, 'map_ymap': map_ymap,
+            'map_ksz': map_ksz, 'map_tau': map_tau, 'map_kappa': map_kappa,
+            'map_rhom_dmo': map_rhom_dmo, 'map_gy': map_ymap, 'map_gtau': map_tau, 'map_gkappa': map_kappa
+        }
         with open(save_map_fname, 'wb') as f: pk.dump(saved_data, f)
-        if PROFILE_TIMING: print(f"[PROFILE] TOTAL TIME for z-slice {zval:.3f}: {time.perf_counter() - z_slice_start_time:.2f} seconds")
+
+        if PROFILE_TIMING:
+            save_end_time = time.perf_counter()
+            print(f"[PROFILE] Saving results for z={zval:.3f}: {save_end_time - z_slice_start_time:.2f} seconds")
+            print(f"[PROFILE] TOTAL TIME for z-slice {zval:.3f}: {save_end_time - z_slice_start_time:.2f} seconds")
         del saved_data, mock_gals_all; gc.collect()
     else:
-        print(f"File {save_map_fname} already exists. Skipping.")
+        print(f"File {save_map_fname} already exists. Skipping redshift slice z={zval:.3f}.")
 
-if PROFILE_TIMING: print(f"\n[PROFILE] TOTAL SCRIPT EXECUTION TIME: {time.perf_counter() - script_start_time:.2f} seconds")
+if PROFILE_TIMING:
+    print(f"\n[PROFILE] TOTAL SCRIPT EXECUTION TIME: {time.perf_counter() - script_start_time:.2f} seconds")

@@ -2,12 +2,12 @@
 #SBATCH --account=bdne-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
-#SBATCH --time=00:45:00
+#SBATCH --time=01:00:00
 #SBATCH --gpus=1
 #SBATCH --mem=400G
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-user=anshumana@berkeley.edu
-#SBATCH --array=0-79           # 20 samples * 4 splits = 80 tasks (0 to 79)
+#SBATCH --array=0-119           # 30 samples * 4 splits = 120 tasks (0 to 119)
 #SBATCH --output=/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/run_scripts/logs/R5_%A_%a.out
 
 # Configuration
@@ -33,9 +33,8 @@ INTERNAL_ID=$(echo $PARAMS | cut -d',' -f1)
 THETA_0=$(echo $PARAMS | cut -d',' -f2)
 MU_B=$(echo $PARAMS | cut -d',' -f3)
 
-# Offset ID: Round 1 was 0-29. Round 2 should be 30-49.
-# We add 50 to the index to create unique folder names
-FINAL_ID=$((SAMPLE_IDX + 90))
+# Offset ID: each round is 30 samples. So x4
+FINAL_ID=$((SAMPLE_IDX + 120))
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: R5 Sample Index ${SAMPLE_IDX} (ID ${FINAL_ID}), Split ${JDEVICE} of ${TOTAL_SPLITS}"
 
@@ -44,7 +43,7 @@ module load gcc-native/12.3 cuda/12.2.0 cudnn/9.3.0.75
 cd "${WORK_DIR}"
 
 # Note: We pass --sample_id ${FINAL_ID} so it creates /sample_30, /sample_31, etc.
-conda run -n godmax_env bash -c "export PYTHONNOUSERSITE=1; LD_LIBRARY_PATH= python run_backlight_pkdgrav_all_maps.py \
+conda run -n godmax_env bash -c "export PYTHONNOUSERSITE=1; LD_LIBRARY_PATH= python run_bl.py \
     --nside ${NSIDE} \
     --jdevice ${JDEVICE} \
     --ndevices ${TOTAL_SPLITS} \

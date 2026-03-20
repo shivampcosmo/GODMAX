@@ -36,27 +36,30 @@ os.makedirs("plotcontours2params", exist_ok=True)
 print("\nGenerating Plot 1: Information Category Comparison (Meta-Joints)...")
 
 # Use dedicated posterior samples instead of vstack
+samples_auto= get_raw_samples('all_auto')
 samples_2pt = get_raw_samples('all_2pt')
 samples_3pt = get_raw_samples('all_3pt')
 samples_joint = get_raw_samples('JOINT')
 
 mcs_cat = [
+    MCSamples(samples=samples_auto, names=names, labels=labels, label=r'auto',
+              settings={'smooth_scale_2D': 0.7, 'boundary_correction_order': 1}),
     MCSamples(samples=samples_2pt, names=names, labels=labels, label=r'2pt',
               settings={'smooth_scale_2D': 0.7, 'boundary_correction_order': 1}),
     MCSamples(samples=samples_3pt, names=names, labels=labels, label=r'3pt',
               settings={'smooth_scale_2D': 0.7, 'boundary_correction_order': 1}),
-    MCSamples(samples=samples_joint, names=names, labels=labels, label='2pt+3pt',
+    MCSamples(samples=samples_joint, names=names, labels=labels, label='auto+2pt+3pt',
               settings={'smooth_scale_2D': 0.7, 'boundary_correction_order': 1})
 ]
 
-cat_colors = ['#d62728', '#1f77b4', '#2ca02c'] # Red, Blue, Green
+cat_colors = ['#d62728', '#1f77b4', '#2ca02c', '#9467bd'] # Red, Blue, Green, Purple
 
 g1 = plots.get_subplot_plotter(width_inch=10)
 g1.triangle_plot(
     mcs_cat,
     filled=True,
     colors=cat_colors,
-    legend_labels=['2pt', '3pt', '2pt+3pt'],
+    legend_labels=['auto','2pt', '3pt', 'auto+2pt+3pt'],
     contour_args=[{'alpha': 0.6} for _ in cat_colors],
     line_args=[{'lw': 2.5, 'color': c} for c in cat_colors]
 )
@@ -73,7 +76,7 @@ g1.export('plotcontours2params/category_comparison.png')
 # =============================================================================
 # 3. PLOT 2: TRACER-WISE COMBINATION (Dedicated total info per tracer)
 # =============================================================================
-print("\nGenerating Plot 2: Tracer-wise (2pt+3pt) Comparison (Meta-Joints)...")
+print("\nGenerating Plot 2: Tracer-wise (auto+2pt+3pt) Comparison (Meta-Joints)...")
 
 # Use dedicated total info posterior samples instead of vstack
 samples_y_total = get_raw_samples('y_total')
@@ -81,11 +84,11 @@ samples_tau_total = get_raw_samples('tau_total')
 samples_kappa_total = get_raw_samples('kappa_total')
 
 mcs_tracers = [
-    MCSamples(samples=samples_y_total, names=names, labels=labels, label='y (2pt+3pt)',
+    MCSamples(samples=samples_y_total, names=names, labels=labels, label='y (auto+2pt+3pt)',
               settings={'smooth_scale_2D': 0.7, 'boundary_correction_order': 1}),
-    MCSamples(samples=samples_tau_total, names=names, labels=labels, label='tau (2pt+3pt)',
+    MCSamples(samples=samples_tau_total, names=names, labels=labels, label='tau (auto+2pt+3pt)',
               settings={'smooth_scale_2D': 0.7, 'boundary_correction_order': 1}),
-    MCSamples(samples=samples_kappa_total, names=names, labels=labels, label='k (2pt+3pt)',
+    MCSamples(samples=samples_kappa_total, names=names, labels=labels, label='k (auto+2pt+3pt)',
               settings={'smooth_scale_2D': 0.7, 'boundary_correction_order': 1})
 ]
 
@@ -96,7 +99,7 @@ g2.triangle_plot(
     mcs_tracers,
     filled=True,
     colors=tracer_colors,
-    legend_labels=[r'$y$ (2pt+3pt)', r'$\tau$ (2pt+3pt)', r'$\kappa$ (2pt+3pt)'],
+    legend_labels=[r'$y$ (auto+2pt+3pt)', r'$\tau$ (auto+2pt+3pt)', r'$\kappa$ (auto+2pt+3pt)'],
     contour_args=[{'alpha': 0.6} for _ in tracer_colors],
     line_args=[{'lw': 2.5, 'color': c} for c in tracer_colors]
 )
