@@ -15,82 +15,37 @@ sim_params:
   log10_Mc0 : 13.75
   mu_beta : 0.5
 
-  # log10M1_fshmr: 12.35
-  # log10M1_a_fshmr: 0.28
-  # beta_fshmr: 0.44
-  # beta_a_fshmr: 0.18
-  # delta_fshmr: 0.57
-  # delta_a_fshmr: 0.17
-  # siglogMstar_Ncen: 0.25
-  # alphasat_Nsat: 1.0
 
-
-##### TEST1######
-  # log10M1_fshmr: 12.42
-  # log10M1_a_fshmr: -0.25
-  # log10Mstar0_fshmr: 10.72
-  # log10Mstar0_a_fshmr: 0.55
-  # beta_fshmr: 0.4
-  # beta_a_fshmr: 0.2
-  # delta_fshmr: 0.41
-  # delta_a_fshmr: -0.11
-  # gamma_fshmr: 1.70
-  # gamma_a_fshmr: -1.8
-  # siglogMstar_Ncen: 0.5
-  # alphasat_Nsat: 1.16
-  # Bcut_Nsat: 1.69
-  # Bsat_Nsat: 9.01
-  # betacut_Nsat: 0.6
-  # betasat_Nsat: 0.3
-
-
-##### TEST2######
-  # log10M1_fshmr: 15.55
+  # log10M1_fshmr: 12.0
   # log10M1_a_fshmr: 0.0
-  # log10Mstar0_fshmr: 17.72
+  # log10Mstar0_fshmr: 12.0
   # log10Mstar0_a_fshmr: 0.0
-  # beta_fshmr: 0.1
-  # beta_a_fshmr: 0.0
-  # delta_fshmr: 0.9
-  # delta_a_fshmr: 0.0
-  # gamma_fshmr: 1.0
-  # gamma_a_fshmr: 0.0
-  # siglogMstar_Ncen: 0.5
-  # alphasat_Nsat: 0.5
-  # Bcut_Nsat: 1.69
-  # Bsat_Nsat: 3.01
-  # betacut_Nsat: 0.1
-  # betasat_Nsat: 0.1
-
-  # log10M1_fshmr: 12.804
-  # log10M1_a_fshmr: -0.475
-  # log10Mstar0_fshmr: 13.72
-  # log10Mstar0_a_fshmr: 0.55
   # beta_fshmr: 0.4
-  # beta_a_fshmr: 0.2
-  # delta_fshmr: 0.4419
-  # delta_a_fshmr: -0.49
-  # gamma_fshmr: 0.3442
-  # gamma_a_fshmr: -0.436
-  # siglogMstar_Ncen: 0.78853
-  # alphasat_Nsat: 1.8972
-  # Bcut_Nsat: 1.69
-  # Bsat_Nsat: 9.01
+  # beta_a_fshmr: 0.0
+  # delta_fshmr: 0.4
+  # delta_a_fshmr: 0.0
+  # gamma_fshmr: 0.1
+  # gamma_a_fshmr: 0.0
+  # siglogMstar_Ncen: 0.75
+  # alphasat_Nsat: 1.0
+  # Bcut_Nsat: 1.7
+  # Bsat_Nsat: 9.0
   # betacut_Nsat: 0.6
   # betasat_Nsat: 0.3
 
-  log10M1_fshmr: 16.0
+
+  log10M1_fshmr: 12.0
   log10M1_a_fshmr: 0.0
-  log10Mstar0_fshmr: 16.0
+  log10Mstar0_fshmr: 12.0
   log10Mstar0_a_fshmr: 0.0
   beta_fshmr: 0.4
   beta_a_fshmr: 0.0
   delta_fshmr: 0.4
   delta_a_fshmr: 0.0
-  gamma_fshmr: 0.3
+  gamma_fshmr: 0.1
   gamma_a_fshmr: 0.0
   siglogMstar_Ncen: 0.75
-  alphasat_Nsat: 1.9
+  alphasat_Nsat: 0.9
   Bcut_Nsat: 1.7
   Bsat_Nsat: 9.0
   betacut_Nsat: 0.6
@@ -117,6 +72,8 @@ analysis:
   beam_fwhm_arcmin: 1.4
   analysis_coords: fourier
   tSZ_transition_model : poweradd
+  lowpass_Pmm1h_lowk: True
+  kthresh_lowpass_Pmm1h_lowk: 1e-2
 
   zmin_for_Cls: 0.01
   zmax_for_Cls: 0.799

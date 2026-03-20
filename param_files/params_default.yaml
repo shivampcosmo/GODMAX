@@ -132,6 +132,8 @@ analysis:
   verbose_time: False  
   analysis_coords: fourier
   tSZ_transition_model: poweradd
+  lowpass_Pmm1h_lowk: True
+  kthresh_lowpass_Pmm1h_lowk: 1e-3
 
   nbar_gal_comoving_zarray:
     - 0.01

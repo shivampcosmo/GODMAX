@@ -123,6 +123,13 @@ class get_Pkz(Profiles):
         vmapped_func = get_vmapped_func_warg(self.get_P_1h, 2, 4)
         self.Pmm_dmb_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0, 0).T
         self.Pmm_nfw_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 1, 1).T
+
+        if self.lowpass_Pmm1h_lowk:
+            k_lowpass = self.kthresh_lowpass_Pmm1h_lowk
+            self.lowpass_filter = 1 / (1 + (k_lowpass / self.kPk_array[:, None])**4)
+            self.Pmm_nfw_1h_kz_mat = self.Pmm_nfw_1h_kz_mat * self.lowpass_filter
+            self.Pmm_dmb_1h_kz_mat = self.Pmm_dmb_1h_kz_mat * self.lowpass_filter
+
         if self.model_tSZ:
             self.Pym_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0, 3).T
         if self.model_galaxies:
