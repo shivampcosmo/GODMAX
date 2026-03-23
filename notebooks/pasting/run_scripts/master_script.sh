@@ -2,7 +2,7 @@
 
 # --- Configuration ---
 # Set the parameters for your runs
-NSIDE=1024
+NSIDE=2048
 TOTAL_DEVICES=4
 
 # Set the base directory where your python script is located

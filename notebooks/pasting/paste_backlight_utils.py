@@ -289,7 +289,7 @@ def build_config(abs_path_params, abs_path_data, params_file='pasting/params.yam
     # Canonical galaxy n(z): constant nbar within [gal_zmin, gal_zmax]
     # ------------------------------------------------------------------
     ks = np.geomspace(3e-1, 10, 10)
-    zarray_lens = np.linspace(0.001, 0.5, 200)
+    zarray_lens = np.linspace(0.001, 0.8, 200)
     nbins_lens = 1
 
     # Step 1: build nbar(z) — the single canonical source
@@ -342,8 +342,9 @@ def build_config(abs_path_params, abs_path_data, params_file='pasting/params.yam
     # Halo parameter overrides
     halo_params_dict.update({
         'rmin': 0.005, 'rmax': 10.0, 'nr': 48,
-        'zmin': 0.005, 'zmax': 0.5, 'nz': 52,
-        'lg10_Mmin': 11.0, 'lg10_Mmax': 15.75, 'nM': 42,
+        # 'zmin': 0.005, 'zmax': 0.8, 'nz': 52,
+        'zmin': 0.3, 'zmax': 0.7, 'nz': 22,
+        'lg10_Mmin': 13.0, 'lg10_Mmax': 15.75, 'nM': 42,
     })
 
     # Override cosmology to backlight sim cosmology
@@ -528,7 +529,7 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
         DA = bkgrd.angular_diameter_distance(Prof_test.cosmo_jax, scale_fac)
 
         t0 = time.perf_counter() if profile_timing else None
-        max_paint_R200c_factor = 1.0
+        max_paint_R200c_factor = 8.0
         batch_size = len(ra_all)
         result = process_halos_in_batches(
             M_c, ra_c, dec_c, z_c, vlos_c,
@@ -1059,7 +1060,7 @@ def make_galaxy_map(mock_gals, nside, zmin=0.1, zmax=0.31):
     ra = mock_gals[:, 0]
     dec = mock_gals[:, 1]
     z = mock_gals[:, 2]
-    sel = (z > zmin) & (z < zmax)
+    sel = (z > zmin*0.98) & (z < zmax*1.02)
     pix = hp.ang2pix(nside, ra[sel], dec[sel], lonlat=True)
     m = np.zeros(12 * nside ** 2, dtype=np.float32)
     np.add.at(m, pix, 1.)

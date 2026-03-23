@@ -2,12 +2,12 @@
 
 # --- Configuration ---
 # Set the parameters for your runs
-NSIDE=1024
+NSIDE=2048
 TOTAL_DEVICES=4
 
 # Set the base directory where your python script is located
 # The script will `cd` into this directory before running python
-WORK_DIR="/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/pasting/"
+WORK_DIR="/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/pasting"
 
 # Set the directory to store the generated Slurm scripts and logs
 # Using a sub-directory keeps your project folder clean
@@ -43,7 +43,7 @@ for (( JDEVICE=0; JDEVICE<TOTAL_DEVICES; JDEVICE++ )); do
     cat > "${SLURM_SCRIPT_PATH}" <<EOF
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --time=00:30:00
+#SBATCH --time=01:30:00
 #SBATCH --job-name=${JOB_NAME}
 #SBATCH -p gpu
 #SBATCH -C a100-80gb

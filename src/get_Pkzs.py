@@ -43,7 +43,8 @@ class get_Pkz(Profiles):
         if self.model_galaxies:
             self.k_mcfit, uk_clm = xi2P_obj(self.rho_clm_mat / self.Mclm_mat[-1, :, :][None, :, :], axis=0, extrap=False)
             self.uk_clm_tointp = jnp.array(uk_clm)
-            self.k_mcfit, uk_ne = xi2P_obj(self.ne_mat / self.ne_mat_norm[-1, :, :][None, :, :], axis=0, extrap=False)
+            # self.k_mcfit, uk_ne = xi2P_obj(self.ne_mat / self.ne_mat_norm[-1, :, :][None, :, :], axis=0, extrap=False)
+            self.k_mcfit, uk_ne = xi2P_obj(self.ne_mat, axis=0, extrap=False)
             self.uk_ne_tointp = jnp.array(uk_ne)
         else: self.uk_clm_tointp, self.uk_ne_tointp = jnp.zeros((1,1,1)), jnp.zeros((1,1,1))
                         

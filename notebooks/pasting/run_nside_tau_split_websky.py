@@ -291,13 +291,13 @@ data = read_yaml(yaml_file_path)
 sim_params_dict, halo_params_dict, analysis_dict, other_params_dict = generate_dicts(data)
 
 halo_params_dict['rmin'] = 0.0001
-halo_params_dict['rmax'] = 5.0
-halo_params_dict['nr'] = 126
+halo_params_dict['rmax'] = 8.0
+halo_params_dict['nr'] = 86
 halo_params_dict['zmax'] = 2.75
-halo_params_dict['nz'] = 127
+halo_params_dict['nz'] = 87
 halo_params_dict['lg10_Mmin'] = 13.0
 halo_params_dict['lg10_Mmax'] = 16.0
-halo_params_dict['nM'] = 128
+halo_params_dict['nM'] = 78
 
 from get_B12_profile import Battaglia_12_16
 import helpers.constants as constants
@@ -347,7 +347,7 @@ z_all = df[1].data['z']
 M200c_all = df[1].data['M200c_wh']
 M200m_all = df[1].data['M200m_wh']
 vlos_all = df[1].data['vrad']
-indsel = np.where((z_all>0.05) & (M200m_all<4e15))[0]
+indsel = np.where((z_all>0.195) & (M200m_all<1e15))[0]
 ra_all = ra_all[indsel]
 dec_all = dec_all[indsel]
 z_all = z_all[indsel]
@@ -395,7 +395,7 @@ jax.clear_caches()
 sdir = '/mnt/ceph/users/spandey/ltu-godmax/GODMAX/results/mock_gen/maps_websky/'
 # save_kszmap_fname = sdir + f'tSZ_sim_B12_testv3_nside_{nside}.pkl'
 # save_map_fname = sdir + f'tau_sim_B16_testv11_nside_{nside}_split_{jdevice}_{Ndevices}.pkl'
-save_map_fname = sdir + f'RUN2_v0_tau_sim_B16_nside_{nside}_split_{jdevice}_{Ndevices}.pkl'
+save_map_fname = sdir + f'RUN2_v3_tau_sim_B16_nside_{nside}_split_{jdevice}_{Ndevices}.pkl'
 # if not os.path.exists(save_kszmap_fname):
 halo_ra, halo_dec = ra_all, dec_all
 halo_z = z_all
@@ -409,28 +409,28 @@ z_all = halo_z
 # vlos_all = np.zeros_like(z_all)
 nsel = len(M_all)
 
-# nh_max = 4e4
-# nh_max = 4e3
-if nside == 8192:
-    nh_max = 4e3
-elif nside == 4096:
-    nh_max = 5e4
-elif nside == 2048:
-    nh_max = 5e5
-elif nside == 1024:
-    nh_max = 5e6
-else:
-    print('nside not supported')
-# nh_max = 1e5
-# nh_max = 2e6
-if nsel > nh_max:
-    num_chunks = int(np.ceil(nsel / nh_max))
-else:
-    num_chunks = 1
+# # nh_max = 4e4
+# # nh_max = 4e3
+# if nside == 8192:
+#     nh_max = 4e3
+# elif nside == 4096:
+#     nh_max = 5e4
+# elif nside == 2048:
+#     nh_max = 8e5
+# elif nside == 1024:
+#     nh_max = 1e7
+# else:
+#     print('nside not supported')
+# # nh_max = 1e5
+# # nh_max = 2e6
+# if nsel > nh_max:
+#     num_chunks = int(np.ceil(nsel / nh_max))
+# else:
+#     num_chunks = 1
 
 
 # --- Chunking and Map Generation ---
-nh_max_map = {8192: 4e3, 4096: 5e4, 2048: 5e5, 1024: 1e7, 512: 5e7}
+nh_max_map = {8192: 4e3, 4096: 1e4, 2048: 8e5, 1024: 1e7, 512: 5e7}
 nh_max = nh_max_map.get(nside, 1e5) # Default if nside not in map
 nsel = len(M200c_all)
 num_chunks = int(np.ceil(nsel / nh_max)) if nsel > nh_max else 1
@@ -439,8 +439,8 @@ map_rhom, map_ymap, map_ksz, map_tau = (np.zeros(12 * nside**2, dtype=np.float32
 mock_gals_all = {}
 
 for i in tqdm(range(num_chunks)):
-    # start, end = int(i * nh_max), int((i + 1) * nh_max)
-    start, end = 0, len(ra_all)
+    start, end = int(i * nh_max), int((i + 1) * nh_max)
+    # start, end = 0, len(ra_all)
     M_chunk, ra_chunk, dec_chunk, z_chunk, vlos_chunk = (
         M200c_all[start:end], ra_all[start:end], dec_all[start:end],
         z_all[start:end], vlos_all[start:end]
@@ -455,7 +455,7 @@ for i in tqdm(range(num_chunks)):
     if PROFILE_TIMING:
         pixel_finding_start_time = time.perf_counter()
     
-    max_paint_R200c_factor = 1.0
+    max_paint_R200c_factor = 3.0
     # batch_size = int(nh_max // 2) if nh_max > 2 else 1
     batch_size = len(ra_all)
     result = process_halos_in_batches(
@@ -479,6 +479,7 @@ for i in tqdm(range(num_chunks)):
             'start_ind': jnp.array(result[2], dtype=jnp.int32),
             'end_ind': jnp.array(result[3], dtype=jnp.int32),
             'pix_prop_all': (jnp.array([np.log(result[1]), result[5], result[4], result[6]]).T).astype(jnp.float32),
+            # 'pix_prop_all': (jnp.array([np.log(result[1] * (1 + result[5])), result[5], result[4], result[6]]).T).astype(jnp.float32),            
             'ang_distance_all': jnp.array(result[7]),
             'rp_max_all': jnp.array(result[8]),
             'profile_timing': PROFILE_TIMING
@@ -500,7 +501,7 @@ for i in tqdm(range(num_chunks)):
             map_gen_end_time = time.perf_counter()
             print(f"[PROFILE] Chunk {i+1}/{num_chunks} - JAX map generation: {map_gen_end_time - map_gen_start_time:.2f} seconds")
         
-        # del mock_map, mock_params_dict, result
+        del mock_map, result, mock_params_dict
         jax.clear_caches()
         gc.collect()
 

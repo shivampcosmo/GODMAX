@@ -69,7 +69,7 @@ other_params:
 analysis:
   num_points_trapz_int: 64
   model_galaxies: True
-  beam_fwhm_arcmin: 1.4
+  beam_fwhm_arcmin: 6.87
   analysis_coords: fourier
   tSZ_transition_model : poweradd
   lowpass_Pmm1h_lowk: True

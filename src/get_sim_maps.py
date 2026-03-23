@@ -84,7 +84,9 @@ class setup_sim_map(Profiles):
             extrap=True
         )
         
-        self.rp_array = self.r_array[2:-2].astype(jnp.float32)
+        # self.rp_array = self.r_array[2:-2].astype(jnp.float32)
+        # For projection calculations, we want to ensure we have enough resolution at small radii, so we create a log-spaced rp array that covers the same range as self.r_array but with more points at small radii. This is in physical units, so we don't divide by (1+z) here.
+        self.rp_array = jnp.logspace(jnp.log10(self.r_array[2]), jnp.log10(self.r_array[-2]), num=len(self.r_array)-3).astype(jnp.float32)
         
         # Map parameters
         self.nside_map = mock_params_dict['nside']
@@ -259,20 +261,24 @@ class setup_sim_map(Profiles):
         if self.profile_timing: self.timing_results['kappa_map_interpolator_creation'] = time.perf_counter() - start_time
 
     def _setup_galmap(self):
-        """Setup Ncen, Nsat interpolator"""
-        # tauz_array = vmap(self.get_tau_z)(jnp.arange(len(self.z_array))).astype(jnp.float32)
+        """Setup Ncen, Nsat interpolator.
+
+        Uses monotonic interpolation to prevent cubic-spline overshoot at
+        the sharp nbar(z) boundary, which otherwise creates unphysical
+        pile-ups in the galaxy redshift distribution.
+        """
         self.logNcen_interp = interpax.Interpolator2D(
-            self.z_array.astype(jnp.float32), 
+            self.z_array.astype(jnp.float32),
             jnp.log(self.M_array).astype(jnp.float32),
             jnp.log(self.Ncen_mat + 1e-20).astype(jnp.float32),
-            # nan=-20, posinf=-20, neginf=-20, 
+            method='monotonic',
             extrap=[-20, -20]
         )
         self.logNsat_interp = interpax.Interpolator2D(
-            self.z_array.astype(jnp.float32), 
+            self.z_array.astype(jnp.float32),
             jnp.log(self.M_array).astype(jnp.float32),
             jnp.log(self.Nsat_mat + 1e-20).astype(jnp.float32),
-            # nan=-20, posinf=-20, neginf=-20, 
+            method='monotonic',
             extrap=[-20, -20]
         )
 
@@ -343,8 +349,9 @@ class setup_sim_map(Profiles):
     @partial(jit, static_argnums=(0, 6))
     def _generic_2D_projection(self, jrp, jz, jM, mat_physical, const_factor=1.0, num_trapz_points=32):
         """Generic 2D projection helper"""
-        rp = self.rp_array[jrp]
         zval = self.z_array[jz]
+        # rp = self.rp_array[jrp]/(1 + zval)
+        rp = self.rp_array[jrp]
         r_max = jnp.minimum(jnp.max(self.r_array), rp * 100.0)
         r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(r_max), num_trapz_points))
         
@@ -403,6 +410,7 @@ class setup_sim_map(Profiles):
         """Generic smoothing helper"""
         DA_val = self.DA_array[jz]
         theta_array = self.rp_array / DA_val
+        # theta_array = self.rp_array / (DA_val * (1 + self.z_array[jz]))
 
         theta_array_here = jnp.logspace(-6, jnp.log10(jnp.pi/8), num=100)
         prof_here = jnp.exp(jnp.interp(
@@ -502,7 +510,7 @@ class get_sim_map(Profiles):
             extrap=True
         )
         
-        self.rp_array = self.r_array[2:-2].astype(jnp.float32)
+        # self.rp_array = self.r_array[2:-2].astype(jnp.float32)
         
         # Map parameters
         self.nside_map = mock_params_dict['nside']
@@ -612,41 +620,49 @@ class get_sim_map(Profiles):
             extrap=True
         )
 
+    def _chunked_vmap(self, func, n_total, chunk_size=20_000_000):
+        """Apply a vmapped function in chunks to bound GPU memory usage."""
+        result = np.empty(n_total, dtype=np.float32)
+        jitted_func = jit(vmap(func))
+        for start in range(0, n_total, chunk_size):
+            end = min(start + chunk_size, n_total)
+            chunk_out = jitted_func(jnp.arange(start, end))
+            result[start:end] = np.asarray(chunk_out)
+            del chunk_out
+        return result
+
     def _get_ymap(self):
         """Get Compton-y map"""
         if self.profile_timing: start_time = time.perf_counter()
-        yjpix_all = vmap(self.get_y_healpix)(jnp.arange(len(self.pix_prop_all)))
+        yjpix_all = self._chunked_vmap(self.get_y_healpix, len(self.pix_prop_all))
         self.ymap_final = self._assemble_map(yjpix_all)
-        # self.ymap_final.block_until_ready()
         if self.profile_timing: self.timing_results['ymap_generation_and_assembly'] = time.perf_counter() - start_time
 
     def _get_ne_maps(self, get_kSZmap, get_taumap):
         """Get electron density maps"""
         if get_kSZmap:
             if self.profile_timing: start_time = time.perf_counter()
-            kszjpix_all = vmap(self.get_kSZ_healpix)(jnp.arange(len(self.pix_prop_all)))
+            kszjpix_all = self._chunked_vmap(self.get_kSZ_healpix, len(self.pix_prop_all))
             self.kszmap_final = self._assemble_map(kszjpix_all)
-            # self.kszmap_final.block_until_ready()
             if self.profile_timing: self.timing_results['ksz_map_generation_and_assembly'] = time.perf_counter() - start_time
-        
+
         if get_taumap:
             if self.profile_timing: start_time = time.perf_counter()
-            taujpix_all = vmap(self.get_tau_healpix)(jnp.arange(len(self.pix_prop_all)))
+            taujpix_all = self._chunked_vmap(self.get_tau_healpix, len(self.pix_prop_all))
             self.taumap_final = self._assemble_map(taujpix_all)
-            # self.taumap_final.block_until_ready()
             if self.profile_timing: self.timing_results['tau_map_generation_and_assembly'] = time.perf_counter() - start_time
 
     def _get_kappamap(self):
-        """Get kappa (lensing) map"""        
+        """Get kappa (lensing) map"""
         if self.profile_timing: start_time = time.perf_counter()
-        rhomjpix_all = vmap(self.get_rhom_healpix)(jnp.arange(len(self.pix_prop_all)))
+        rhomjpix_all = self._chunked_vmap(self.get_rhom_healpix, len(self.pix_prop_all))
         self.rhommap_final = self._assemble_map(rhomjpix_all)
         if self.profile_timing: self.timing_results['kappa_map_generation_and_assembly'] = time.perf_counter() - start_time
 
     def _get_kappamap_dmo(self):
-        """Get kappa (lensing) map"""        
+        """Get kappa (lensing) map"""
         if self.profile_timing: start_time = time.perf_counter()
-        rhom_dmo_jpix_all = vmap(self.get_rhom_dmo_healpix)(jnp.arange(len(self.pix_prop_all)))
+        rhom_dmo_jpix_all = self._chunked_vmap(self.get_rhom_dmo_healpix, len(self.pix_prop_all))
         self.rhom_dmo_map_final = self._assemble_map(rhom_dmo_jpix_all)
         if self.profile_timing: self.timing_results['kappa_dmo_map_generation_and_assembly'] = time.perf_counter() - start_time
 
@@ -683,7 +699,7 @@ class get_sim_map(Profiles):
         if self.profile_timing: start_time = time.perf_counter()
         mean_ncen_all, mean_nsat_all = self.Ncen_mat, self.Nsat_mat
         max_mean_nsat = jnp.max(mean_nsat_all)
-        max_gals_per_halo = int(jnp.ceil(max_mean_nsat + 10 * jnp.sqrt(max_mean_nsat))) + 10
+        max_gals_per_halo = int(jnp.ceil(max_mean_nsat + jnp.sqrt(max_mean_nsat))) + 2
         
         NUM_HALOS = len(mock_params_dict['halo_ra'])
         key = PRNGKey(mock_params_dict.get('random_seed', 42))
@@ -761,14 +777,11 @@ class get_sim_map(Profiles):
     @partial(jit, static_argnums=(0,))
     def get_hod_params(self, mass, z):
         """Get HOD parameters for M200c mass definition"""
-        # log_m = jnp.log10(mass)
-        # m_min = 12.0
-        # m1_prime = 13.5
-        # mean_ncen = 0.5 * (1 + jax.scipy.special.erf((log_m - m_min) / 0.2))
-        # mean_nsat = jnp.where(log_m > m_min, mean_ncen * ((mass / (10**m1_prime))**1.0), 0.0)
-        # mean_ncen = jnp.exp(self.logNcen)
         mean_ncen = jnp.nan_to_num(jnp.exp(self.logNcen_interp(z, jnp.log(mass))))
         mean_nsat = jnp.nan_to_num(jnp.exp(self.logNsat_interp(z, jnp.log(mass))))
+        # Clamp to physical range (Ncen ∈ [0,1] by construction of the erf HOD)
+        mean_ncen = jnp.clip(mean_ncen, 0.0, 1.0)
+        mean_nsat = jnp.clip(mean_nsat, 0.0)
 
         return mean_ncen, mean_nsat
 
