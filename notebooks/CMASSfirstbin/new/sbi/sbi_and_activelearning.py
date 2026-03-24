@@ -288,13 +288,35 @@ SCALES = [4.0, 8.0, 16.0, 32.0, 64.0]
 CACHE_DIR = 'sample_vector_cache'
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-
 def extract_moments(path):
+    """
+    Extract summary statistics from a single combined map pickle file.
+
+    Vector layout: 6 statistics per scale. 5 scales = 30 elements total.
+    Within each scale block of 6:
+      idx 0: <ggy>   (3pt cross, y tracer)
+      idx 1: <ggtau>   (3pt cross, tau tracer)
+      idx 2: <ggkappa>   (3pt cross, kappa tracer)
+      idx 3: <gy>    (2pt cross, y tracer)
+      idx 4: <gtau>    (2pt cross, tau tracer)
+      idx 5: <gkappa>    (2pt cross, kappa tracer)
+
+    Scale blocks:
+      Scale 0 (4  arcmin): indices  0-5
+      Scale 1 (8  arcmin): indices  6-11
+      Scale 2 (16 arcmin): indices 12-17
+      Scale 3 (32 arcmin): indices 18-23
+      Scale 4 (64 arcmin): indices 24-29
+    """
     pattern = os.path.join(path, "**", f"allmaps_sim_B12_nside{NSIDE}.pkl")
-    files = glob.glob(pattern, recursive=True)
+    files   = glob.glob(pattern, recursive=True)
 
-    ymap, gmap, kmap, tmap = [np.zeros(12*NSIDE**2, dtype=np.float32) for _ in range(4)]
+    if len(files) == 0:
+        return None
 
+    ymap, gmap, kmap, tmap = [
+        np.zeros(12 * NSIDE**2, dtype=np.float32) for _ in range(4)
+    ]
     LMAX = 3 * NSIDE - 1
 
     for f in files:
@@ -307,28 +329,40 @@ def extract_moments(path):
             for chunk_idx in mock_gals_dict:
                 gal_data = mock_gals_dict[chunk_idx]
                 if gal_data.size > 0:
-                    pix = hp.ang2pix(NSIDE, gal_data[:,0], gal_data[:,1], lonlat=True)
-                    gmap += np.bincount(pix, minlength=12*NSIDE**2)
+                    ra_gal  = gal_data[:, 0] % 360.0
+                    dec_gal = np.clip(gal_data[:, 1], -90.0, 90.0)
+                    n_bad   = np.sum(~np.isfinite(ra_gal) | ~np.isfinite(dec_gal))
+                    if n_bad > 0:
+                        mask    = np.isfinite(ra_gal) & np.isfinite(dec_gal)
+                        ra_gal  = ra_gal[mask]
+                        dec_gal = dec_gal[mask]
+                    if len(ra_gal) > 0:
+                        pix   = hp.ang2pix(NSIDE, ra_gal, dec_gal, lonlat=True)
+                        gmap += np.bincount(pix, minlength=12 * NSIDE**2)
 
     dg = (gmap / np.mean(gmap) - 1.0) if np.mean(gmap) > 0 else np.zeros_like(gmap)
+
     vec = []
     for th in SCALES:
-        f = np.radians(th/60.)
-        gs = hp.smoothing(dg, fwhm=f, lmax=LMAX, verbose=False)
-        ys = hp.smoothing(ymap, fwhm=f, lmax=LMAX, verbose=False)
-        ts = hp.smoothing(tmap, fwhm=f, lmax=LMAX, verbose=False)
-        ks = hp.smoothing(kmap, fwhm=f, lmax=LMAX, verbose=False)
-        # 3-point
-        vec.extend([np.mean(gs**2 * ys), np.mean(gs**2 * ts), np.mean(gs**2 * ks)])
-        # 2-point
-        vec.extend([np.mean(gs * ys), np.mean(gs * ts), np.mean(gs * ks)])
-        
-    return np.array(vec)
+        fwhm = np.radians(th / 60.)
+        gs   = hp.smoothing(dg,   fwhm=fwhm, lmax=LMAX, verbose=False)
+        ys   = hp.smoothing(ymap, fwhm=fwhm, lmax=LMAX, verbose=False)
+        ts   = hp.smoothing(tmap, fwhm=fwhm, lmax=LMAX, verbose=False)
+        ks   = hp.smoothing(kmap, fwhm=fwhm, lmax=LMAX, verbose=False)
+
+        vec.extend([np.mean(gs**2 * ys),
+                    np.mean(gs**2 * ts),
+                    np.mean(gs**2 * ks)])
+        vec.extend([np.mean(gs * ys),
+                    np.mean(gs * ts),
+                    np.mean(gs * ks)])
+
+    return np.array(vec, dtype=np.float32)   # length 30
 
 print("Extracting reference run...")
 x_obs = extract_moments(os.path.join(BASE_DIR, 'reference_run')).astype(np.float32)
 np.save('x_obs.npy', x_obs)
-print(f"  x_obs shape: {x_obs.shape}")   # should be (45,)
+print(f"  x_obs shape: {x_obs.shape}")   # should be (30,)
 
 theta_train, x_train = [], []
 
@@ -371,14 +405,28 @@ print(f"Loaded {len(theta_train)} simulations. "
 # 2. LTU-ILI TRAINING LOOP
 # =============================================================================
 stat_map = {
-   'g2y': [0, 3, 6, 9, 12], 'g2tau': [1, 4, 7, 10, 13], 'g2kappa': [2, 5, 8, 11, 14],
-    'gy': [15, 18, 21, 24, 27], 'gtau': [16, 19, 22, 25, 28], 'gkappa': [17, 20, 23, 26, 29],
-    'JOINT': list(range(30)),
-    'y_total': [0, 3, 6, 9, 12, 15, 18, 21, 24, 27],
-    'tau_total': [1, 4, 7, 10, 13, 16, 19, 22, 25, 28],
-    'kappa_total': [2, 5, 8, 11, 14, 17, 20, 23, 26, 29],
-    'all_3pt': list(range(0, 15)), 'all_2pt': list(range(15, 30)),
-    }
+    # --- Individual 3pt cross-moments ---
+    'g2y':         [0,  6,  12, 18, 24],
+    'g2tau':       [1,  7,  13, 19, 25],
+    'g2kappa':     [2,  8,  14, 20, 26],
+
+    # --- Individual 2pt cross-moments ---
+    'gy':          [3,  9,  15, 21, 27],
+    'gtau':        [4,  10, 16, 22, 28],
+    'gkappa':      [5,  11, 17, 23, 29],
+
+    # --- Full joint ---
+    'JOINT':       list(range(30)),
+
+    # --- Per-tracer totals (3pt + 2pt) ---
+    'y_total':     [0,  3,  6,  9,  12, 15, 18, 21, 24, 27],
+    'tau_total':   [1,  4,  7,  10, 13, 16, 19, 22, 25, 28],
+    'kappa_total': [2,  5,  8,  11, 14, 17, 20, 23, 26, 29],
+
+    # --- Category totals ---
+    'all_3pt':     [0,  1,  2,  6,  7,  8,  12, 13, 14, 18, 19, 20, 24, 25, 26],
+    'all_2pt':     [3,  4,  5,  9,  10, 11, 15, 16, 17, 21, 22, 23, 27, 28, 29],
+}
 
 np.random.seed(42)
 all_indices = np.arange(len(theta_train))
@@ -431,7 +479,7 @@ for name, idx in stat_map.items():
 
     # Architecture scales with input dimension and sample-to-statistic ratio.
     # NSF uses LU decomposition which becomes singular at low ratio. Use MAF only
-    # until ratio >= 5, which for JOINT (45 stats) requires ~225 training samples.
+    # until ratio >= 5, which for JOINT (30 stats) requires ~150 training samples.
     hfs = 64 if n_stats >= 10 else 32
     nts = 4  if n_stats >= 10 else 3
 
@@ -462,7 +510,7 @@ for name, idx in stat_map.items():
 
     runner = InferenceRunner.load(
         backend='sbi', engine='NPE',
-        prior=Uniform(low=[1.0, 0.01], high=[6.0, 1.5]),
+        prior=Uniform(low=[1.0, -0.3], high=[6.0, 0.0]),
         nets=nets,
         out_dir=Path(f'./sbi_logs_{name}')
     )
