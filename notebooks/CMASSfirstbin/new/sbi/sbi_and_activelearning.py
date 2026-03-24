@@ -277,7 +277,7 @@ def run_validation_direct(name, posterior, xt_val, theta_val, labels, val_dir,
 BASE_DIR = '/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin/new'
 CSV_FILES = [
     '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/lhs_samples.csv',
-#    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/twoparams/round2_samples.csv',
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round2_samples.csv',
 ]
 NEXT_ROUND = int(len(CSV_FILES) + 1)
 print(f"The next round of samples to be run will be round {NEXT_ROUND}")
@@ -441,30 +441,31 @@ theta_train_set = theta_train[train_idx]
 print(f"Train/val split: {len(train_idx)} train, {n_val} val")
 
 VALIDATE_DURING_LOOP = {'JOINT'}
-VALIDATE_POST_HOC    = set(stat_map.keys()) - VALIDATE_DURING_LOOP
-
 labels = [r'$\theta_{ej,0}$', r'${\nu_{\theta_{ej}}}^{M}$']
 
 for name, idx in stat_map.items():
-    print(f"\n--- Training NPE: {name}  ({len(idx)} statistics) ---")
+    n_stats = len(idx)
+    n_train = len(theta_train_set)
+    ratio   = n_train / n_stats
+
+    print(f"\n--- Training NPE: {name}  ({n_stats} statistics, ratio={ratio:.1f}) ---")
 
     xt_full  = x_train[:, idx]
     xt_train = xt_full[train_idx]
     xt_val_s = xt_full[val_idx]
     xo       = x_obs[idx]
 
-    # Standardise using training set statistics only
     x_mean   = np.mean(xt_train, axis=0)
     x_std    = np.std(xt_train,  axis=0)
     xt_train = (xt_train - x_mean) / (x_std + 1e-8)
     xt_val_s = (xt_val_s - x_mean) / (x_std + 1e-8)
     xo       = (xo       - x_mean) / (x_std + 1e-8)
 
-    np.save(f'scaler_{name}_mean.npy',  x_mean)
-    np.save(f'scaler_{name}_std.npy',   x_std)
-    np.save(f'x_{name}.npy',            xt_train)
-    np.save(f'xobs_{name}.npy',         xo)
-    np.save(f'theta_train_{name}.npy',  theta_train_set)
+    np.save(f'scaler_{name}_mean.npy', x_mean)
+    np.save(f'scaler_{name}_std.npy',  x_std)
+    np.save(f'x_{name}.npy',           xt_train)
+    np.save(f'xobs_{name}.npy',        xo)
+    np.save(f'theta_train_{name}.npy', theta_train_set)
 
     loader = StaticNumpyLoader(
         in_dir='./',
@@ -473,19 +474,37 @@ for name, idx in stat_map.items():
         xobs_file=f'xobs_{name}.npy'
     )
 
-    n_stats = len(idx)
-    n_train = len(theta_train_set)
-    ratio   = n_train / n_stats
+    # --- Adaptive ensemble size ---
+    # With large ratio, fewer members are needed: ensemble uncertainty scales as
+    # 1/sqrt(n_members), and at ratio=80 even 3 members give stable posteriors.
+    # Reserve 8 members for JOINT where the flow is hardest and ratio is lowest.
+    if n_stats <= 5:
+        repeats = 4   # ratio~80: 4 members, flow trivially well-determined
+    elif n_stats <= 10:
+        repeats = 5   # ratio~40: 5 members sufficient
+    elif n_stats <= 15:
+        repeats = 6   # ratio~27: 6 members
+    else:
+        repeats = 8   # JOINT (ratio~13): full ensemble needed
 
-    # Architecture scales with input dimension and sample-to-statistic ratio.
-    # NSF uses LU decomposition which becomes singular at low ratio. Use MAF only
-    # until ratio >= 5, which for JOINT (30 stats) requires ~150 training samples.
-    hfs = 64 if n_stats >= 10 else 32
-    nts = 4  if n_stats >= 10 else 3
+    kappa_stats = {'g2kappa', 'gkappa', 'kappa_total'}
+    if name in kappa_stats and n_stats <= 10:
+        repeats = 8   # instead of 4 or 5 as kappa signal is weaker so ensemble matters more
+    
+    # --- Adaptive network size ---
+    # At high ratio the posterior is easy to learn; small networks converge faster
+    # and are less prone to overfitting. Scale both width and depth with n_stats.
+    if n_stats <= 5:
+        hfs = 16
+        nts = 2
+    elif n_stats <= 15:
+        hfs = 32
+        nts = 3
+    else:
+        hfs = 64
+        nts = 4
 
-    # Empirical rule: NSF needs ratio >= 8 for n_stats <= 10,
-    #                              >= 12 for n_stats 10-20,
-    #                              >= 20 for n_stats > 20
+    # --- NSF threshold ---
     if n_stats <= 5:
         nsf_threshold = 8
     elif n_stats <= 15:
@@ -493,20 +512,30 @@ for name, idx in stat_map.items():
     elif n_stats <= 30:
         nsf_threshold = 20
     else:
-        nsf_threshold = 999   # JOINT and large combos: MAF only until very late
+        nsf_threshold = 999
 
     if ratio < nsf_threshold:
-        print(f"  [ARCH] MAF-only "
-              f"(ratio={ratio:.1f} < {nsf_threshold} for n_stats={n_stats})")
-        nets = load_nde_sbi(engine='NPE', model='maf', repeats=8,hidden_features=hfs, num_transforms=nts)
+        print(f"  [ARCH] MAF-only  "
+              f"(ratio={ratio:.1f} < {nsf_threshold}, "
+              f"repeats={repeats}, hfs={hfs}, nts={nts})")
+        nets = load_nde_sbi(
+            engine='NPE', model='maf',
+            repeats=repeats, hidden_features=hfs, num_transforms=nts
+        )
     else:
-        print(f"  [ARCH] NSF+MAF "
-              f"(ratio={ratio:.1f} >= {nsf_threshold} for n_stats={n_stats})")
+        # For NSF+MAF: use 1 NSF per 3 MAF to keep NSF from dominating
+        n_nsf = max(1, repeats // 4)
+        n_maf = repeats - n_nsf
+        print(f"  [ARCH] NSF+MAF   "
+              f"(ratio={ratio:.1f} >= {nsf_threshold}, "
+              f"repeats={repeats} [{n_nsf} NSF + {n_maf} MAF], "
+              f"hfs={hfs}, nts={nts})")
         nets = (
-        load_nde_sbi(engine='NPE', model='nsf', repeats=2,
-                     hidden_features=hfs, num_transforms=nts)
-        + load_nde_sbi(engine='NPE', model='maf', repeats=6,
-                       hidden_features=hfs, num_transforms=nts))
+            load_nde_sbi(engine='NPE', model='nsf', repeats=n_nsf,
+                         hidden_features=hfs, num_transforms=nts)
+            + load_nde_sbi(engine='NPE', model='maf', repeats=n_maf,
+                           hidden_features=hfs, num_transforms=nts)
+        )
 
     runner = InferenceRunner.load(
         backend='sbi', engine='NPE',
@@ -540,15 +569,18 @@ for name, idx in stat_map.items():
 # =============================================================================
 # 3. NEXT ROUND PROPOSAL (Next 200 Samples)
 # =============================================================================
-with open('ili_posterior_JOINT.pkl', 'rb') as f:
-    joint_posterior = pk.load(f)
+with open('ili_posterior_gtau.pkl', 'rb') as f:
+    #joint_posterior = pk.load(f)
+    gtau_posterior = pk.load(f)
 
 # Reuse the normalised xobs saved during training
-xo_joint_norm = np.load('xobs_JOINT.npy')
+#xo_joint_norm = np.load('xobs_JOINT.npy')
+xo_gtau_norm = np.load('xobs_gtau.npy')
 
 # Use per-member direct sampling to avoid EnsemblePosterior rejection hang
 print("\nGenerating next round proposals via direct ensemble sampling...")
-next_theta = sample_ensemble_direct(joint_posterior, xo_joint_norm, n_samples=200)
+#next_theta = sample_ensemble_direct(joint_posterior, xo_joint_norm, n_samples=200)
+next_theta = sample_ensemble_direct(gtau_posterior, xo_gtau_norm, n_samples=200)
 
 if next_theta is None:
     raise RuntimeError(
