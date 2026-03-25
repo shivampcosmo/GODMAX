@@ -278,6 +278,7 @@ BASE_DIR = '/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirst
 CSV_FILES = [
     '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/lhs_samples.csv',
     '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round2_samples.csv',
+    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round3_samples.csv',
 ]
 NEXT_ROUND = int(len(CSV_FILES) + 1)
 print(f"The next round of samples to be run will be round {NEXT_ROUND}")
@@ -323,7 +324,7 @@ def extract_moments(path):
         with open(f, 'rb') as h:
             data = pk.load(h)
             ymap += np.nan_to_num(data.get('map_ymap', 0))
-            kmap += np.nan_to_num(data.get('map_kappa', 0))
+            kmap += np.nan_to_num(data.get('map_rhom', 0))
             tmap += np.nan_to_num(data.get('map_tau', 0))
             mock_gals_dict = data.get('mock_gals_all', {})
             for chunk_idx in mock_gals_dict:
@@ -489,7 +490,7 @@ for name, idx in stat_map.items():
 
     kappa_stats = {'g2kappa', 'gkappa', 'kappa_total'}
     if name in kappa_stats and n_stats <= 10:
-        repeats = 8   # instead of 4 or 5 as kappa signal is weaker so ensemble matters more
+        repeats = 6   # instead of 4 or 5 as kappa signal is weaker so ensemble matters more
     
     # --- Adaptive network size ---
     # At high ratio the posterior is easy to learn; small networks converge faster
