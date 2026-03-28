@@ -2,7 +2,7 @@
 #SBATCH --account=bdne-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
-#SBATCH --time=01:00:00
+#SBATCH --time=00:20:00
 #SBATCH --gpus=1
 #SBATCH --mem=400G
 #SBATCH --output=/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/run_scripts/logs/ref_%j.out

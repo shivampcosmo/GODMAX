@@ -100,7 +100,7 @@ from paste_backlight_utils import (
     update_nz_from_mock_catalog, measure_hod_from_catalog,
     compute_shot_noise_Cl, compute_Cl_ratio_in_bands,
     compare_sim_vs_theory_hmf, compute_Cl_gg_1h_2h, 
-    compute_hod_shot_noise_Cl, print_diagnostic_summary
+    compute_hod_shot_noise_Cl, print_diagnostic_summary,compute_kappa_map
 )
 
 paths = get_project_paths()
@@ -169,7 +169,7 @@ halo_params_dict_copy.update({
 })
 
 mock_params_dict_setup = {
-    "nside": args.nside,
+    "nside": args.nside,"get_baryonifiedmap": True,
     "get_ymap": True, "get_kSZmap": True, "get_taumap": True,
     "get_kappamap": True, "get_galmap": True, "smooth_profiles": True,
 }
@@ -217,12 +217,42 @@ print(f"Number of halos: {len(M200c_all)}")
 print(f"log10(M200c) --> min: {np.log10(M200c_all).min():.2f}, mean: {np.log10(M200c_all).mean():.2f}, max: {np.log10(M200c_all).max():.2f}")
 print(f"Mean z: {z_all.mean():.2f}")
 
-# The notebook wraps the entire painting loop in this single call
-saved_data = generate_maps(
-    ra_all, dec_all, z_all, M200c_all, vlos_all,
+# The notebook wraps the entire painting loop in these calls
+# Step 1: generate halo-painted maps — save_path=None until kappa is appended
+saved_data = generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
     Prof_test, mock_params_dict_setup, args.nside,
-    sim_params_dict, halo_params_dict, analysis_dict, other_params_dict,
-    save_path=save_map_fname, profile_timing=PROFILE_TIMING
-)
+    sim_params_dict, halo_params_dict_copy, analysis_dict, other_params_dict,
+    save_path=None,profile_timing=PROFILE_TIMING,)
+
+# Step 2: compute kappa from N-body sheets + baryonic halo correction
+rho_m     = Prof_test.get_rho_m(0.0)
+part_mass = float((rho_m * 1000.0**3) / 2048.0**3)
+chi_CMB = float(bkgrd.radial_comoving_distance(Prof_test.cosmo_jax, 1.0 / (1.0 + 1089.0))[0])
+sim_file_path = '/work/hdd/bdne/spandey3/backlight/fiducial/100'
+zlist         = np.loadtxt(f'{sim_file_path}/zlist.txt')
+snap_num_all  = zlist[:, 0].astype(int)
+zval_all      = zlist[:, 1]
+
+map_kappa = compute_kappa_map(
+    sim_file_path     = sim_file_path,
+    snap_num_all      = snap_num_all,
+    zval_all          = zval_all,
+    zmin              = gal_zmin,
+    zmax              = gal_zmax,
+    Prof_test         = Prof_test,
+    nside             = args.nside,
+    part_mass         = part_mass,
+    chi_CMB           = chi_CMB,
+    cosmo_params_dict = {'Om0': 0.3175},
+    map_rhom_dmb      = saved_data['map_rhom_dmb'],
+    map_rhom_dmo      = saved_data['map_rhom_dmo'],
+    dmo_cache_path    = f'{sdir}/map_kappa_dmo.npy',
+    weight_cache_path = f'{sdir}/weight_eff_kappa.npy',)
+
+# Step 3: insert kappa and write the final pkl
+saved_data['map_kappa'] = map_kappa
+with open(save_map_fname, 'wb') as f:
+    pk.dump(saved_data, f)
+print(f"Saved to {save_map_fname} with keys: {list(saved_data.keys())}")
 
 print("\nMap generation successfully completed.")

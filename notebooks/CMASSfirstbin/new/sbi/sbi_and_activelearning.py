@@ -277,8 +277,8 @@ def run_validation_direct(name, posterior, xt_val, theta_val, labels, val_dir,
 BASE_DIR = '/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin/new'
 CSV_FILES = [
     '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/lhs_samples.csv',
-    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round2_samples.csv',
-    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round3_samples.csv',
+#    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round2_samples.csv',
+#    '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round3_samples.csv',
 ]
 NEXT_ROUND = int(len(CSV_FILES) + 1)
 print(f"The next round of samples to be run will be round {NEXT_ROUND}")
@@ -324,7 +324,7 @@ def extract_moments(path):
         with open(f, 'rb') as h:
             data = pk.load(h)
             ymap += np.nan_to_num(data.get('map_ymap', 0))
-            kmap += np.nan_to_num(data.get('map_rhom', 0))
+            kmap += np.nan_to_num(data.get('map_kappa', 0))
             tmap += np.nan_to_num(data.get('map_tau', 0))
             mock_gals_dict = data.get('mock_gals_all', {})
             for chunk_idx in mock_gals_dict:
@@ -480,17 +480,17 @@ for name, idx in stat_map.items():
     # 1/sqrt(n_members), and at ratio=80 even 3 members give stable posteriors.
     # Reserve 8 members for JOINT where the flow is hardest and ratio is lowest.
     if n_stats <= 5:
-        repeats = 4   # ratio~80: 4 members, flow trivially well-determined
+        repeats = 3   # ratio~80: 3 members, flow trivially well-determined
     elif n_stats <= 10:
-        repeats = 5   # ratio~40: 5 members sufficient
+        repeats = 4   # ratio~40: 4 members sufficient
     elif n_stats <= 15:
         repeats = 6   # ratio~27: 6 members
     else:
         repeats = 8   # JOINT (ratio~13): full ensemble needed
 
-    kappa_stats = {'g2kappa', 'gkappa', 'kappa_total'}
-    if name in kappa_stats and n_stats <= 10:
-        repeats = 6   # instead of 4 or 5 as kappa signal is weaker so ensemble matters more
+    #kappa_stats = {'g2kappa', 'gkappa', 'kappa_total'}
+    #if name in kappa_stats and n_stats <= 10:
+    #    repeats = 6   # instead of 4 or 5 as kappa signal is weaker so ensemble matters more
     
     # --- Adaptive network size ---
     # At high ratio the posterior is easy to learn; small networks converge faster
@@ -524,8 +524,8 @@ for name, idx in stat_map.items():
             repeats=repeats, hidden_features=hfs, num_transforms=nts
         )
     else:
-        # For NSF+MAF: use 1 NSF per 3 MAF to keep NSF from dominating
-        n_nsf = max(1, repeats // 4)
+        # For NSF+MAF: use 1 NSF per 2 MAF to keep NSF from dominating
+        n_nsf = max(1, repeats // 3)
         n_maf = repeats - n_nsf
         print(f"  [ARCH] NSF+MAF   "
               f"(ratio={ratio:.1f} >= {nsf_threshold}, "
