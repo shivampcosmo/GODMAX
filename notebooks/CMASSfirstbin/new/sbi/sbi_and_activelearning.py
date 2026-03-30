@@ -17,6 +17,8 @@ from ili.dataloaders import StaticNumpyLoader
 from ili.inference import InferenceRunner
 from ili.utils import load_nde_sbi, Uniform
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print('Device:', device)
 # =============================================================================
 # 0. VALIDATION CODE (Without using PosteriorCoverage as it can crash)
 # =============================================================================
@@ -341,7 +343,12 @@ def extract_moments(path):
                         pix   = hp.ang2pix(NSIDE, ra_gal, dec_gal, lonlat=True)
                         gmap += np.bincount(pix, minlength=12 * NSIDE**2)
 
-    dg = (gmap / np.mean(gmap) - 1.0) if np.mean(gmap) > 0 else np.zeros_like(gmap)
+    # Build footprint mask from galaxy map --> pixels where the lightcone
+    # has coverage. Use the unsmoothed gmap before delta_g conversion.
+    footprint = gmap > 0   # True for pixels inside the lightcone
+
+    dg = (gmap / np.mean(gmap[footprint]) - 1.0) if np.mean(gmap[footprint]) > 0 \
+         else np.zeros_like(gmap)
 
     vec = []
     for th in SCALES:
@@ -351,12 +358,13 @@ def extract_moments(path):
         ts   = hp.smoothing(tmap, fwhm=fwhm, lmax=LMAX, verbose=False)
         ks   = hp.smoothing(kmap, fwhm=fwhm, lmax=LMAX, verbose=False)
 
-        vec.extend([np.mean(gs**2 * ys),
-                    np.mean(gs**2 * ts),
-                    np.mean(gs**2 * ks)])
-        vec.extend([np.mean(gs * ys),
-                    np.mean(gs * ts),
-                    np.mean(gs * ks)])
+        # Restrict mean to footprint pixels only
+        vec.extend([np.mean((gs**2 * ys)[footprint]),
+                    np.mean((gs**2 * ts)[footprint]),
+                    np.mean((gs**2 * ks)[footprint])])
+        vec.extend([np.mean((gs * ys)[footprint]),
+                    np.mean((gs * ts)[footprint]),
+                    np.mean((gs * ks)[footprint])])
 
     return np.array(vec, dtype=np.float32)   # length 30
 
@@ -476,25 +484,21 @@ for name, idx in stat_map.items():
     )
 
     # --- Adaptive ensemble size ---
-    # With large ratio, fewer members are needed: ensemble uncertainty scales as
-    # 1/sqrt(n_members), and at ratio=80 even 3 members give stable posteriors.
-    # Reserve 8 members for JOINT where the flow is hardest and ratio is lowest.
+    # Ensemble uncertainty scales as 1/sqrt(n_members). At high ratio the
+    # flow is easy to learn and fewer members suffice. JOINT has the lowest
+    # ratio and benefits most from a full ensemble.
     if n_stats <= 5:
-        repeats = 3   # ratio~80: 3 members, flow trivially well-determined
+        repeats = 3
     elif n_stats <= 10:
-        repeats = 4   # ratio~40: 4 members sufficient
+        repeats = 4
     elif n_stats <= 15:
-        repeats = 6   # ratio~27: 6 members
+        repeats = 6
     else:
-        repeats = 8   # JOINT (ratio~13): full ensemble needed
+        repeats = 8
 
-    #kappa_stats = {'g2kappa', 'gkappa', 'kappa_total'}
-    #if name in kappa_stats and n_stats <= 10:
-    #    repeats = 6   # instead of 4 or 5 as kappa signal is weaker so ensemble matters more
-    
     # --- Adaptive network size ---
-    # At high ratio the posterior is easy to learn; small networks converge faster
-    # and are less prone to overfitting. Scale both width and depth with n_stats.
+    # At high ratio, small networks converge faster and overfit less.
+    # Scale width and depth with the number of statistics.
     if n_stats <= 5:
         hfs = 16
         nts = 2
@@ -515,16 +519,44 @@ for name, idx in stat_map.items():
     else:
         nsf_threshold = 999
 
+    # --- Adaptive batch size ---
+    # sbi default of 50 is too small for n_train ~ 400.
+    # Target ~12% of the effective training data (after sbi's internal
+    # validation_fraction=0.1 split), capped at 256.
+    n_train_effective = int(n_train * 0.9)
+    batch_size = int(np.clip(n_train_effective // 8, 32, 256))
+
+    # --- Training arguments ---
+    # stop_after_epochs=40 gives more patience than the sbi default of 20,
+    # which is important for JOINT where the loss surface is harder.
+    # z_score_x='none' because xt_train is already manually normalized above;
+    # passing it through sbi's internal z-scorer again is redundant and wastes
+    # one affine layer. z_score_theta='independent' is kept so the prior is
+    # properly handled internally.
+    train_args = {
+        'training_batch_size': batch_size,
+        'learning_rate':       5e-4,
+        'max_num_epochs':      500,
+        'stop_after_epochs':   40,
+        'clip_max_norm':       5.0,
+        'validation_fraction': 0.1,
+    }
+
+    print(f"  [TRAIN] device={device}, batch_size={batch_size}, "
+          f"stop_after={train_args['stop_after_epochs']}, "
+          f"n_train_effective={n_train_effective}")
+
     if ratio < nsf_threshold:
         print(f"  [ARCH] MAF-only  "
               f"(ratio={ratio:.1f} < {nsf_threshold}, "
               f"repeats={repeats}, hfs={hfs}, nts={nts})")
         nets = load_nde_sbi(
             engine='NPE', model='maf',
-            repeats=repeats, hidden_features=hfs, num_transforms=nts
+            repeats=repeats, hidden_features=hfs, num_transforms=nts,
+            z_score_x='none',
+            z_score_theta='independent',
         )
     else:
-        # For NSF+MAF: use 1 NSF per 2 MAF to keep NSF from dominating
         n_nsf = max(1, repeats // 3)
         n_maf = repeats - n_nsf
         print(f"  [ARCH] NSF+MAF   "
@@ -532,17 +564,25 @@ for name, idx in stat_map.items():
               f"repeats={repeats} [{n_nsf} NSF + {n_maf} MAF], "
               f"hfs={hfs}, nts={nts})")
         nets = (
-            load_nde_sbi(engine='NPE', model='nsf', repeats=n_nsf,
-                         hidden_features=hfs, num_transforms=nts)
-            + load_nde_sbi(engine='NPE', model='maf', repeats=n_maf,
-                           hidden_features=hfs, num_transforms=nts)
+            load_nde_sbi(
+                engine='NPE', model='nsf', repeats=n_nsf,
+                hidden_features=hfs, num_transforms=nts,
+                z_score_x='none', z_score_theta='independent',
+            )
+            + load_nde_sbi(
+                engine='NPE', model='maf', repeats=n_maf,
+                hidden_features=hfs, num_transforms=nts,
+                z_score_x='none', z_score_theta='independent',
+            )
         )
 
     runner = InferenceRunner.load(
         backend='sbi', engine='NPE',
         prior=Uniform(low=[1.0, -0.3], high=[6.0, 0.0]),
         nets=nets,
-        out_dir=Path(f'./sbi_logs_{name}')
+        out_dir=Path(f'./sbi_logs_{name}'),
+        device=device,
+        train_args=train_args,
     )
     posterior, _ = runner(loader)
 
@@ -550,7 +590,8 @@ for name, idx in stat_map.items():
         pk.dump(posterior, f)
 
     if name not in VALIDATE_DURING_LOOP:
-        print(f"  [SKIP] Validation deferred for {name}. Run post-hoc after all rounds.")
+        print(f"  [SKIP] Validation deferred for {name}. "
+              f"Run post-hoc after all rounds.")
         continue
     '''
     # --- JOINT validation only during active learning ---
