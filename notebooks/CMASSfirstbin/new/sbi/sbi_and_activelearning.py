@@ -27,6 +27,8 @@ from ili.utils import load_nde_sbi, Uniform
 BASE_DIR  = '/work/hdd/bdne/aacharya2/GODMAX/results/backlight_pkdgrav/CMASSfirstbin/new'
 WORK_DIR  = str(Path(__file__).parent.resolve())
 CACHE_DIR = os.path.join(WORK_DIR, 'sample_vector_cache')
+VALIDATION_CSV = '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/validation_samples.csv'
+VAL_CACHE_DIR  = os.path.join(WORK_DIR, 'validation_vector_cache')
 
 def set_seeds(seed=42):
     random.seed(seed)
@@ -39,7 +41,7 @@ set_seeds(420)
 CSV_FILES = [
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/lhs_samples.csv', 0),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round2_samples.csv', 500),
-#   ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round3_samples.csv', 700),
+    ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round3_samples.csv', 700),
 ]
 NEXT_ROUND = len(CSV_FILES) + 1
 
@@ -51,8 +53,7 @@ PARAM_LABELS = [r'$\theta_{ej,0}$', r'${\nu_{\theta_{ej}}}^{M}$']
 PARAM_NAMES  = ['theta_ej_0', 'nu_theta_ej_M']
 PROPOSAL_STAT           = 'gtau'
 FULL_VALIDATE_THRESHOLD = 100
-VALIDATION_SEED         = 99
-VAL_FRACTION            = 0.15
+VAL_FRACTION = 0.15
 
 STAT_MAP = {
     # Individual 3pt cross-moments
@@ -458,21 +459,49 @@ if __name__ == '__main__':
               f'range=[{col.min():.3f}, {col.max():.3f}]')
     
     # =========================================================================
-    # POST-HOC VALIDATION
+    # POST-HOC VALIDATION — 50 fresh LHS samples, never seen during training
     # =========================================================================
-    # NOTE: val_idx is drawn from training data — no reserved test set at 500
-    # sims. Coverage plots are approximate, not strictly frequentist. VAL_FRACTION
-    # matches validation_fraction in train_args so the split is consistent.
-    '''
-    if len(theta_train) >= FULL_VALIDATE_THRESHOLD:
-        print('\nRunning post-hoc validation for all statistics...')
+    print('\nLoading held-out validation set (validation_0 to validation_49)...')
+    os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
-        rng     = np.random.default_rng(VALIDATION_SEED)
-        n_val   = max(10, int(len(theta_train) * VAL_FRACTION))
-        val_idx = rng.choice(len(theta_train), size=n_val, replace=False)
-        theta_val = theta_train[val_idx]
-        print(f'  Validation set: {n_val} points (seed={VALIDATION_SEED})')
+    val_df     = pd.read_csv(VALIDATION_CSV)
+    theta_val  = val_df[PARAM_NAMES].values.astype(np.float32)
+    x_val_list = []
+    missing_val = []
 
+    for i, row in val_df.iterrows():
+        sid        = int(row['sample_id'])
+        cache_file = os.path.join(VAL_CACHE_DIR, f'x_validation_{sid}.npy')
+        if os.path.exists(cache_file):
+            v = np.load(cache_file)
+        else:
+            v = extract_moments(os.path.join(BASE_DIR, f'validation_{sid}'))
+            if v is not None:
+                np.save(cache_file, v)
+        if v is not None:
+            x_val_list.append(v)
+        else:
+            missing_val.append(sid)
+            print(f'  [WARN] No data found for validation_{sid}, skipping.')
+
+    if missing_val:
+        # Drop corresponding theta rows so x and theta stay aligned
+        keep = [i for i in range(len(theta_val))
+                if int(val_df.iloc[i]['sample_id']) not in missing_val]
+        theta_val = theta_val[keep]
+
+    x_val_full = np.array(x_val_list, dtype=np.float32)
+    print(f'  Validation set: {len(theta_val)} points, '
+          f'x_val: {x_val_full.shape}, theta_val: {theta_val.shape}')
+
+    # Save for Optuna and standalone use
+    np.save(os.path.join(WORK_DIR, 'x_val_full.npy'),    x_val_full)
+    np.save(os.path.join(WORK_DIR, 'theta_val_full.npy'), theta_val)
+    print('  Saved x_val_full.npy and theta_val_full.npy')
+
+    if len(theta_val) < 10:
+        print('[SKIP] Fewer than 10 valid validation points, skipping validation.')
+    else:
         val_ok, val_failed = [], []
 
         for name, idx in STAT_MAP.items():
@@ -487,7 +516,7 @@ if __name__ == '__main__':
 
             x_mean = np.load(os.path.join(WORK_DIR, f'scaler_{name}_mean.npy'))
             x_std  = np.load(os.path.join(WORK_DIR, f'scaler_{name}_std.npy'))
-            xt_val = ((x_train[val_idx][:, idx] - x_mean)
+            xt_val = ((x_val_full[:, idx] - x_mean)
                       / (x_std + 1e-8)).astype(np.float32)
 
             val_dir = Path(WORK_DIR) / f'validation_{name}'
@@ -501,10 +530,6 @@ if __name__ == '__main__':
                 theta_file='theta_val.npy',
             )
 
-            # Try direct sampling first (no rejection sampling, fast).
-            # Falls back to emcee if any ensemble member is not a
-            # DirectPosterior — most likely to happen for JOINT which
-            # contains MAF members alongside NSF members.
             success = False
             for method in ('direct', 'emcee'):
                 try:
@@ -544,9 +569,5 @@ if __name__ == '__main__':
         if val_failed:
             print(f'  Failed: {val_failed}')
 
-    else:
-        remaining = FULL_VALIDATE_THRESHOLD - len(theta_train)
-        print(f'\n[SKIP] Validation deferred — need {remaining} more sims '
-              f'({len(theta_train)}/{FULL_VALIDATE_THRESHOLD}).')
-    '''
     print('\nAll done. Generate contour plots and run the next round of samples!')
+
