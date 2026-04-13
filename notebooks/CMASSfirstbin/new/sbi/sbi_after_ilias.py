@@ -381,7 +381,12 @@ def train_one_statistic(args):
                       'clip_max_norm':       5.0,
                       'validation_fraction': VAL_FRACTION,}
         
-        if n_stats <= 20:
+        nets = load_nde_sbi(
+                engine='NPE', model='nsf',
+                repeats=repeats, hidden_features=hfs, num_transforms=nts,)
+        arch_str = (f'NSF pure (n_stats={n_stats}, ratio={ratio:.1f}, '
+                    f'repeats={repeats}, hfs={hfs}, nts={nts})')
+        '''if n_stats <= 20:
             nets = load_nde_sbi(
                 engine='NPE', model='nsf',
                 repeats=repeats, hidden_features=hfs, num_transforms=nts,
@@ -400,7 +405,7 @@ def train_one_statistic(args):
             arch_str = (f'NSF+MAF (ratio={ratio:.1f}, '
                         f'{n_nsf} NSF + {n_maf} MAF, '
                         f'hfs={hfs}, nts={nts})')
-
+        '''
         runner = InferenceRunner.load(
             backend='sbi', engine='NPE',
             prior=BoxUniform(low=torch.tensor(PRIOR_LOW, dtype=torch.float32, device=device),
@@ -474,9 +479,9 @@ if __name__ == '__main__':
     # =========================================================================
     # PARALLEL TRAINING
     # =========================================================================
-    n_cpus = min(N_STATISTICS, int(os.environ.get('SLURM_CPUS_PER_TASK', 1)))
+    n_cpus = min(N_STATISTICS, int(os.environ.get('SLURM_CPUS_PER_TASK', mp.cpu_count())))
     print(f'\nTraining {N_STATISTICS} posteriors in parallel '
-          f'({n_cpus} processes)...')
+          f'({n_cpus} processes, each on CPU)...')
 
     print('\nLoading per-statistic Optuna hyperparameters...')
     worker_args = []
@@ -486,24 +491,13 @@ if __name__ == '__main__':
         if opt_hps is None:
             print(f'  [{name}] No Optuna study found, using adaptive defaults.')
         worker_args.append(
-            (name, idx, x_train, theta_train, x_obs, WORK_DIR, device, blocks, opt_hps))
-    
+            (name, idx, x_train, theta_train, x_obs, WORK_DIR,
+             'cpu',   # <-- always CPU in workers; avoids all workers fighting over one GPU
+             blocks, opt_hps))
+
     ctx  = mp.get_context('spawn')
     with ctx.Pool(processes=n_cpus) as pool:
         results = pool.map(train_one_statistic, worker_args)
-
-    print('\n--- Training Summary ---')
-    all_ok = True
-    for name, success, msg in results:
-        status = 'OK  ' if success else 'FAIL'
-        print(f'  [{status}] {msg}')
-        if not success:
-            all_ok = False
-
-    if not all_ok:
-        raise RuntimeError('One or more statistics failed to train. '
-                           'See messages above.')
-
     # =========================================================================
     # NEXT-ROUND ACTIVE LEARNING PROPOSAL
     # =========================================================================
