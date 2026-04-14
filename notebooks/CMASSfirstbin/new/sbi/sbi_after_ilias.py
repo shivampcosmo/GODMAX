@@ -57,31 +57,53 @@ FULL_VALIDATE_THRESHOLD = 100
 VAL_FRACTION = 0.15
 
 STAT_MAP = {
-    # Individual 3pt cross-moments
     'g2y':         [0,  6,  12, 18, 24],
     'g2tau':       [1,  7,  13, 19, 25],
     'g2kappa':     [2,  8,  14, 20, 26],
-    # Individual 2pt cross-moments
     'gy':          [3,  9,  15, 21, 27],
     'gtau':        [4,  10, 16, 22, 28],
     'gkappa':      [5,  11, 17, 23, 29],
-    # Full joint
-    'JOINT':       list(range(30)),
-    # Per-tracer totals (3pt + 2pt)
-    'y_total':     [0,  3,  6,  9,  12, 15, 18, 21, 24, 27],
-    'tau_total':   [1,  4,  7,  10, 13, 16, 19, 22, 25, 28],
-    'kappa_total': [2,  5,  8,  11, 14, 17, 20, 23, 26, 29],
-    # Category totals
-    'all_3pt':     [0,  1,  2,  6,  7,  8,  12, 13, 14, 18, 19, 20, 24, 25, 26],
-    'all_2pt':     [3,  4,  5,  9,  10, 11, 15, 16, 17, 21, 22, 23, 27, 28, 29],
+    'y_total':     [0,  6,  12, 18, 24,   # g2y   @ 4,8,16,32,64 arcmin
+                    3,  9,  15, 21, 27],  # gy    @ 4,8,16,32,64 arcmin
+    'tau_total':   [1,  7,  13, 19, 25,   # g2tau @ 4,8,16,32,64 arcmin
+                    4,  10, 16, 22, 28],  # gtau  @ 4,8,16,32,64 arcmin
+    'kappa_total': [2,  8,  14, 20, 26,   # g2kappa @ 4,8,16,32,64 arcmin
+                    5,  11, 17, 23, 29],  # gkappa  @ 4,8,16,32,64 arcmin
+    'all_3pt':     [0,  6,  12, 18, 24,   # g2y
+                    1,  7,  13, 19, 25,   # g2tau
+                    2,  8,  14, 20, 26],  # g2kappa
+    'all_2pt':     [3,  9,  15, 21, 27,   # gy
+                    4,  10, 16, 22, 28,   # gtau
+                    5,  11, 17, 23, 29],  # gkappa
+    'JOINT':       [0,  6,  12, 18, 24,   # g2y
+                    1,  7,  13, 19, 25,   # g2tau
+                    2,  8,  14, 20, 26,   # g2kappa
+                    3,  9,  15, 21, 27,   # gy
+                    4,  10, 16, 22, 28,   # gtau
+                    5,  11, 17, 23, 29],  # gkappa
 }
 N_STATISTICS = len(STAT_MAP)
+
+# Set FORCE_EQUAL_ARCH = True to give every statistic an identical network so
+# that performance differences cannot be attributed to capacity differences
+# (as happened with Optuna giving tau_total 3 transforms vs kappa_total 5).
+# Set to False to use Optuna hyperparameters (or adaptive defaults) instead.
+FORCE_EQUAL_ARCH = False
+EQUAL_ARCH = {
+    'hidden_features': 32,
+    'num_transforms':  5,
+    'learning_rate':   2e-4,
+    'batch_size':      32,
+    'max_num_epochs':  400,
+    'repeats':         6,
+}
 
 # Path to the ILIAS model_dir used for each statistic's Optuna study.
 ILIAS_BASE = '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/sbi/ilias_results'
 OPTUNA_STUDY_DIRS = {name: os.path.join(ILIAS_BASE, name)
-    for name in ['g2y', 'g2tau', 'g2kappa','gy',  'gtau',  'gkappa',
-        'JOINT', 'y_total', 'tau_total', 'kappa_total','all_3pt', 'all_2pt',]}
+    for name in ['g2y', 'g2tau', 'g2kappa', 'gy', 'gtau', 'gkappa',
+                 'JOINT', 'y_total', 'tau_total', 'kappa_total',
+                 'all_3pt', 'all_2pt']}
 
 def load_optuna_hyperparams(model_dir, study_name='study'):
     import optuna
@@ -92,26 +114,26 @@ def load_optuna_hyperparams(model_dir, study_name='study'):
     storage = f"sqlite:///{db_path}"
     study   = optuna.load_study(storage=storage, study_name=study_name)
     best    = study.best_trial
-    mcfg    = best.user_attrs['mcfg']   # flat dict, batch_size already converted
+    mcfg    = best.user_attrs['mcfg']
 
     print(f'  [{os.path.basename(model_dir)}] '
           f'Best trial #{best.number}  score={best.value:.4f}  '
           f'hfs={mcfg["hidden_features"]}  nts={mcfg["num_transforms"]}  '
           f'lr={mcfg["learning_rate"]:.2e}  '
-          f'batch={mcfg["batch_size"]}  '        # already raised to power of 2
+          f'batch={mcfg["batch_size"]}  '
           f'epochs={mcfg["max_epochs"]}')
     return {
         'hidden_features': mcfg['hidden_features'],
         'num_transforms':  mcfg['num_transforms'],
         'learning_rate':   mcfg['learning_rate'],
-        'batch_size':      mcfg['batch_size'],   # already 32, 64, etc.
+        'batch_size':      mcfg['batch_size'],
         'max_num_epochs':  mcfg['max_epochs'],
     }
 
-# Individual stats are normalised per-feature; combined stats use per-block
-# normalisation where each block corresponds to one smoothing scale group.
+# Individual stats go through per-feature z-score normalisation.
+# Combined stats go through per-block normalisation (BLOCK_SIZE=5).
 INDIVIDUAL_STATS = {'gy', 'gtau', 'gkappa', 'g2y', 'g2tau', 'g2kappa'}
-BLOCK_SIZE = 5   # one entry per smoothing scale
+BLOCK_SIZE = 5   # one complete statistic per block (guaranteed by STAT_MAP above)
 
 
 def make_blocks(n_features):
@@ -276,15 +298,28 @@ def train_one_statistic(args):
     """
     Train a single NPE for one entry in STAT_MAP.
 
-    blocks=None            → no normalisation (individual statistics)
-    blocks=[[0..4],[5..9]] → per-block normalisation (combined statistics)
+    Individual statistics (blocks=None):
+        Per-feature z-score normalisation. This fixes the ~1e-5 raw amplitude
+        of tau/y statistics which causes gradient issues in NSF without
+        affecting the shape information that distinguishes the statistics.
+        The saved x_mean and x_std allow consistent application at validation.
+
+    Combined statistics (blocks not None):
+        Per-block normalisation where each block of BLOCK_SIZE=5 corresponds
+        to exactly one complete statistic across all smoothing scales, thanks
+        to the reordered STAT_MAP indices.
+
+    Architecture:
+        If FORCE_EQUAL_ARCH=True, all statistics use identical network capacity
+        so performance differences reflect information content, not model size.
+        If False, Optuna hyperparameters are used where available.
 
     Designed to run in a subprocess via multiprocessing.Pool so that all
     statistics are trained in parallel, one process per CPU.
 
     Args:
         args: tuple of (name, idx, x_train, theta_train, x_obs,
-                        work_dir, device, blocks)
+                        work_dir, device, blocks, opt_hps)
 
     Returns:
         (name, success: bool, message: str)
@@ -297,6 +332,7 @@ def train_one_statistic(args):
     from ili.inference import InferenceRunner
     from ili.utils import load_nde_sbi
     from sbi.utils import BoxUniform
+
     def fpath(fname):
         return os.path.join(work_dir, fname)
 
@@ -308,16 +344,26 @@ def train_one_statistic(args):
         xt_full = x_train[:, idx].astype(np.float32)
         xo      = x_obs[idx].astype(np.float32)
 
+        # Raw tau/y values are ~1e-5 while kappa is ~0.1–0.2, creating a
+        # 4-order-of-magnitude input scale difference that causes gradient
+        # instability in NSF flows for the small-amplitude statistics.
+        # Per-feature z-score fixes this while preserving all shape information.
+        # The saved scalers ensure identical transformation is applied at
+        # validation time.
         if blocks is None:
-            # Individual statistic — use raw values, no normalisation
-            xt_norm = xt_full.copy()
-            xo_norm = xo.copy()
-            x_mean  = np.zeros(n_stats, dtype=np.float32)
-            x_std   = np.ones(n_stats,  dtype=np.float32)
-            print(f'{name:12s}  [no normalisation]')
+            x_mean = np.mean(xt_full, axis=0)
+            x_std  = np.std( xt_full, axis=0)
+            x_std[x_std < 1e-10] = 1.0   # guard against degenerate features
+
+            xt_norm = (xt_full - x_mean) / x_std
+            xo_norm = (xo      - x_mean) / x_std
+
+            print(f'{name:12s}  [per-feature z-score]  '
+                  f'raw_mean={np.abs(x_mean).mean():.4e}  '
+                  f'raw_std={x_std.mean():.4e}')
 
         else:
-            # Combined statistic — normalise each block independently
+            # Combined statistic — normalise each block (= one statistic) independently
             xt_norm = np.empty_like(xt_full)
             xo_norm = np.empty(n_stats, dtype=np.float32)
             x_mean  = np.empty(n_stats, dtype=np.float32)
@@ -327,8 +373,9 @@ def train_one_statistic(args):
                 blk = np.asarray(blk)
                 m = np.mean(xt_full[:, blk], axis=0)
                 s = np.std( xt_full[:, blk], axis=0)
-                xt_norm[:, blk] = (xt_full[:, blk] - m) / (s + 1e-8)
-                xo_norm[blk]    = (xo[blk]          - m) / (s + 1e-8)
+                s[s < 1e-10] = 1.0
+                xt_norm[:, blk] = (xt_full[:, blk] - m) / s
+                xo_norm[blk]    = (xo[blk]          - m) / s
                 x_mean[blk]     = m
                 x_std[blk]      = s
 
@@ -354,14 +401,27 @@ def train_one_statistic(args):
             xobs_file=f'xobs_{name}.npy',
         )
 
-        # --- Network size: use Optuna values if available, else adaptive defaults ---
-        if opt_hps is not None:
+        # FORCE_EQUAL_ARCH gives every statistic identical capacity so that
+        # posterior quality differences reflect information content, not the
+        # accident of Optuna finding different architectures for different stats
+        # (e.g. tau_total got 3 transforms, kappa_total got 5).
+        if FORCE_EQUAL_ARCH:
+            hfs        = EQUAL_ARCH['hidden_features']
+            nts        = EQUAL_ARCH['num_transforms']
+            batch_size = EQUAL_ARCH['batch_size']
+            lr         = EQUAL_ARCH['learning_rate']
+            max_epochs = EQUAL_ARCH['max_num_epochs']
+            repeats    = EQUAL_ARCH['repeats']
+            print(f'{name:12s}  [forced equal arch: '
+                  f'hfs={hfs}, nts={nts}, lr={lr:.2e}, '
+                  f'batch={batch_size}, epochs={max_epochs}]')
+        elif opt_hps is not None:
             hfs        = opt_hps['hidden_features']
             nts        = opt_hps['num_transforms']
             batch_size = opt_hps['batch_size']
             lr         = opt_hps['learning_rate']
             max_epochs = opt_hps['max_num_epochs']
-            repeats    = 6   # ensemble size is not optimised by ILIAS; keep your default
+            repeats    = 6
         else:
             if n_stats <= 5:
                 hfs, nts, repeats = 16, 3, 5
@@ -374,42 +434,28 @@ def train_one_statistic(args):
             lr          = 5e-4
             max_epochs  = 500
 
-        train_args = {'training_batch_size': batch_size,
-                      'learning_rate':       lr,
-                      'max_num_epochs':      max_epochs,
-                      'stop_after_epochs':   50,
-                      'clip_max_norm':       5.0,
-                      'validation_fraction': VAL_FRACTION,}
-        
+        train_args = {
+            'training_batch_size': batch_size,
+            'learning_rate':       lr,
+            'max_num_epochs':      max_epochs,
+            'stop_after_epochs':   50,
+            'clip_max_norm':       5.0,
+            'validation_fraction': VAL_FRACTION,
+        }
+
         nets = load_nde_sbi(
-                engine='NPE', model='nsf',
-                repeats=repeats, hidden_features=hfs, num_transforms=nts,)
-        arch_str = (f'NSF pure (n_stats={n_stats}, ratio={ratio:.1f}, '
-                    f'repeats={repeats}, hfs={hfs}, nts={nts})')
-        '''if n_stats <= 20:
-            nets = load_nde_sbi(
-                engine='NPE', model='nsf',
-                repeats=repeats, hidden_features=hfs, num_transforms=nts,
-            )
-            arch_str = (f'NSF pure (n_stats={n_stats}, ratio={ratio:.1f}, '
-                        f'repeats={repeats}, hfs={hfs}, nts={nts})')
-        else:
-            n_maf = 2
-            n_nsf = repeats - n_maf
-            nets  = (
-                load_nde_sbi(engine='NPE', model='nsf', repeats=n_nsf,
-                             hidden_features=hfs, num_transforms=nts)
-                + load_nde_sbi(engine='NPE', model='maf', repeats=n_maf,
-                               hidden_features=hfs, num_transforms=nts)
-            )
-            arch_str = (f'NSF+MAF (ratio={ratio:.1f}, '
-                        f'{n_nsf} NSF + {n_maf} MAF, '
-                        f'hfs={hfs}, nts={nts})')
-        '''
+            engine='NPE', model='nsf',
+            repeats=repeats, hidden_features=hfs, num_transforms=nts,
+        )
+        arch_str = (f'NSF  n_stats={n_stats}  ratio={ratio:.1f}  '
+                    f'repeats={repeats}  hfs={hfs}  nts={nts}')
+
         runner = InferenceRunner.load(
             backend='sbi', engine='NPE',
-            prior=BoxUniform(low=torch.tensor(PRIOR_LOW, dtype=torch.float32, device=device),
-                          high=torch.tensor(PRIOR_HIGH, dtype=torch.float32, device=device)),
+            prior=BoxUniform(
+                low =torch.tensor(PRIOR_LOW,  dtype=torch.float32, device=device),
+                high=torch.tensor(PRIOR_HIGH, dtype=torch.float32, device=device),
+            ),
             nets=nets,
             out_dir=Path(fpath(f'sbi_logs_{name}')),
             device=device,
@@ -421,8 +467,7 @@ def train_one_statistic(args):
             pk.dump(posterior, f)
 
         msg = (f'[{name}] DONE --> {n_stats} stats, {n_train} sims, '
-               f'{arch_str}, repeats={repeats}, hfs={hfs}, nts={nts}, '
-               f'batch={batch_size}')
+               f'{arch_str}, batch={batch_size}')
         return name, True, msg
 
     except Exception as e:
@@ -441,6 +486,9 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f'Device: {device}')
     print(f'The next round of samples to be run will be round {NEXT_ROUND}')
+    print(f'FORCE_EQUAL_ARCH = {FORCE_EQUAL_ARCH}')
+    if FORCE_EQUAL_ARCH:
+        print(f'  Architecture: {EQUAL_ARCH}')
 
     # --- x_obs ---
     print('Extracting reference run (x_obs)...')
@@ -483,21 +531,31 @@ if __name__ == '__main__':
     print(f'\nTraining {N_STATISTICS} posteriors in parallel '
           f'({n_cpus} processes, each on CPU)...')
 
-    print('\nLoading per-statistic Optuna hyperparameters...')
+    if not FORCE_EQUAL_ARCH:
+        print('\nLoading per-statistic Optuna hyperparameters...')
+
     worker_args = []
     for name, idx in STAT_MAP.items():
         blocks  = None if name in INDIVIDUAL_STATS else make_blocks(len(idx))
-        opt_hps = load_optuna_hyperparams(OPTUNA_STUDY_DIRS[name])
-        if opt_hps is None:
-            print(f'  [{name}] No Optuna study found, using adaptive defaults.')
+        opt_hps = None
+        if not FORCE_EQUAL_ARCH:
+            opt_hps = load_optuna_hyperparams(OPTUNA_STUDY_DIRS.get(name, ''))
+            if opt_hps is None:
+                print(f'  [{name}] No Optuna study found, using adaptive defaults.')
         worker_args.append(
             (name, idx, x_train, theta_train, x_obs, WORK_DIR,
-             'cpu',   # <-- always CPU in workers; avoids all workers fighting over one GPU
+             'cpu',  # always CPU in workers; avoids all workers fighting over one GPU
              blocks, opt_hps))
 
     ctx  = mp.get_context('spawn')
     with ctx.Pool(processes=n_cpus) as pool:
         results = pool.map(train_one_statistic, worker_args)
+
+    print('\n--- Training Summary ---')
+    for name, success, msg in results:
+        status = 'OK  ' if success else 'FAIL'
+        print(f'  [{status}] {msg}')
+
     # =========================================================================
     # NEXT-ROUND ACTIVE LEARNING PROPOSAL
     # =========================================================================
@@ -540,9 +598,9 @@ if __name__ == '__main__':
     print('\nLoading held-out validation set (validation_0 to validation_49)...')
     os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
-    val_df     = pd.read_csv(VALIDATION_CSV)
-    theta_val  = val_df[PARAM_NAMES].values.astype(np.float32)
-    x_val_list = []
+    val_df      = pd.read_csv(VALIDATION_CSV)
+    theta_val   = val_df[PARAM_NAMES].values.astype(np.float32)
+    x_val_list  = []
     missing_val = []
 
     for i, row in val_df.iterrows():
@@ -588,9 +646,11 @@ if __name__ == '__main__':
             with open(posterior_path, 'rb') as f:
                 post = pk.load(f)
 
-            # Scalers are consistent for both normalisation modes:
-            # individual stats have mean=0, std=1 (identity transform);
-            # combined stats have the per-block mean/std saved during training.
+            # Load the scalers saved during training and apply identically.
+            # This works for both normalisation modes because:
+            #   individual stats → x_mean/x_std are the per-feature training stats
+            #   combined stats   → x_mean/x_std are the per-block training stats
+            # In both cases the same (x - mean) / std formula is correct.
             x_mean = np.load(os.path.join(WORK_DIR, f'scaler_{name}_mean.npy'))
             x_std  = np.load(os.path.join(WORK_DIR, f'scaler_{name}_std.npy'))
             xt_val = ((x_val_full[:, idx] - x_mean)
