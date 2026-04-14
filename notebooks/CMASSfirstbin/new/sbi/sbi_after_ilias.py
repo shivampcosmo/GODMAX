@@ -344,12 +344,10 @@ def train_one_statistic(args):
         xt_full = x_train[:, idx].astype(np.float32)
         xo      = x_obs[idx].astype(np.float32)
 
-        # Raw tau/y values are ~1e-5 while kappa is ~0.1–0.2, creating a
-        # 4-order-of-magnitude input scale difference that causes gradient
-        # instability in NSF flows for the small-amplitude statistics.
-        # Per-feature z-score fixes this while preserving all shape information.
-        # The saved scalers ensure identical transformation is applied at
-        # validation time.
+        # Per-feature z-score brings raw ~1e-5 tau/y values to O(1),
+        # which improves numerical stability and training convergence
+        # for small-amplitude statistics. Each statistic is normalised
+        # independently using only its own training samples.
         if blocks is None:
             x_mean = np.mean(xt_full, axis=0)
             x_std  = np.std( xt_full, axis=0)
@@ -360,7 +358,7 @@ def train_one_statistic(args):
 
             print(f'{name:12s}  [per-feature z-score]  '
                   f'raw_mean={np.abs(x_mean).mean():.4e}  '
-                  f'raw_std={x_std.mean():.4e}')
+                  f'raw_std={x_std.mean():.4e}', flush=True)
 
         else:
             # Combined statistic — normalise each block (= one statistic) independently
@@ -381,12 +379,12 @@ def train_one_statistic(args):
 
             print(f'{name:12s}  [per-block normalisation, {len(blocks)} blocks]  '
                   f'mean_std={x_std.mean():.4e}  '
-                  f'min_std={x_std.min():.4e}  max_std={x_std.max():.4e}')
+                  f'min_std={x_std.min():.4e}  max_std={x_std.max():.4e}', flush=True)
 
         frac_below = (xo < xt_full.min(axis=0)).mean()
         frac_above = (xo > xt_full.max(axis=0)).mean()
         print(f'{name:12s}  frac_below_sim_range={frac_below:.2f}  '
-              f'frac_above_sim_range={frac_above:.2f}')
+              f'frac_above_sim_range={frac_above:.2f}', flush=True)
 
         np.save(fpath(f'scaler_{name}_mean.npy'), x_mean)
         np.save(fpath(f'scaler_{name}_std.npy'),  x_std)
