@@ -63,6 +63,7 @@ parser.add_argument("--nside", type=int, default=512)
 parser.add_argument("--jdevice", type=int, default=0)
 parser.add_argument("--ndevices", type=int, default=1)
 parser.add_argument("--is_reference", action="store_true", help="Use default YAML params")
+parser.add_argument("--is_validation",  action="store_true", help="using LH set for validation")
 parser.add_argument("--theta_ej_0", type=float)
 parser.add_argument("--nu_theta_ej_M", type=float)
 parser.add_argument("--nu_theta_ej_z", type=float)
@@ -123,8 +124,19 @@ print(f"Galaxy z-range: [{gal_zmin}, {gal_zmax}]")
 # -----------------------------------------------------------------
 if args.is_reference:
     print("Running REFERENCE simulation with default YAML parameters...")
-    save_folder = "reference_run"
+    save_folder = "reference_run2"
+elif args.is_validation:
+    print("Running the validation set with Latin Hypercube generated values")
+    update_dict = {}
+    if args.theta_ej_0 is not None: update_dict['theta_ej_0'] = args.theta_ej_0
+    if args.nu_theta_ej_M is not None: update_dict['nu_theta_ej_M'] = args.nu_theta_ej_M
+    if args.nu_theta_ej_z is not None: update_dict['nu_theta_ej_z'] = args.nu_theta_ej_z
+    if args.mu_beta is not None: update_dict['mu_beta'] = args.mu_beta
+
+    sim_params_dict.update(update_dict)
+    save_folder = f"validation_{args.sample_id}"
 else:
+    print(args.nu_theta_ej_M)
     update_dict = {}
     if args.theta_ej_0 is not None: update_dict['theta_ej_0'] = args.theta_ej_0
     if args.nu_theta_ej_M is not None: update_dict['nu_theta_ej_M'] = args.nu_theta_ej_M
@@ -245,9 +257,8 @@ map_kappa = compute_kappa_map(
     chi_CMB           = chi_CMB,
     cosmo_params_dict = {'Om0': 0.3175},
     map_rhom_dmb      = saved_data['map_rhom_dmb'],
-    map_rhom_dmo      = saved_data['map_rhom_dmo'],
-    dmo_cache_path    = f'{sdir}/map_kappa_dmo.npy',
-    weight_cache_path = f'{sdir}/weight_eff_kappa.npy',)
+    unbound_cache_path = f'{sdir}/map_kappa_unbound.npy',
+    weight_cache_path  = f'{sdir}/weight_eff_kappa.npy',)
 
 # Step 3: insert kappa and write the final pkl
 saved_data['map_kappa'] = map_kappa
