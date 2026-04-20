@@ -342,8 +342,8 @@ def build_config(abs_path_params, abs_path_data, params_file='pasting/params.yam
     # Halo parameter overrides
     halo_params_dict.update({
         'rmin': 0.005, 'rmax': 10.0, 'nr': 48,
-        # 'zmin': 0.005, 'zmax': 0.8, 'nz': 52,
-        'zmin': 0.3, 'zmax': 0.7, 'nz': 22,
+        #'zmin': 0.005, 'zmax': 0.8, 'nz': 52,
+         'zmin': 0.3, 'zmax': 0.7, 'nz': 22,
         'lg10_Mmin': 13.0, 'lg10_Mmax': 15.75, 'nM': 42,
     })
 
@@ -593,7 +593,7 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
     'map_ymap':      map_ymap,
     'map_ksz':       map_ksz,
     'map_tau':        map_tau,
-    # map_kappa absent intentionally — call compute_kappa_map() after this
+    # map_kappa absent intentionally --> call compute_kappa_map() after this
     }
 
     if save_path is not None:
@@ -1164,53 +1164,43 @@ def stack_snapshot_maps(snap_range, snap_num_all, zval_all, nside, jdevice, Ndev
 # Calculating lensing convergence (kappa) maps
 # ---------------------------------------------------------------------------
 
-def compute_kappa_dmo_and_weight(
+def compute_kappa_unbound_and_weight(
     sim_file_path, snap_num_all, zval_all, zmin, zmax,
     Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict,
-    smooth_sigma=None,
-):
+    smooth_sigma=None,):
     """
-    Compute the DMO kappa map and the effective baryonic lensing weight.
+    Compute the 2-halo kappa map from unbound N-body particles and the
+    effective lensing weight for the 1-halo (rhommap_final) term.
 
-    Both outputs are IDENTICAL for every sample in an SBI suite that shares
-    the same N-body lightcone and cosmology. Call this once and cache the
-    results; do not recompute per sample.
+    2-halo term (summed per snapshot):
+        delta_unbound  = (massSheet_unbound * part_mass) / mmpp - 1
+        kappa_2halo   += W_k(z) * delta_unbound
 
-    The DMO kappa is built by summing per-snapshot contributions:
-        delta_kappa_DMO(z) = weight_k(z) * delta_particle(z)
-
-    where weight_k(z) = (3/2)(H0/c)^2 Om0
-                        * [(chi_CMB - chi) / chi_CMB] * (1+z) * chi * dchi
-
-    and delta_particle is the differential N-body mass sheet converted to a
-    density contrast using the sky-coverage-corrected mean mass per pixel
-    (mmpp). The f_sky correction prevents a systematic negative mean kappa
-    in lightcones that do not cover the full sky.
+    Effective weight for 1-halo term (applied to stacked rhommap_final):
+        weight_eff = sum_snaps(W_k(z) / mmpp(z)) / n_snaps
 
     Args:
-        sim_file_path:     path containing compressed_massMaps/ subdirectory
-        snap_num_all:      all snapshot numbers from zlist.txt
-        zval_all:          corresponding redshifts
-        zmin, zmax:        redshift shell boundaries
-        Prof_test:         Profiles object with .cosmo_jax and .get_Ez(z)
-        nside:             HEALPix resolution
-        part_mass:         N-body particle mass [Msun/h]
-        chi_CMB:           comoving distance to CMB [Mpc/h]
-        cosmo_params_dict: dict containing at minimum 'Om0'
-        smooth_sigma:      Gaussian smoothing of mass sheets [radians].
-                           Defaults to one HEALPix pixel FWHM → sigma.
+        sim_file_path     : path containing compressed_massMaps/ subdirectory
+        snap_num_all      : snapshot numbers from zlist.txt
+        zval_all          : corresponding redshifts
+        zmin, zmax        : redshift shell boundaries
+        Prof_test         : Profiles object with .cosmo_jax and .get_Ez(z)
+        nside             : HEALPix resolution
+        part_mass         : N-body particle mass [Msun/h]
+        chi_CMB           : comoving distance to CMB [Mpc/h]
+        cosmo_params_dict : dict with key 'Om0'
+        smooth_sigma      : Gaussian smoothing sigma [radians].
+                            Defaults to one HEALPix pixel FWHM -> sigma.
 
     Returns:
-        map_kappa_dmo : np.ndarray, shape (12*nside**2,), dtype float64
-        weight_eff    : float
-            Effective lensing weight for the baryonic correction:
-                sum_snaps(weight_k / mmpp) / n_snaps
+        map_kappa_unbound : np.ndarray, shape (12*nside**2,), dtype float64
+        weight_eff        : float --> units of 1/(Msun/h per pixel)
     """
-    c_light   = 299792.458
-    H0_over_h = 100.0
+    c_light   = 299792.458   # km/s
+    H0_over_h = 100.0        # km/s/(Mpc/h)
     Om0       = cosmo_params_dict['Om0']
     npix      = 12 * nside ** 2
-    rho_m     = Prof_test.get_rho_m(0.0)
+    rho_m     = Prof_test.get_rho_m(0.0)   # [Msun/h / (Mpc/h)^3], comoving
 
     if smooth_sigma is None:
         fwhm_pix     = hp.nside2resol(nside, arcmin=False)
@@ -1225,14 +1215,12 @@ def compute_kappa_dmo_and_weight(
             f"Check zmin/zmax against zlist.txt."
         )
 
-    # Sort all snapshots by redshift for differential shell subtraction
-    sorted_snaps = snap_num_all[np.argsort(zval_all)]
-    dz_snap      = (zmax - zmin) / n_snaps
+    dz_snap = (zmax - zmin) / n_snaps
 
-    map_kappa_dmo        = np.zeros(npix, dtype=np.float64)
+    map_kappa_unbound    = np.zeros(npix, dtype=np.float64)
     weight_over_mmpp_sum = 0.0
 
-    print(f"Computing DMO kappa from {n_snaps} snapshots "
+    print(f"Computing 2-halo kappa from {n_snaps} snapshots "
           f"in z=[{zmin:.3f}, {zmax:.3f}]...")
 
     for snap_num in snaps_shell:
@@ -1246,146 +1234,102 @@ def compute_kappa_dmo_and_weight(
         r_lo      = chi_v - dchi_snap / 2.0
         r_hi      = chi_v + dchi_snap / 2.0
 
+        # Lensing weight W_k(z) [dimensionless / (Mpc/h)]
         weight_k = (
-            1.5 * (H0_over_h / c_light)**2 * Om0
+            1.5 * (H0_over_h / c_light) ** 2 * Om0
             * ((chi_CMB - chi_v) / chi_CMB)
             * (1.0 + zval) * chi_v * dchi_snap
         )
 
-        # --- Load differential N-body mass sheet FIRST ---
-        # (mmpp depends on f_sky which depends on map_shell)
-        path_tot = (f'{sim_file_path}/compressed_massMaps/'
-                    f'massSheet_tot_z_{int(snap_num)}.fits.gz')
-        map_tot  = hp.read_map(path_tot, verbose=False)
-
-        curr_idx = int(np.where(sorted_snaps == snap_num)[0][0])
-        if curr_idx > 0:
-            path_prev = (f'{sim_file_path}/compressed_massMaps/'
-                         f'massSheet_tot_z_{int(sorted_snaps[curr_idx - 1])}.fits.gz')
-            map_shell = map_tot - hp.read_map(path_prev, verbose=False)
-        else:
-            map_shell = map_tot
-
-        # f_sky correction: lightcones covering < full sky have empty pixels
-        # that would otherwise make delta = -1 everywhere, pulling mean kappa
-        # negative. Dividing by f_sky * npix gives the correct mean density
-        # over the *filled* volume. For full-sky sims f_sky = 1 and mmpp is
-        # unchanged.
-        n_filled = float(np.sum(map_shell > 0))
-        f_sky    = n_filled / npix
-        mmpp     = float(
-            rho_m * (4.0 / 3.0) * np.pi * (r_hi**3 - r_lo**3) / (f_sky * npix)
+        # Mean mass per pixel for this shell [Msun/h per pixel]
+        mmpp = float(
+            rho_m * (4.0 / 3.0) * np.pi * (r_hi ** 3 - r_lo ** 3) / npix
         )
 
-        # Regrade to working nside, convert particle counts → density contrast
-        map_shell_ds = hp.ud_grade(
-            np.array(map_shell * part_mass, dtype=np.float64), nside, power=-2
+        # Load per-snapshot unbound particle sheet (2-halo term)
+        path_unbound = (f'{sim_file_path}/compressed_massMaps/'
+                        f'massSheet_unbound_z_{int(snap_num)}.fits.gz')
+        map_unbound = hp.read_map(path_unbound, verbose=False)
+
+        # Regrade to working nside; convert particle counts -> mass -> delta
+        map_unbound_ds = hp.ud_grade(
+            np.array(map_unbound * part_mass, dtype=np.float64), nside, power=-2
         )
-        delta_sheet  = map_shell_ds / mmpp - 1.0
-        delta_smooth = hp.smoothing(
-            np.array(delta_sheet, dtype=np.float64), sigma=smooth_sigma, verbose=False
+        delta_unbound = map_unbound_ds / mmpp - 1.0
+        delta_smooth  = hp.smoothing(
+            np.array(delta_unbound, dtype=np.float64),
+            sigma=smooth_sigma, verbose=False
         )
 
-        map_kappa_dmo        += weight_k * delta_smooth
+        map_kappa_unbound    += weight_k * delta_smooth
         weight_over_mmpp_sum += weight_k / mmpp
 
         print(f"  z={zval:.3f}: chi={chi_v:.1f} Mpc/h, "
-              f"weight_k={weight_k:.4e}, f_sky={f_sky:.4f}, mmpp={mmpp:.4e}")
+              f"weight_k={weight_k:.4e}, mmpp={mmpp:.4e}")
 
-    # weight_eff is the mean per-snapshot lensing weight in units of 1/mmpp.
-    # (map_rhom_dmb - map_rhom_dmo) accumulates over all snapshots, so dividing
-    # weight_over_mmpp_sum by n_snaps gives the correct effective weight.
+    # Divide by n_snaps so that weight_eff * map_rhom_dmb (which is already
+    # stacked over all snapshots) gives the correctly weighted 1-halo kappa.
     weight_eff = weight_over_mmpp_sum / n_snaps
-    return map_kappa_dmo, weight_eff
-
-
-def apply_baryonic_kappa_correction(map_kappa_dmo, weight_eff,
-                                    map_rhom_dmb, map_rhom_dmo):
-    """
-    Apply the baryonic correction to the precomputed DMO kappa map.
-
-    This is the only per-sample call needed in an SBI suite. The DMO kappa
-    and weight_eff are constants across samples and should be loaded from
-    cache rather than recomputed.
-
-        kappa = kappa_DMO + weight_eff * (map_rhom_dmb - map_rhom_dmo)
-
-    Args:
-        map_kappa_dmo : np.ndarray, shape (12*nside**2,), dtype float64
-            From compute_kappa_dmo_and_weight().
-        weight_eff    : float
-            From compute_kappa_dmo_and_weight().
-        map_rhom_dmb  : np.ndarray — baryonified halo matter map
-        map_rhom_dmo  : np.ndarray — DMO halo matter map
-
-    Returns:
-        map_kappa : np.ndarray, shape (12*nside**2,), dtype float32
-    """
-    baryonic_delta = (
-        np.array(map_rhom_dmb, dtype=np.float64)
-        - np.array(map_rhom_dmo, dtype=np.float64)
-    )
-    map_kappa = map_kappa_dmo + weight_eff * baryonic_delta
-
-    dmo_mean = float(np.abs(map_kappa_dmo).mean())
-    bar_mean = float(np.abs(weight_eff * baryonic_delta).mean())
-    print(f"\nKappa diagnostics:")
-    print(f"  DMO sheet:           mean|kappa| = {dmo_mean:.4e}")
-    print(f"  Baryonic correction: mean|kappa| = {bar_mean:.4e}")
-    print(f"  Baryonic/DMO ratio:  {bar_mean / (dmo_mean + 1e-30):.3f}")
-    print(f"  Total kappa:         mean={map_kappa.mean():.4e}, "
-          f"max={np.abs(map_kappa).max():.4e}")
-
-    return map_kappa.astype(np.float32)
+    return map_kappa_unbound, weight_eff
 
 
 def compute_kappa_map(
     sim_file_path, snap_num_all, zval_all, zmin, zmax,
     Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict,
-    map_rhom_dmb, map_rhom_dmo, smooth_sigma=None,
-    dmo_cache_path=None, weight_cache_path=None,
-):
+    map_rhom_dmb, smooth_sigma=None,
+    unbound_cache_path=None, weight_cache_path=None,):
     """
-    Compute the full weak lensing convergence map.
+    Compute the CMB lensing convergence map:
 
-    Thin wrapper around compute_kappa_dmo_and_weight and
-    apply_baryonic_kappa_correction. Optionally caches the DMO component
-    to disk so it is not recomputed for every sample in an SBI suite.
+        kappa = kappa_2halo + weight_eff * map_rhom_dmb
 
-    Cache behaviour:
-        If dmo_cache_path and weight_cache_path are provided:
-        - On first call: compute DMO kappa and weight, save to those paths.
-        - On subsequent calls: load from disk, skip FITS I/O entirely.
-        If paths are None: always recompute (original behaviour).
+    kappa_2halo    : 2-halo term from unbound N-body particles
+    weight_eff * map_rhom_dmb : 1-halo term from baryonified halo profiles (rhommap_final)
+
+    kappa_2halo and weight_eff are identical for all SBI samples sharing the
+    same N-body lightcone. Cache them to avoid redundant FITS I/O.
 
     Args:
         sim_file_path, snap_num_all, zval_all, zmin, zmax,
-        Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict,
-        map_rhom_dmb, map_rhom_dmo, smooth_sigma:
-            See compute_kappa_dmo_and_weight for full documentation.
-        dmo_cache_path  : str or None — path to save/load map_kappa_dmo.npy
-        weight_cache_path : str or None — path to save/load weight_eff.npy
+        Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict, smooth_sigma :
+            See compute_kappa_unbound_and_weight.
+        map_rhom_dmb       : np.ndarray --> halo matter map from generate_maps()
+                             (rhommap_final: baryons + DM, 1-halo term,
+                             units Msun/h per pixel)
+        unbound_cache_path : str or None --> path to save/load map_kappa_unbound.npy
+        weight_cache_path  : str or None --> path to save/load weight_eff.npy
 
     Returns:
         map_kappa : np.ndarray, shape (12*nside**2,), dtype float32
     """
-    use_cache = (dmo_cache_path is not None) and (weight_cache_path is not None)
+    use_cache = (unbound_cache_path is not None) and (weight_cache_path is not None)
 
-    if use_cache and os.path.exists(dmo_cache_path) and os.path.exists(weight_cache_path):
-        print("Loading cached DMO kappa from disk...")
-        map_kappa_dmo = np.load(dmo_cache_path)
-        weight_eff    = float(np.load(weight_cache_path))
+    if use_cache and os.path.exists(unbound_cache_path) and os.path.exists(weight_cache_path):
+        print("Loading cached unbound kappa from disk...")
+        map_kappa_unbound = np.load(unbound_cache_path)
+        weight_eff        = float(np.load(weight_cache_path))
     else:
-        map_kappa_dmo, weight_eff = compute_kappa_dmo_and_weight(
+        map_kappa_unbound, weight_eff = compute_kappa_unbound_and_weight(
             sim_file_path, snap_num_all, zval_all, zmin, zmax,
             Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict,
             smooth_sigma=smooth_sigma,
         )
         if use_cache:
-            np.save(dmo_cache_path,    map_kappa_dmo)
-            np.save(weight_cache_path, np.array(weight_eff))
-            print(f"Cached DMO kappa → {dmo_cache_path}")
-            print(f"Cached weight_eff → {weight_cache_path}")
+            np.save(unbound_cache_path, map_kappa_unbound)
+            np.save(weight_cache_path,  np.array(weight_eff))
+            print(f"Cached unbound kappa -> {unbound_cache_path}")
+            print(f"Cached weight_eff    -> {weight_cache_path}")
 
-    return apply_baryonic_kappa_correction(
-        map_kappa_dmo, weight_eff, map_rhom_dmb, map_rhom_dmo)
+    # 1-halo contribution [dimensionless kappa]
+    kappa_1halo = weight_eff * np.array(map_rhom_dmb, dtype=np.float64)
+
+    map_kappa = map_kappa_unbound + kappa_1halo
+
+    print(f"\nKappa diagnostics:")
+    print(f"  2-halo (unbound): mean|kappa| = {np.abs(map_kappa_unbound).mean():.4e}")
+    print(f"  1-halo (halos):   mean|kappa| = {np.abs(kappa_1halo).mean():.4e}")
+    print(f"  1halo/2halo ratio:             {np.abs(kappa_1halo).mean() / (np.abs(map_kappa_unbound).mean() + 1e-30):.3f}")
+    print(f"  Total:            mean={map_kappa.mean():.4e}, "
+          f"max={np.abs(map_kappa).max():.4e}")
+
+    return map_kappa.astype(np.float32)
