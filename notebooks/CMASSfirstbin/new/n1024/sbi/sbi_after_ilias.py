@@ -46,7 +46,7 @@ CSV_FILES = [
 ]
 NEXT_ROUND = len(CSV_FILES) + 1
 
-NSIDE        = 512
+NSIDE        = 1024
 SCALES       = [4.0, 8.0, 16.0, 32.0, 64.0]
 PRIOR_LOW    = [1.0, -0.3]
 PRIOR_HIGH   = [6.0,  0.0]
