@@ -40,14 +40,14 @@ set_seeds(420)
 
 CSV_FILES = [
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/lhs_samples.csv', 0),
-    #('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round2_samples.csv', 500),
+    ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round2_samples.csv', 500),
     #('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round3_samples.csv', 700),
     #('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/round4_samples.csv', 900),
 ]
 NEXT_ROUND = len(CSV_FILES) + 1
 
 NSIDE        = 1024
-SCALES       = [4.0, 8.0, 16.0, 32.0, 64.0]
+SCALES       = [2.0, 4.0, 8.0, 16.0, 32.0, 64.0]
 PRIOR_LOW    = [1.0, -0.3]
 PRIOR_HIGH   = [6.0,  0.0]
 PARAM_LABELS = [r'$\theta_{ej,0}$', r'${\nu_{\theta_{ej}}}^{M}$']
@@ -57,30 +57,30 @@ FULL_VALIDATE_THRESHOLD = 100
 VAL_FRACTION = 0.15
 
 STAT_MAP = {
-    'g2y':         [0,  6,  12, 18, 24],
-    'g2tau':       [1,  7,  13, 19, 25],
-    'g2kappa':     [2,  8,  14, 20, 26],
-    'gy':          [3,  9,  15, 21, 27],
-    'gtau':        [4,  10, 16, 22, 28],
-    'gkappa':      [5,  11, 17, 23, 29],
-    'y_total':     [0,  6,  12, 18, 24,   # g2y   @ 4,8,16,32,64 arcmin
-                    3,  9,  15, 21, 27],  # gy    @ 4,8,16,32,64 arcmin
-    'tau_total':   [1,  7,  13, 19, 25,   # g2tau @ 4,8,16,32,64 arcmin
-                    4,  10, 16, 22, 28],  # gtau  @ 4,8,16,32,64 arcmin
-    'kappa_total': [2,  8,  14, 20, 26,   # g2kappa @ 4,8,16,32,64 arcmin
-                    5,  11, 17, 23, 29],  # gkappa  @ 4,8,16,32,64 arcmin
-    'all_3pt':     [0,  6,  12, 18, 24,   # g2y
-                    1,  7,  13, 19, 25,   # g2tau
-                    2,  8,  14, 20, 26],  # g2kappa
-    'all_2pt':     [3,  9,  15, 21, 27,   # gy
-                    4,  10, 16, 22, 28,   # gtau
-                    5,  11, 17, 23, 29],  # gkappa
-    'JOINT':       [0,  6,  12, 18, 24,   # g2y
-                    1,  7,  13, 19, 25,   # g2tau
-                    2,  8,  14, 20, 26,   # g2kappa
-                    3,  9,  15, 21, 27,   # gy
-                    4,  10, 16, 22, 28,   # gtau
-                    5,  11, 17, 23, 29],  # gkappa
+    'g2y':         [0,  6,  12, 18, 24, 30],
+    'g2tau':       [1,  7,  13, 19, 25, 31],
+    'g2kappa':     [2,  8,  14, 20, 26, 32],
+    'gy':          [3,  9,  15, 21, 27, 33],
+    'gtau':        [4,  10, 16, 22, 28, 34],
+    'gkappa':      [5,  11, 17, 23, 29, 35],
+    'y_total':     [0,  6,  12, 18, 24, 30,  # g2y   @ 2,4,8,16,32,64 arcmin
+                    3,  9,  15, 21, 27, 33], # gy    @ 2,4,8,16,32,64 arcmin
+    'tau_total':   [1,  7,  13, 19, 25, 31,  # g2tau @ 2,4,8,16,32,64 arcmin
+                    4,  10, 16, 22, 28, 34], # gtau  @ 2,4,8,16,32,64 arcmin
+    'kappa_total': [2,  8,  14, 20, 26, 32,  # g2kappa @ 2,4,8,16,32,64 arcmin
+                    5,  11, 17, 23, 29, 35], # gkappa  @ 2,4,8,16,32,64 arcmin
+    'all_3pt':     [0,  6,  12, 18, 24, 30,  # g2y
+                    1,  7,  13, 19, 25, 31,  # g2tau
+                    2,  8,  14, 20, 26, 32], # g2kappa
+    'all_2pt':     [3,  9,  15, 21, 27, 33,  # gy
+                    4,  10, 16, 22, 28, 34,  # gtau
+                    5,  11, 17, 23, 29, 35], # gkappa
+    'JOINT':       [0,  6,  12, 18, 24, 30,  # g2y
+                    1,  7,  13, 19, 25, 31,  # g2tau
+                    2,  8,  14, 20, 26, 32,  # g2kappa
+                    3,  9,  15, 21, 27, 33,  # gy
+                    4,  10, 16, 22, 28, 34,  # gtau
+                    5,  11, 17, 23, 29, 35], # gkappa
 }
 N_STATISTICS = len(STAT_MAP)
 
@@ -94,7 +94,7 @@ EQUAL_ARCH = {
     'num_transforms':  5,
     'learning_rate':   2e-4,
     'batch_size':      32,
-    'max_num_epochs':  400,
+    'max_num_epochs':  500,
     'repeats':         6,
 }
 
@@ -133,7 +133,7 @@ def load_optuna_hyperparams(model_dir, study_name='study'):
 # Individual stats go through per-feature z-score normalisation.
 # Combined stats go through per-block normalisation (BLOCK_SIZE=5).
 INDIVIDUAL_STATS = {'gy', 'gtau', 'gkappa', 'g2y', 'g2tau', 'g2kappa'}
-BLOCK_SIZE = 5   # one complete statistic per block (guaranteed by STAT_MAP above)
+BLOCK_SIZE = 6   # one complete statistic per block (guaranteed by STAT_MAP above)
 
 
 def make_blocks(n_features):
@@ -235,7 +235,7 @@ def extract_moments(path):
     """
     Extract summary statistics from all pkl files under path.
 
-    Returns a float32 array of length 30, or None if no pkl files found.
+    Returns a float32 array of length 36, or None if no pkl files found.
     Means are restricted to the galaxy footprint mask to match what an
     observer would measure over the survey footprint.
     """
@@ -491,6 +491,7 @@ if __name__ == '__main__':
     # --- x_obs ---
     print('Extracting reference run (x_obs)...')
     x_obs = extract_moments(os.path.join(BASE_DIR, 'reference_run'))
+    print("Number of moment scales is ",len(x_obs))
     if x_obs is None:
         print(os.path.join(BASE_DIR, 'reference_run'))
         raise RuntimeError('No pkl files found in reference_run directory.')
@@ -580,7 +581,7 @@ if __name__ == '__main__':
 
     next_theta = np.clip(next_theta, a_min=PRIOR_LOW, a_max=PRIOR_HIGH)
 
-    out_csv = (f'/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/'
+    out_csv = (f'/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/'
                f'round{NEXT_ROUND}_samples.csv')
     pd.DataFrame(next_theta, columns=PARAM_NAMES).to_csv(
         out_csv, index_label='sample_id')
