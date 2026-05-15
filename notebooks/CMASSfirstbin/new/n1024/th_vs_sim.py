@@ -54,13 +54,24 @@ nbar_comoving = 1e-4
 
 gal_zmin, gal_zmax = gal_zrange
 print(f"Galaxy z-range: [{gal_zmin}, {gal_zmax}]")
-
+# FIX: galaxy window starts at 0.3, halo z-grid also starts at 0.3 -> boundary coincidence
+# Push zmin below gal_zmin so the window sits inside the grid
+halo_params_dict['zmin'] = 0.2
 # =============================================================================
 # 2. THEORY PIPELINE: matches simulation script exactly
 # =============================================================================
 base_test     = base_class(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
 profiles_test = Profiles(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict,
                          base_class_obj=base_test)
+
+M_halo_MIN = 10**13.0
+halo_selM_mask = jnp.where(profiles_test.M_array > M_halo_MIN, 1.0, 0.0)
+halo_selM_mask_2d = jnp.tile(halo_selM_mask, (halo_params_dict['nz'], 1))
+halo_sel_mask_2d = halo_selM_mask_2d
+
+profiles_test.Ncen_mat = profiles_test.Ncen_mat * halo_sel_mask_2d
+profiles_test.Nsat_mat = profiles_test.Nsat_mat * halo_sel_mask_2d
+
 Pkz_test = get_Pkz(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict,
                    Profiles_obj=profiles_test)
 Cls_test = get_Cl(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict,
@@ -104,7 +115,7 @@ Cl_gg_no_shot = Cl_gg_raw - Cl_shot
 ell_th    = np.array(Cls_test.ell_array)
 Cl_th     = np.array(Cls_test.Cl_gal_gal_tot_mat[:, 0, 0])
 cl_decomp = compute_Cl_gg_1h_2h(Cls_test)
-
+#Cl_th     = cl_decomp['Cl_1h'] + cl_decomp['Cl_2h']
 # =============================================================================
 # 6. PLOT Cl^{gg}: 3-panel
 # =============================================================================
