@@ -12,6 +12,7 @@ from tqdm import tqdm
 from pathlib import Path
 import matplotlib.pyplot as plt
 import random
+from scipy.stats import kstest
 
 # =============================================================================
 # PATHS AND CONSTANTS
@@ -42,7 +43,7 @@ CSV_FILES = [
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/lhs_samples.csv', 0),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round2_samples.csv', 500),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round3_samples.csv', 700),
-    ]
+]
 NEXT_ROUND = len(CSV_FILES) + 1
 
 NSIDE      = 1024
@@ -54,34 +55,49 @@ GAL_ZMAX   = 0.5
 
 PRIOR_LOW    = [1.0, -0.3]
 PRIOR_HIGH   = [6.0,  0.0]
-PARAM_LABELS = [r'$$\theta_{ej,0}$$', r'$${\nu_{\theta_{ej}}}^{M}$$']
+PARAM_LABELS = [r'$\theta_{ej,0}$', r'${\nu_{\theta_{ej}}}^{M}$']
 PARAM_NAMES  = ['theta_ej_0', 'nu_theta_ej_M']
-PROPOSAL_STAT           = 'gy'
-FULL_VALIDATE_THRESHOLD = 100
-VAL_FRACTION = 0.15
+PROPOSAL_STAT = 'JOINT'   # was 'gy' — use best-constrained posterior for proposals
+VAL_FRACTION  = 0.10      # was 0.15 — preserve more training sims at ~800 budget
 
 # ── Ell binning ───────────────────────────────────────────────────────────────
 def make_ell_bins(lmin=LMIN, lmax=LMAX, n_bins=N_ELL_BINS):
-    edges   = np.logspace(np.log10(lmin), np.log10(lmax), n_bins + 1)
-    centres = 0.5 * (edges[:-1] + edges[1:])
-    return edges.astype(int), centres
+    edges = np.unique(
+        np.logspace(np.log10(lmin), np.log10(lmax), n_bins + 1).astype(int)
+    )
+    if len(edges) != n_bins + 1:
+        print(f'[WARN] make_ell_bins: requested {n_bins+1} edges, '
+              f'got {len(edges)} unique after int cast. '
+              f'Effective bins: {len(edges) - 1}')
+    centres = 0.5 * (edges[:-1] + edges[1:]).astype(float)
+    return edges, centres
 
 ELL_EDGES, ELL_CENTRES = make_ell_bins()
+N_ELL_BINS_ACTUAL = len(ELL_EDGES) - 1  # may differ from N_ELL_BINS if edges collapsed
+
+# ── Precomputed bin masks for fast bin_cl ─────────────────────────────────────
+_ELL_FULL  = np.arange(LMAX + 1)
+_SCALE     = _ELL_FULL * (_ELL_FULL + 1) / (2.0 * np.pi)
+_W         = 2 * _ELL_FULL + 1
+_BIN_MASKS = [
+    (_ELL_FULL >= ELL_EDGES[i]) & (_ELL_FULL < ELL_EDGES[i + 1])
+    for i in range(N_ELL_BINS_ACTUAL)
+]
+_BIN_WSUM = np.array([
+    float(_W[m].sum()) if _W[m].sum() > 0 else 1.0
+    for m in _BIN_MASKS
+])
 
 def bin_cl(cl_full):
-    ell    = np.arange(len(cl_full))
-    bp     = np.zeros(N_ELL_BINS)
-    for i in range(N_ELL_BINS):
-        lo, hi = ELL_EDGES[i], ELL_EDGES[i + 1]
-        mask   = (ell >= lo) & (ell < hi)
-        if mask.any():
-            w     = 2 * ell[mask] + 1
-            bp[i] = np.sum(w * cl_full[mask]) / np.sum(w)
-    return bp
+    """Band-power bin Cl with ℓ(ℓ+1)/2π scaling and (2ℓ+1) weighting."""
+    cl_scaled = cl_full[:LMAX + 1] * _SCALE
+    return np.array([
+        np.dot(_W[m], cl_scaled[m]) / _BIN_WSUM[i]
+        if _BIN_MASKS[i].any() else 0.0
+        for i, m in enumerate(_BIN_MASKS)
+    ], dtype=np.float32)
 
-# ── Cl specs: (label, field_a, field_b) ──────────────────────────────────────
-# field codes: 'gal_sq' = delta_gal^2 - mean, 'gal' = delta_gal,
-#              'ymap', 'tau', 'kappa'
+# ── Cl specs ──────────────────────────────────────────────────────────────────
 CL_SPECS = [
     ('g2y',     'gal_sq', 'ymap'),
     ('g2tau',   'gal_sq', 'tau'),
@@ -90,11 +106,11 @@ CL_SPECS = [
     ('gtau',    'gal',    'tau'),
     ('gkappa',  'gal',    'kappa'),
 ]
-N_SPECS   = len(CL_SPECS)            # 6
-N_SUMMARY = N_SPECS * N_ELL_BINS     # 6 * 20 = 120
+N_SPECS   = len(CL_SPECS)
+N_SUMMARY = N_SPECS * N_ELL_BINS_ACTUAL
 
-# ── STAT_MAP: contiguous blocks of N_ELL_BINS per spectrum ───────────────────
-_s = {label: list(range(i * N_ELL_BINS, (i + 1) * N_ELL_BINS))
+# ── STAT_MAP ──────────────────────────────────────────────────────────────────
+_s = {label: list(range(i * N_ELL_BINS_ACTUAL, (i + 1) * N_ELL_BINS_ACTUAL))
       for i, (label, _, _) in enumerate(CL_SPECS)}
 
 STAT_MAP = {
@@ -113,23 +129,19 @@ STAT_MAP = {
 }
 N_STATISTICS = len(STAT_MAP)
 
-# Set FORCE_EQUAL_ARCH = True to give every statistic an identical network so
-# that performance differences cannot be attributed to capacity differences
-# (as happened with Optuna giving tau_total 3 transforms vs kappa_total 5).
-# Set to False to use Optuna hyperparameters (or adaptive defaults) instead.
+# ── Architecture ──────────────────────────────────────────────────────────────
 FORCE_EQUAL_ARCH = True
 EQUAL_ARCH = {
-    'hidden_features': 32,
-    'num_transforms':  5,
-    'learning_rate':   2e-4,
-    'batch_size':      32,
+    'hidden_features': 64,   # was 32 — too small for 120-dim input
+    'num_transforms':  6,    # was 5
+    'learning_rate':   1e-4, # was 2e-4
+    'batch_size':      64,   # was 32
     'max_num_epochs':  500,
     'repeats':         6,
 }
 
 ILIAS_BASE = '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi/ilias_results'
-OPTUNA_STUDY_DIRS = {name: os.path.join(ILIAS_BASE, name)
-    for name in STAT_MAP}
+OPTUNA_STUDY_DIRS = {name: os.path.join(ILIAS_BASE, name) for name in STAT_MAP}
 
 def load_optuna_hyperparams(model_dir, study_name='study'):
     import optuna
@@ -145,8 +157,7 @@ def load_optuna_hyperparams(model_dir, study_name='study'):
           f'Best trial #{best.number}  score={best.value:.4f}  '
           f'hfs={mcfg["hidden_features"]}  nts={mcfg["num_transforms"]}  '
           f'lr={mcfg["learning_rate"]:.2e}  '
-          f'batch={mcfg["batch_size"]}  '
-          f'epochs={mcfg["max_epochs"]}')
+          f'batch={mcfg["batch_size"]}  epochs={mcfg["max_epochs"]}')
     return {
         'hidden_features': mcfg['hidden_features'],
         'num_transforms':  mcfg['num_transforms'],
@@ -156,11 +167,10 @@ def load_optuna_hyperparams(model_dir, study_name='study'):
     }
 
 INDIVIDUAL_STATS = {'gy', 'gtau', 'gkappa', 'g2y', 'g2tau', 'g2kappa'}
-BLOCK_SIZE = N_ELL_BINS   # 20 ell bins per block
+BLOCK_SIZE = N_ELL_BINS_ACTUAL
 
 def make_blocks(n_features):
-    """Split local indices into consecutive blocks of BLOCK_SIZE."""
-    return [list(range(i, i + BLOCK_SIZE))
+    return [list(range(i, min(i + BLOCK_SIZE, n_features)))
             for i in range(0, n_features, BLOCK_SIZE)]
 
 
@@ -243,10 +253,14 @@ def extract_Cls(path):
     """
     Extract Cl summary statistics from all pkl files under path.
 
-    Returns a float32 array of length N_SUMMARY (120), or None if no pkl
-    files found. The vector is ordered as:
-        [g2y bins 0..19 | g2tau bins 0..19 | g2kappa bins 0..19 |
-         gy  bins 0..19 | gtau  bins 0..19 | gkappa  bins 0..19]
+    Returns a float32 array of length N_SUMMARY, or None if no pkl files found.
+    Ordering: [g2y | g2tau | g2kappa | gy | gtau | gkappa], each N_ELL_BINS_ACTUAL long.
+
+    Pixel window correction applied only to gal-derived fields (count maps).
+    ymap, tau, kappa are continuous painted fields — no pixel window needed.
+    Correction per cross-spectrum:
+        gal  × {y,tau,kappa}    -> divide by pw^1  (one count field)
+        gal² × {y,tau,kappa}    -> divide by pw^2  (squared count field)
     """
     pattern = os.path.join(path, '**', f'allmaps_sim_B12_nside{NSIDE}.pkl')
     files   = glob.glob(pattern, recursive=True)
@@ -254,7 +268,7 @@ def extract_Cls(path):
         return None
 
     ymap = np.zeros(12 * NSIDE**2, dtype=np.float64)
-    gmap = np.zeros(12 * NSIDE**2, dtype=np.float64)
+    gmap = np.zeros(12 * NSIDE**2, dtype=np.float32)   # float32 — counts, no precision loss
     kmap = np.zeros(12 * NSIDE**2, dtype=np.float64)
     tmap = np.zeros(12 * NSIDE**2, dtype=np.float64)
 
@@ -272,44 +286,68 @@ def extract_Cls(path):
             mask    = np.isfinite(ra_gal) & np.isfinite(dec_gal)
             if mask.any():
                 pix   = hp.ang2pix(NSIDE, ra_gal[mask], dec_gal[mask], lonlat=True)
-                gmap += np.bincount(pix, minlength=12 * NSIDE**2)
+                gmap += np.bincount(pix, minlength=12 * NSIDE**2).astype(np.float32)
 
-    mean_g = np.mean(gmap)
+    mean_g = float(np.mean(gmap))
     if mean_g <= 0:
         return None
-    delta_gal = gmap / mean_g - 1.0
 
-    # Squared galaxy field (mean-subtracted so it is zero-mean)
+    # fsky diagnostic (not applied — SBI is self-consistent without correction)
+    npix_filled = int(np.sum(gmap > 0))
+    fsky = npix_filled / (12 * NSIDE**2)
+
+    delta_gal = gmap.astype(np.float64) / mean_g - 1.0
+
     delta_sq  = delta_gal ** 2
     delta_sq -= np.mean(delta_sq)
 
-    # Pixel window correction for cross-spectra (applied once)
-    pixwin = hp.pixwin(NSIDE, lmax=LMAX)
-    pw     = np.ones(LMAX + 1)
-    pw[:len(pixwin)] = pixwin
-    pw = np.where(pw > 0, pw, 1.0)
+    # Pixel window: truncate to LMAX+1, safe for all healpy versions
+    pixwin = hp.pixwin(NSIDE)                   # always length 4*NSIDE+1
+    pw1    = pixwin[:LMAX + 1].copy()           # correction for gal  (power 1)
+    pw1    = np.where(pw1 > 0, pw1, 1.0)
+    pw2    = pw1 ** 2                            # correction for gal² (power 2)
 
+    # Map each field code -> (array, pixel_window_to_apply)
+    # None means no pixel window correction needed
     field_map = {
-        'gal':    delta_gal,
-        'gal_sq': delta_sq,
-        'ymap':   np.nan_to_num(ymap),
-        'tau':    np.nan_to_num(tmap),
-        'kappa':  np.nan_to_num(kmap),
+        'gal':    (delta_gal,              pw1),
+        'gal_sq': (delta_sq,               pw2),
+        'ymap':   (np.nan_to_num(ymap),    None),
+        'tau':    (np.nan_to_num(tmap),    None),
+        'kappa':  (np.nan_to_num(kmap),    None),
     }
 
     vec = []
     for label, field_a, field_b in CL_SPECS:
-        map_a = field_map[field_a]
-        map_b = field_map[field_b]
+        map_a, pw_a = field_map[field_a]
+        map_b, pw_b = field_map[field_b]
+
         cl_full = hp.anafast(map_a, map_b, lmax=LMAX)
-        cl_full = cl_full / pw[:len(cl_full)]   # pixel window correction
-        vec.append(bin_cl(cl_full))
+        assert len(cl_full) == LMAX + 1, \
+            f'anafast returned {len(cl_full)} elements, expected {LMAX+1}'
+
+        # Apply whichever pixel window correction is needed
+        if pw_a is not None:
+            cl_full = cl_full / pw_a
+        if pw_b is not None:
+            cl_full = cl_full / pw_b
+
+        bp = bin_cl(cl_full)
+
+        # Diagnostic: flag g2* bins with high negative fraction
+        if label.startswith('g2'):
+            neg_frac = float((bp < 0).mean())
+            if neg_frac > 0.3:
+                print(f'  [WARN] {label}: {neg_frac:.0%} of bins negative '
+                      f'(fsky={fsky:.3f}) — may indicate low S/N')
+
+        vec.append(bp)
 
     return np.concatenate(vec).astype(np.float32)
 
 
 # =============================================================================
-# TRAINING WORKER — runs in its own process via multiprocessing.Pool
+# TRAINING WORKER
 # =============================================================================
 
 def train_one_statistic(args):
@@ -334,18 +372,24 @@ def train_one_statistic(args):
         xo      = x_obs[idx].astype(np.float32)
 
         if blocks is None:
+            # Single-spectrum statistics: per-feature z-score
             x_mean = np.mean(xt_full, axis=0)
             x_std  = np.std( xt_full, axis=0)
             x_std[x_std < 1e-10] = 1.0
 
-            xt_norm = xt_full / x_mean
-            xo_norm = xo      / x_mean
+            xt_norm = (xt_full - x_mean) / x_std
+            xo_norm = (xo      - x_mean) / x_std
+
+            if name.startswith('g2'):
+                neg_frac = float((xt_full < 0).mean())
+                print(f'{name:12s}  neg_fraction={neg_frac:.3f}', flush=True)
 
             print(f'{name:12s}  [per-feature z-score]  '
                   f'raw_mean={np.abs(x_mean).mean():.4e}  '
                   f'raw_std={x_std.mean():.4e}', flush=True)
 
         else:
+            # Composite statistics: per-spectrum-block z-score
             xt_norm = np.empty_like(xt_full)
             xo_norm = np.empty(n_stats, dtype=np.float32)
             x_mean  = np.empty(n_stats, dtype=np.float32)
@@ -356,19 +400,20 @@ def train_one_statistic(args):
                 m = np.mean(xt_full[:, blk], axis=0)
                 s = np.std( xt_full[:, blk], axis=0)
                 s[s < 1e-10] = 1.0
-                xt_norm[:, blk] = xt_full[:, blk] / m
-                xo_norm[blk]    = xo[blk]          / m
+
+                xt_norm[:, blk] = (xt_full[:, blk] - m) / s
+                xo_norm[blk]    = (xo[blk]          - m) / s
                 x_mean[blk]     = m
                 x_std[blk]      = s
 
-            print(f'{name:12s}  [per-block normalisation, {len(blocks)} blocks]  '
+            print(f'{name:12s}  [per-block z-score, {len(blocks)} blocks]  '
                   f'mean_std={x_std.mean():.4e}  '
                   f'min_std={x_std.min():.4e}  max_std={x_std.max():.4e}', flush=True)
 
-        frac_below = (xo < xt_full.min(axis=0)).mean()
-        frac_above = (xo > xt_full.max(axis=0)).mean()
-        print(f'{name:12s}  frac_below_sim_range={frac_below:.2f}  '
-              f'frac_above_sim_range={frac_above:.2f}', flush=True)
+        frac_below = float((xo < xt_full.min(axis=0)).mean())
+        frac_above = float((xo > xt_full.max(axis=0)).mean())
+        print(f'{name:12s}  frac_below={frac_below:.2f}  '
+              f'frac_above={frac_above:.2f}', flush=True)
 
         np.save(fpath(f'scaler_{name}_mean.npy'), x_mean)
         np.save(fpath(f'scaler_{name}_std.npy'),  x_std)
@@ -390,9 +435,9 @@ def train_one_statistic(args):
             lr         = EQUAL_ARCH['learning_rate']
             max_epochs = EQUAL_ARCH['max_num_epochs']
             repeats    = EQUAL_ARCH['repeats']
-            print(f'{name:12s}  [forced equal arch: '
-                  f'hfs={hfs}, nts={nts}, lr={lr:.2e}, '
-                  f'batch={batch_size}, epochs={max_epochs}]')
+            print(f'{name:12s}  [forced arch: hfs={hfs}, nts={nts}, '
+                  f'lr={lr:.2e}, batch={batch_size}, epochs={max_epochs}]',
+                  flush=True)
         elif opt_hps is not None:
             hfs        = opt_hps['hidden_features']
             nts        = opt_hps['num_transforms']
@@ -401,13 +446,13 @@ def train_one_statistic(args):
             max_epochs = opt_hps['max_num_epochs']
             repeats    = 6
         else:
-            if n_stats <= 5:
-                hfs, nts, repeats = 16, 3, 5
-            elif n_stats <= 15:
-                hfs, nts, repeats = 32, 3, 6
-            else:
+            if n_stats <= 20:
                 hfs, nts, repeats = 32, 4, 6
-            n_train_eff = int(n_train * 0.85)
+            elif n_stats <= 60:
+                hfs, nts, repeats = 64, 5, 6
+            else:
+                hfs, nts, repeats = 64, 6, 6
+            n_train_eff = int(n_train * (1.0 - VAL_FRACTION))
             batch_size  = int(np.clip(n_train_eff // 8, 32, 256))
             lr          = 5e-4
             max_epochs  = 500
@@ -416,7 +461,7 @@ def train_one_statistic(args):
             'training_batch_size': batch_size,
             'learning_rate':       lr,
             'max_num_epochs':      max_epochs,
-            'stop_after_epochs':   50,
+            'stop_after_epochs':   100,   # was 50 — Cls converge slower
             'clip_max_norm':       5.0,
             'validation_fraction': VAL_FRACTION,
         }
@@ -459,31 +504,32 @@ def train_one_statistic(args):
 
 if __name__ == '__main__':
 
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(CACHE_DIR,    exist_ok=True)
+    os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f'Device: {device}')
-    print(f'The next round of samples to be run will be round {NEXT_ROUND}')
+    print(f'Next round: {NEXT_ROUND}')
     print(f'FORCE_EQUAL_ARCH = {FORCE_EQUAL_ARCH}')
     if FORCE_EQUAL_ARCH:
         print(f'  Architecture: {EQUAL_ARCH}')
-    print(f'Cl settings: LMIN={LMIN}  LMAX={LMAX}  N_ELL_BINS={N_ELL_BINS}  '
+    print(f'Cl settings: LMIN={LMIN}  LMAX={LMAX}  N_ELL_BINS={N_ELL_BINS_ACTUAL}  '
           f'N_SUMMARY={N_SUMMARY}')
     print(f'ELL_CENTRES: {np.round(ELL_CENTRES).astype(int).tolist()}')
 
-    # --- x_obs ---
-    print('Extracting reference run (x_obs)...')
+    # ── x_obs ─────────────────────────────────────────────────────────────────
+    print('\nExtracting reference run (x_obs)...')
     x_obs = extract_Cls(os.path.join(BASE_DIR, 'reference_run'))
     if x_obs is None:
         raise RuntimeError('No pkl files found in reference_run directory.')
     print(f'  x_obs shape: {x_obs.shape}  (expect {N_SUMMARY})')
     for i, (label, _, _) in enumerate(CL_SPECS):
-        sl = slice(i * N_ELL_BINS, (i + 1) * N_ELL_BINS)
+        sl = slice(i * N_ELL_BINS_ACTUAL, (i + 1) * N_ELL_BINS_ACTUAL)
         print(f'    {label:8s}: mean={x_obs[sl].mean():.4e}  '
               f'range=[{x_obs[sl].min():.4e}, {x_obs[sl].max():.4e}]')
     np.save(os.path.join(WORK_DIR, 'x_obs.npy'), x_obs)
 
-    # --- Training data ---
+    # ── Training data ─────────────────────────────────────────────────────────
     x_train_path     = os.path.join(WORK_DIR, 'x_train_full.npy')
     theta_train_path = os.path.join(WORK_DIR, 'theta_train_full.npy')
 
@@ -517,15 +563,28 @@ if __name__ == '__main__':
     print(f'Loaded {len(theta_train)} simulations. '
           f'x_train: {x_train.shape}, theta_train: {theta_train.shape}')
 
-    # =========================================================================
-    # PARALLEL TRAINING
-    # =========================================================================
+    # Per-spectrum Fisher correlation diagnostic
+    print('\nPer-spectrum Fisher correlations with parameters:')
+    for i, (label, _, _) in enumerate(CL_SPECS):
+        sl = slice(i * N_ELL_BINS_ACTUAL, (i + 1) * N_ELL_BINS_ACTUAL)
+        cl_block = x_train[:, sl]
+        for p, pname in enumerate(PARAM_NAMES):
+            r = np.array([
+                np.corrcoef(cl_block[:, j], theta_train[:, p])[0, 1]
+                for j in range(N_ELL_BINS_ACTUAL)
+            ])
+            print(f'  {label:8s}  {pname}: '
+                  f'max|r|={np.abs(r).max():.3f}  '
+                  f'mean|r|={np.abs(r).mean():.3f}  '
+                  f'best_ell={int(ELL_CENTRES[np.abs(r).argmax()])}')
+
+    # ── Parallel training ─────────────────────────────────────────────────────
     n_cpus = min(N_STATISTICS, int(os.environ.get('SLURM_CPUS_PER_TASK', mp.cpu_count())))
     print(f'\nTraining {N_STATISTICS} posteriors in parallel '
           f'({n_cpus} processes, each on CPU)...')
 
     if not FORCE_EQUAL_ARCH:
-        print('\nLoading per-statistic Optuna hyperparameters...')
+        print('Loading per-statistic Optuna hyperparameters...')
 
     worker_args = []
     for name, idx in STAT_MAP.items():
@@ -548,9 +607,78 @@ if __name__ == '__main__':
         status = 'OK  ' if success else 'FAIL'
         print(f'  [{status}] {msg}')
 
-    # =========================================================================
-    # NEXT-ROUND ACTIVE LEARNING PROPOSAL
-    # =========================================================================
+    # ── Validation ────────────────────────────────────────────────────────────
+    if os.path.exists(VALIDATION_CSV):
+        print('\nLoading validation simulations...')
+        val_df = pd.read_csv(VALIDATION_CSV)
+        val_x_list, val_theta_list = [], []
+
+        for _, row in tqdm(val_df.iterrows(), total=len(val_df),
+                           desc='Extracting validation Cls'):
+            sid        = int(row['sample_id'])
+            cache_file = os.path.join(VAL_CACHE_DIR, f'x_val_{sid}.npy')
+            if os.path.exists(cache_file):
+                v = np.load(cache_file)
+            else:
+                v = extract_Cls(os.path.join(BASE_DIR, f'validation_{sid}'))
+                if v is not None:
+                    np.save(cache_file, v)
+            if v is not None:
+                val_theta_list.append([row['theta_ej_0'], row['nu_theta_ej_M']])
+                val_x_list.append(v)
+
+        if val_x_list:
+            x_val     = np.array(val_x_list,    dtype=np.float32)
+            theta_val = np.array(val_theta_list, dtype=np.float32)
+            print(f'  Validation set: {len(theta_val)} sims, '
+                  f'x_val: {x_val.shape}')
+
+            print('\n--- Validation rank statistics (KS test) ---')
+            for name in ['gy', 'JOINT']:
+                pkl_path = os.path.join(WORK_DIR, f'ili_posterior_{name}.pkl')
+                if not os.path.exists(pkl_path):
+                    print(f'  [{name}] posterior pkl not found — skipping.')
+                    continue
+
+                x_mean_val = np.load(os.path.join(WORK_DIR,
+                                                   f'scaler_{name}_mean.npy'))
+                x_std_val  = np.load(os.path.join(WORK_DIR,
+                                                   f'scaler_{name}_std.npy'))
+                idx_val    = STAT_MAP[name]
+                x_val_norm = (x_val[:, idx_val] - x_mean_val) / x_std_val
+
+                with open(pkl_path, 'rb') as f:
+                    post = pk.load(f)
+
+                ranks = []
+                for i in range(len(theta_val)):
+                    samples = sample_ensemble_direct(
+                        post, x_val_norm[i], n_samples=500)
+                    if samples is None:
+                        continue
+                    row_ranks = [
+                        float((samples[:, p] < theta_val[i, p]).mean())
+                        for p in range(theta_val.shape[1])
+                    ]
+                    ranks.append(row_ranks)
+
+                if not ranks:
+                    print(f'  [{name}] No valid samples — skipping KS test.')
+                    continue
+
+                ranks = np.array(ranks)   # shape (n_val, n_params)
+                print(f'  [{name}]')
+                for p, pname in enumerate(PARAM_NAMES):
+                    ks_stat, ks_p = kstest(ranks[:, p], 'uniform')
+                    flag = 'OK' if ks_p > 0.05 else 'WARN: non-uniform'
+                    print(f'    {pname}: KS={ks_stat:.3f}  '
+                          f'p={ks_p:.3f}  [{flag}]')
+        else:
+            print('  No validation sims found — skipping.')
+    else:
+        print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
+
+    # ── Active learning proposal ──────────────────────────────────────────────
     print(f'\nGenerating round {NEXT_ROUND} proposals from '
           f'{PROPOSAL_STAT} posterior...')
 
@@ -558,7 +686,9 @@ if __name__ == '__main__':
     proposal_xobs = os.path.join(WORK_DIR, f'xobs_{PROPOSAL_STAT}.npy')
 
     if not os.path.exists(proposal_pkl):
-        raise FileNotFoundError(f'Proposal posterior not found: {proposal_pkl}.')
+        raise FileNotFoundError(
+            f'Proposal posterior not found: {proposal_pkl}. '
+            f'Check that {PROPOSAL_STAT} trained successfully.')
 
     with open(proposal_pkl, 'rb') as f:
         proposal_posterior = pk.load(f)
@@ -580,7 +710,7 @@ if __name__ == '__main__':
     print(f'Saved {len(next_theta)} proposals to {out_csv}')
     for i, pname in enumerate(PARAM_NAMES):
         col = next_theta[:, i]
-        print(f'  {pname}: mean={col.mean():.3f}, std={col.std():.3f}, '
+        print(f'  {pname}: mean={col.mean():.3f}  std={col.std():.3f}  '
               f'range=[{col.min():.3f}, {col.max():.3f}]')
 
     print('\nAll done. Generate contour plots and run the next round of samples!')
