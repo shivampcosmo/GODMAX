@@ -130,7 +130,7 @@ STAT_MAP = {
 N_STATISTICS = len(STAT_MAP)
 
 # ── Architecture ──────────────────────────────────────────────────────────────
-FORCE_EQUAL_ARCH = True
+FORCE_EQUAL_ARCH = False
 EQUAL_ARCH = {
     'hidden_features': 64,   # was 32 — too small for 120-dim input
     'num_transforms':  6,    # was 5
@@ -140,7 +140,7 @@ EQUAL_ARCH = {
     'repeats':         6,
 }
 
-ILIAS_BASE = '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi/ilias_results'
+ILIAS_BASE = '/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/ilias_results'
 OPTUNA_STUDY_DIRS = {name: os.path.join(ILIAS_BASE, name) for name in STAT_MAP}
 
 def load_optuna_hyperparams(model_dir, study_name='study'):
@@ -528,7 +528,7 @@ if __name__ == '__main__':
         print(f'    {label:8s}: mean={x_obs[sl].mean():.4e}  '
               f'range=[{x_obs[sl].min():.4e}, {x_obs[sl].max():.4e}]')
     np.save(os.path.join(WORK_DIR, 'x_obs.npy'), x_obs)
-
+    
     # ── Training data ─────────────────────────────────────────────────────────
     x_train_path     = os.path.join(WORK_DIR, 'x_train_full.npy')
     theta_train_path = os.path.join(WORK_DIR, 'theta_train_full.npy')
@@ -577,7 +577,7 @@ if __name__ == '__main__':
                   f'max|r|={np.abs(r).max():.3f}  '
                   f'mean|r|={np.abs(r).mean():.3f}  '
                   f'best_ell={int(ELL_CENTRES[np.abs(r).argmax()])}')
-
+    
     # ── Parallel training ─────────────────────────────────────────────────────
     n_cpus = min(N_STATISTICS, int(os.environ.get('SLURM_CPUS_PER_TASK', mp.cpu_count())))
     print(f'\nTraining {N_STATISTICS} posteriors in parallel '
@@ -606,14 +606,20 @@ if __name__ == '__main__':
     for name, success, msg in results:
         status = 'OK  ' if success else 'FAIL'
         print(f'  [{status}] {msg}')
-
+    
     # ── Validation ────────────────────────────────────────────────────────────
-    if os.path.exists(VALIDATION_CSV):
-        print('\nLoading validation simulations...')
-        val_df = pd.read_csv(VALIDATION_CSV)
-        val_x_list, val_theta_list = [], []
+    if not os.path.exists(VALIDATION_CSV):
+        print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
+    else:
+        print('\nLoading held-out validation set...')
+        os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
-        for _, row in tqdm(val_df.iterrows(), total=len(val_df),
+        val_df    = pd.read_csv(VALIDATION_CSV)
+        theta_val = val_df[PARAM_NAMES].values.astype(np.float32)
+        x_val_list  = []
+        missing_val = []
+
+        for i, row in tqdm(val_df.iterrows(), total=len(val_df),
                            desc='Extracting validation Cls'):
             sid        = int(row['sample_id'])
             cache_file = os.path.join(VAL_CACHE_DIR, f'x_val_{sid}.npy')
@@ -624,60 +630,89 @@ if __name__ == '__main__':
                 if v is not None:
                     np.save(cache_file, v)
             if v is not None:
-                val_theta_list.append([row['theta_ej_0'], row['nu_theta_ej_M']])
-                val_x_list.append(v)
+                x_val_list.append(v)
+            else:
+                missing_val.append(sid)
+                print(f'  [WARN] No data found for validation_{sid}, skipping.')
 
-        if val_x_list:
-            x_val     = np.array(val_x_list,    dtype=np.float32)
-            theta_val = np.array(val_theta_list, dtype=np.float32)
-            print(f'  Validation set: {len(theta_val)} sims, '
-                  f'x_val: {x_val.shape}')
+        if missing_val:
+            keep      = [i for i, row in val_df.iterrows()
+                         if int(row['sample_id']) not in missing_val]
+            theta_val = theta_val[keep]
 
-            print('\n--- Validation rank statistics (KS test) ---')
-            for name in ['gy', 'JOINT']:
-                pkl_path = os.path.join(WORK_DIR, f'ili_posterior_{name}.pkl')
-                if not os.path.exists(pkl_path):
-                    print(f'  [{name}] posterior pkl not found — skipping.')
+        if len(x_val_list) < 10:
+            print('[SKIP] Fewer than 10 valid validation points, skipping validation.')
+        else:
+            x_val_full = np.array(x_val_list, dtype=np.float32)
+            print(f'  Validation set: {len(theta_val)} points, '
+                  f'x_val: {x_val_full.shape}, theta_val: {theta_val.shape}')
+
+            np.save(os.path.join(WORK_DIR, 'x_val_full.npy'),    x_val_full)
+            np.save(os.path.join(WORK_DIR, 'theta_val_full.npy'), theta_val)
+            print('  Saved x_val_full.npy and theta_val_full.npy')
+
+            val_ok, val_failed = [], []
+
+            for name, idx in STAT_MAP.items():
+                posterior_path = os.path.join(WORK_DIR, f'ili_posterior_{name}.pkl')
+                if not os.path.exists(posterior_path):
+                    print(f'  [SKIP] No saved posterior for {name}.')
                     continue
 
-                x_mean_val = np.load(os.path.join(WORK_DIR,
-                                                   f'scaler_{name}_mean.npy'))
-                x_std_val  = np.load(os.path.join(WORK_DIR,
-                                                   f'scaler_{name}_std.npy'))
-                idx_val    = STAT_MAP[name]
-                x_val_norm = (x_val[:, idx_val] - x_mean_val) / x_std_val
-
-                with open(pkl_path, 'rb') as f:
+                print(f'\n  === Validating {name} ===')
+                with open(posterior_path, 'rb') as f:
                     post = pk.load(f)
 
-                ranks = []
-                for i in range(len(theta_val)):
-                    samples = sample_ensemble_direct(
-                        post, x_val_norm[i], n_samples=500)
-                    if samples is None:
-                        continue
-                    row_ranks = [
-                        float((samples[:, p] < theta_val[i, p]).mean())
-                        for p in range(theta_val.shape[1])
-                    ]
-                    ranks.append(row_ranks)
+                x_mean = np.load(os.path.join(WORK_DIR, f'scaler_{name}_mean.npy'))
+                x_std  = np.load(os.path.join(WORK_DIR, f'scaler_{name}_std.npy'))
+                xt_val = ((x_val_full[:, idx] - x_mean)
+                          / (x_std + 1e-8)).astype(np.float32)
 
-                if not ranks:
-                    print(f'  [{name}] No valid samples — skipping KS test.')
-                    continue
+                val_dir = Path(WORK_DIR) / f'validation_{name}'
+                val_dir.mkdir(exist_ok=True, parents=True)
+                np.save(val_dir / 'x_val.npy',     xt_val)
+                np.save(val_dir / 'theta_val.npy', theta_val)
 
-                ranks = np.array(ranks)   # shape (n_val, n_params)
-                print(f'  [{name}]')
-                for p, pname in enumerate(PARAM_NAMES):
-                    ks_stat, ks_p = kstest(ranks[:, p], 'uniform')
-                    flag = 'OK' if ks_p > 0.05 else 'WARN: non-uniform'
-                    print(f'    {pname}: KS={ks_stat:.3f}  '
-                          f'p={ks_p:.3f}  [{flag}]')
-        else:
-            print('  No validation sims found — skipping.')
-    else:
-        print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
+                loader = StaticNumpyLoader(
+                    in_dir=str(val_dir),
+                    x_file='x_val.npy',
+                    theta_file='theta_val.npy',
+                )
 
+                try:
+                    metrics = {
+                        'coverage': PosteriorCoverage(
+                            num_samples=200,
+                            sample_method='emcee',
+                            sample_params={
+                                'num_chains': 8,
+                                'thin':       2,
+                                'burn_in':    50,
+                            },
+                            labels=PARAM_LABELS,
+                            out_dir=val_dir,
+                            plot_list=['coverage', 'histogram',
+                                       'tarp', 'predictions'],
+                        )
+                    }
+                    val_runner = ValidationRunner(
+                        posterior=post,
+                        metrics=metrics,
+                        out_dir=val_dir,
+                    )
+                    val_runner(loader)
+                    print(f'  Plots saved to {val_dir}')
+                    val_ok.append(name)
+                except Exception:
+                    import traceback
+                    print(f'  [FAIL] {name}: {traceback.format_exc()}')
+                    val_failed.append(name)
+
+            print('\n--- Validation Summary ---')
+            print(f'  OK:     {val_ok}')
+            if val_failed:
+                print(f'  Failed: {val_failed}')
+    
     # ── Active learning proposal ──────────────────────────────────────────────
     print(f'\nGenerating round {NEXT_ROUND} proposals from '
           f'{PROPOSAL_STAT} posterior...')
@@ -712,5 +747,5 @@ if __name__ == '__main__':
         col = next_theta[:, i]
         print(f'  {pname}: mean={col.mean():.3f}  std={col.std():.3f}  '
               f'range=[{col.min():.3f}, {col.max():.3f}]')
-
+    
     print('\nAll done. Generate contour plots and run the next round of samples!')
