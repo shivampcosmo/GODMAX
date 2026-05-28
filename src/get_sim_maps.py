@@ -588,6 +588,7 @@ class get_sim_map(Profiles):
         
         # Process kappa map
         if get_kappamap:
+            self._setup_lensing_kernel_interpolator(mock_params_dict)
             self._get_kappamap()
 
         if get_baryonified_map:
@@ -618,6 +619,59 @@ class get_sim_map(Profiles):
             self.z_array.astype(jnp.float32), 
             tauz_array, 
             extrap=True
+        )
+
+    def _setup_lensing_kernel_interpolator(self, mock_params_dict):
+        """Set up W_kappa(z) for converting projected mass to convergence.
+
+        The map-side conversion mirrors the analytic Cl convention:
+
+            kappa(theta) = W_kappa(z) * a(z)^2 * Sigma_phys(theta) / rho_m_bar
+
+        where ``W_kappa`` is the same CMB/source lensing kernel used in
+        get_Cls and ``Sigma_phys`` is the projected physical matter density
+        returned by ``log_rhom2D_interp``.
+        """
+        kappa_source_bin = int(mock_params_dict.get('kappa_source_bin', 0))
+        z_grid = np.asarray(self.z_array, dtype=np.float64)
+        chi_grid = np.asarray(self.chi_array, dtype=np.float64)
+        constant_factor = (
+            3.0 * (100.0 ** 2) * float(self.cosmo_jax.Omega_m)
+            / (2.0 * ((const.c.value * 1e-3) ** 2))
+        )
+
+        if bool(getattr(self, 'is_cmb_lensing', False)):
+            chi_cmb = float(np.asarray(self.chi_CMB))
+            radial_kernel = np.clip(chi_cmb - chi_grid, 0.0, None) / max(chi_cmb, 0.1)
+            Wk_array = constant_factor * radial_kernel * (1.0 + z_grid) * chi_grid
+            source_label = 'cmb'
+        else:
+            z_source = np.asarray(self.z_array_nz, dtype=np.float64)
+            nz_source = np.asarray(self.pzs_inp_mat_inp[kappa_source_bin], dtype=np.float64)
+            norm = np.trapz(nz_source, z_source)
+            if norm > 0:
+                nz_source = nz_source / norm
+            chi_source = np.asarray(
+                bkgrd.radial_comoving_distance(
+                    self.cosmo_jax,
+                    jnp.array(1.0 / (1.0 + z_source), dtype=jnp.float32),
+                ),
+                dtype=np.float64,
+            )
+            Wk_array = np.zeros_like(z_grid)
+            for iz, (z_lens, chi_lens) in enumerate(zip(z_grid, chi_grid)):
+                geom = np.clip(chi_source - chi_lens, 0.0, None) / np.clip(chi_source, 0.1, None)
+                radial_kernel = np.trapz(nz_source * geom, z_source) * (1.0 + z_lens) * chi_lens
+                Wk_array[iz] = constant_factor * radial_kernel
+            source_label = f'source_bin_{kappa_source_bin}'
+
+        self.kappa_source_bin = kappa_source_bin
+        self.kappa_source_label = source_label
+        self.Wkappa_array_for_map = jnp.array(Wk_array, dtype=jnp.float32)
+        self.Wkappa_interp = interpax.Interpolator1D(
+            self.z_array.astype(jnp.float32),
+            self.Wkappa_array_for_map,
+            extrap=True,
         )
 
     def _chunked_vmap(self, func, n_total, chunk_size=20_000_000):
@@ -657,6 +711,8 @@ class get_sim_map(Profiles):
         if self.profile_timing: start_time = time.perf_counter()
         rhomjpix_all = self._chunked_vmap(self.get_rhom_healpix, len(self.pix_prop_all))
         self.rhommap_final = self._assemble_map(rhomjpix_all)
+        kappajpix_all = self._chunked_vmap(self.get_kappa_healpix, len(self.pix_prop_all))
+        self.kappamap_final = self._assemble_map(kappajpix_all)
         if self.profile_timing: self.timing_results['kappa_map_generation_and_assembly'] = time.perf_counter() - start_time
 
     def _get_kappamap_dmo(self):
@@ -762,6 +818,16 @@ class get_sim_map(Profiles):
         DA_val = jnp.exp(jnp.interp(prop[1], self.z_array, jnp.log(self.DA_array)))
         pix_area_corr = self.pix_area * (DA_val**2)
         return pix_area_corr * jnp.exp(self.log_rhom2D_interp(prop[0], prop[1], prop[2]))
+
+    @partial(jit, static_argnums=(0,))
+    def get_kappa_healpix(self, jpix):
+        """Get lensing-weighted convergence for a HEALPix pixel."""
+        prop = self.pix_prop_all[jpix]
+        z = prop[1]
+        scale_factor = 1.0 / (1.0 + z)
+        sigma_phys = jnp.exp(self.log_rhom2D_interp(prop[0], z, prop[2]))
+        Wkappa = self.Wkappa_interp(z)
+        return Wkappa * (scale_factor ** 2) * sigma_phys / self.rho_m_bar
 
     @partial(jit, static_argnums=(0,))
     def get_rhom_dmo_healpix(self, jpix):
@@ -962,4 +1028,3 @@ class get_sim_map(Profiles):
         gal_catalog = gal_catalog.at[1:, 5].set(jnp.where(sat_mask, 1.0, 0.0))
         
         return gal_catalog
-

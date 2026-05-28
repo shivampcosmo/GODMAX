@@ -498,7 +498,9 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
                   save_path=None, profile_timing=False):
     """
     Run pixel-finding + JAX map generation for a set of halos.
-    Returns dict with keys: mock_gals_all, map_rhom, map_ymap, map_ksz, map_tau.
+    Returns dict with keys: mock_gals_all, map_rhom, map_kappa, map_ymap,
+    map_ksz, map_tau. ``map_rhom`` is retained as a projected-mass
+    diagnostic; ``map_kappa`` is the lensing-weighted convergence field.
     """
     from get_sim_maps import get_sim_map
     import helpers.constants as constants
@@ -510,6 +512,7 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
 
     npix = 12 * nside ** 2
     map_rhom = np.zeros(npix, dtype=np.float32)
+    map_kappa = np.zeros(npix, dtype=np.float32)
     map_ymap = np.zeros(npix, dtype=np.float32)
     map_ksz = np.zeros(npix, dtype=np.float32)
     map_tau = np.zeros(npix, dtype=np.float32)
@@ -562,12 +565,19 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
                 sim_params_dict, halo_params_dict, analysis_dict,
                 other_params_dict, mock_params_dict, Profiles_obj=Prof_test)
 
-            map_rhom += np.nan_to_num(mock_map.rhommap_final)
-            map_ymap += np.nan_to_num(mock_map.ymap_final)
-            map_ksz += np.nan_to_num(mock_map.kszmap_final)
-            map_tau += np.nan_to_num(mock_map.taumap_final)
-            mock_gals_all[i] = mock_map.final_galaxy_catalog
-            print(f"Chunk {i + 1}/{num_chunks}: galaxy catalog shape = {mock_gals_all[i].shape}")
+            if hasattr(mock_map, 'rhommap_final'):
+                map_rhom += np.nan_to_num(mock_map.rhommap_final)
+            if hasattr(mock_map, 'kappamap_final'):
+                map_kappa += np.nan_to_num(mock_map.kappamap_final)
+            if hasattr(mock_map, 'ymap_final'):
+                map_ymap += np.nan_to_num(mock_map.ymap_final)
+            if hasattr(mock_map, 'kszmap_final'):
+                map_ksz += np.nan_to_num(mock_map.kszmap_final)
+            if hasattr(mock_map, 'taumap_final'):
+                map_tau += np.nan_to_num(mock_map.taumap_final)
+            if hasattr(mock_map, 'final_galaxy_catalog'):
+                mock_gals_all[i] = mock_map.final_galaxy_catalog
+                print(f"Chunk {i + 1}/{num_chunks}: galaxy catalog shape = {mock_gals_all[i].shape}")
 
             if profile_timing:
                 print(f"[PROFILE] Chunk {i + 1}/{num_chunks} - JAX map gen: {time.perf_counter() - t1:.2f}s")
@@ -578,9 +588,20 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
     saved_data = {
         'mock_gals_all': mock_gals_all,
         'map_rhom': map_rhom,
+        'map_kappa': map_kappa,
         'map_ymap': map_ymap,
         'map_ksz': map_ksz,
         'map_tau': map_tau,
+        'map_metadata': {
+            'kappa_map_definition': (
+                'dimensionless convergence from W_kappa(z) * a(z)^2 * '
+                'Sigma_phys / rho_m_bar; map_rhom remains projected mass per pixel'
+            ),
+            'is_cmb_lensing': bool(analysis_dict.get('is_cmb_lensing', False)),
+            'kappa_source_bin': int(mock_params_dict_setup.get('kappa_source_bin', 0)),
+            'max_paint_R200c_factor': 8.0,
+            'nside': int(nside),
+        },
     }
 
     if save_path is not None:
@@ -1125,7 +1146,7 @@ def stack_snapshot_maps(snap_range, snap_num_all, zval_all, nside, jdevice, Ndev
     from tqdm import tqdm
     npix = 12 * nside ** 2
     maps = {k: np.zeros(npix, dtype=np.float32)
-            for k in ['rhom', 'ymap', 'ksz', 'tau', 'gal']}
+            for k in ['rhom', 'kappa', 'ymap', 'ksz', 'tau', 'gal']}
 
     for snap_num in tqdm(snap_range):
         idx = np.where(snap_num_all == snap_num)[0]
@@ -1140,6 +1161,8 @@ def stack_snapshot_maps(snap_range, snap_num_all, zval_all, nside, jdevice, Ndev
         np.add.at(gal_map, pix_gal, 1.)
 
         maps['rhom'] += saved['map_rhom']
+        if 'map_kappa' in saved:
+            maps['kappa'] += saved['map_kappa']
         maps['ymap'] += saved['map_ymap']
         maps['ksz'] += saved['map_ksz']
         maps['tau'] += saved['map_tau']

@@ -21,6 +21,9 @@ results/
 *.h5
 *.hdf5
 
+summary/
+context/
+
 # C extensions
 *.so
 
