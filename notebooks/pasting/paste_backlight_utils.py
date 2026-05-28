@@ -342,8 +342,8 @@ def build_config(abs_path_params, abs_path_data, params_file='pasting/params.yam
     # Halo parameter overrides
     halo_params_dict.update({
         'rmin': 0.005, 'rmax': 10.0, 'nr': 48,
-        # 'zmin': 0.005, 'zmax': 0.8, 'nz': 52,
-        'zmin': 0.3, 'zmax': 0.7, 'nz': 22,
+        #'zmin': 0.005, 'zmax': 0.8, 'nz': 52,
+         'zmin': 0.3, 'zmax': 0.7, 'nz': 22,
         'lg10_Mmin': 13.0, 'lg10_Mmax': 15.75, 'nM': 42,
     })
 
@@ -505,12 +505,22 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
     from get_sim_maps import get_sim_map
     import helpers.constants as constants
 
+    # Force baryonified map so rhom_dmo_map_final is always populated.
+    # Without this, rhommap_final is the DMO map and rhom_dmo_map_final
+    # is undefined, making the baryonic kappa correction impossible.
+    mock_params_dict_setup = dict(mock_params_dict_setup)
+    mock_params_dict_setup['get_baryonifiedmap'] = True
+
     nh_max_map = {8192: 4e3, 4096: 5e4, 2048: 5e5, 1024: 1e7, 512: 5e7}
     nh_max = nh_max_map.get(nside, 1e5)
     nsel = len(M200c_all)
     num_chunks = int(np.ceil(nsel / nh_max)) if nsel > nh_max else 1
 
     npix = 12 * nside ** 2
+    #map_rhom = np.zeros(npix, dtype=np.float32)
+    map_rhom_dmb = np.zeros(npix, dtype=np.float32)  # baryonified halo matter
+    map_rhom_dmo = np.zeros(npix, dtype=np.float32)  # DMO halo matter
+
     map_rhom = np.zeros(npix, dtype=np.float32)
     map_kappa = np.zeros(npix, dtype=np.float32)
     map_ymap = np.zeros(npix, dtype=np.float32)
@@ -565,6 +575,14 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
                 sim_params_dict, halo_params_dict, analysis_dict,
                 other_params_dict, mock_params_dict, Profiles_obj=Prof_test)
 
+            #map_rhom += np.nan_to_num(mock_map.rhommap_final)
+            map_rhom_dmb += np.nan_to_num(mock_map.rhommap_final)
+            map_rhom_dmo += np.nan_to_num(mock_map.rhom_dmo_map_final)
+            map_ymap += np.nan_to_num(mock_map.ymap_final)
+            map_ksz += np.nan_to_num(mock_map.kszmap_final)
+            map_tau += np.nan_to_num(mock_map.taumap_final)
+            mock_gals_all[i] = mock_map.final_galaxy_catalog
+            print(f"Chunk {i + 1}/{num_chunks}: galaxy catalog shape = {mock_gals_all[i].shape}")
             if hasattr(mock_map, 'rhommap_final'):
                 map_rhom += np.nan_to_num(mock_map.rhommap_final)
             if hasattr(mock_map, 'kappamap_final'):
@@ -586,6 +604,13 @@ def generate_maps(ra_all, dec_all, z_all, M200c_all, vlos_all,
             gc.collect()
 
     saved_data = {
+    'mock_gals_all': mock_gals_all,
+    'map_rhom_dmb':  map_rhom_dmb,  # baryonified (halos only, no N-body sheet)
+    'map_rhom_dmo':  map_rhom_dmo,  # DMO        (halos only, no N-body sheet)
+    'map_ymap':      map_ymap,
+    'map_ksz':       map_ksz,
+    'map_tau':        map_tau,
+    # map_kappa absent intentionally --> call compute_kappa_map() after this
         'mock_gals_all': mock_gals_all,
         'map_rhom': map_rhom,
         'map_kappa': map_kappa,
@@ -1169,3 +1194,177 @@ def stack_snapshot_maps(snap_range, snap_num_all, zval_all, nside, jdevice, Ndev
         maps['gal'] += gal_map
 
     return maps
+
+# ---------------------------------------------------------------------------
+# Calculating lensing convergence (kappa) maps
+# ---------------------------------------------------------------------------
+
+def compute_kappa_unbound_and_weight(
+    sim_file_path, snap_num_all, zval_all, zmin, zmax,
+    Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict,
+    smooth_sigma=None,):
+    """
+    Compute the 2-halo kappa map from unbound N-body particles and the
+    effective lensing weight for the 1-halo (rhommap_final) term.
+
+    2-halo term (summed per snapshot):
+        delta_unbound  = (massSheet_unbound * part_mass) / mmpp - 1
+        kappa_2halo   += W_k(z) * delta_unbound
+
+    Effective weight for 1-halo term (applied to stacked rhommap_final):
+        weight_eff = sum_snaps(W_k(z) / mmpp(z)) / n_snaps
+
+    Args:
+        sim_file_path     : path containing compressed_massMaps/ subdirectory
+        snap_num_all      : snapshot numbers from zlist.txt
+        zval_all          : corresponding redshifts
+        zmin, zmax        : redshift shell boundaries
+        Prof_test         : Profiles object with .cosmo_jax and .get_Ez(z)
+        nside             : HEALPix resolution
+        part_mass         : N-body particle mass [Msun/h]
+        chi_CMB           : comoving distance to CMB [Mpc/h]
+        cosmo_params_dict : dict with key 'Om0'
+        smooth_sigma      : Gaussian smoothing sigma [radians].
+                            Defaults to one HEALPix pixel FWHM -> sigma.
+
+    Returns:
+        map_kappa_unbound : np.ndarray, shape (12*nside**2,), dtype float64
+        weight_eff        : float --> units of 1/(Msun/h per pixel)
+    """
+    c_light   = 299792.458   # km/s
+    H0_over_h = 100.0        # km/s/(Mpc/h)
+    Om0       = cosmo_params_dict['Om0']
+    npix      = 12 * nside ** 2
+    rho_m     = Prof_test.get_rho_m(0.0)   # [Msun/h / (Mpc/h)^3], comoving
+
+    if smooth_sigma is None:
+        fwhm_pix     = hp.nside2resol(nside, arcmin=False)
+        smooth_sigma = fwhm_pix / (8.0 * np.log(2.0)) ** 0.5
+
+    in_shell    = (zval_all >= zmin) & (zval_all <= zmax)
+    snaps_shell = snap_num_all[in_shell]
+    n_snaps     = len(snaps_shell)
+    if n_snaps == 0:
+        raise ValueError(
+            f"No snapshots found in z=[{zmin}, {zmax}]. "
+            f"Check zmin/zmax against zlist.txt."
+        )
+
+    dz_snap = (zmax - zmin) / n_snaps
+
+    map_kappa_unbound    = np.zeros(npix, dtype=np.float64)
+    weight_over_mmpp_sum = 0.0
+
+    print(f"Computing 2-halo kappa from {n_snaps} snapshots "
+          f"in z=[{zmin:.3f}, {zmax:.3f}]...")
+
+    for snap_num in snaps_shell:
+        ind  = np.where(snap_num_all == snap_num)[0]
+        zval = float(zval_all[ind][0])
+
+        chi_v     = float(bkgrd.radial_comoving_distance(
+            Prof_test.cosmo_jax, 1.0 / (1.0 + zval)
+        )[0])
+        dchi_snap = (c_light / (H0_over_h * float(Prof_test.get_Ez(zval)))) * dz_snap
+        r_lo      = chi_v - dchi_snap / 2.0
+        r_hi      = chi_v + dchi_snap / 2.0
+
+        # Lensing weight W_k(z) [dimensionless / (Mpc/h)]
+        weight_k = (
+            1.5 * (H0_over_h / c_light) ** 2 * Om0
+            * ((chi_CMB - chi_v) / chi_CMB)
+            * (1.0 + zval) * chi_v * dchi_snap
+        )
+
+        # Mean mass per pixel for this shell [Msun/h per pixel]
+        mmpp = float(
+            rho_m * (4.0 / 3.0) * np.pi * (r_hi ** 3 - r_lo ** 3) / npix
+        )
+
+        # Load per-snapshot unbound particle sheet (2-halo term)
+        path_unbound = (f'{sim_file_path}/compressed_massMaps/'
+                        f'massSheet_unbound_z_{int(snap_num)}.fits.gz')
+        map_unbound = hp.read_map(path_unbound, verbose=False)
+
+        # Regrade to working nside; convert particle counts -> mass -> delta
+        map_unbound_ds = hp.ud_grade(
+            np.array(map_unbound * part_mass, dtype=np.float64), nside, power=-2
+        )
+        delta_unbound = map_unbound_ds / mmpp - 1.0
+        delta_smooth  = hp.smoothing(
+            np.array(delta_unbound, dtype=np.float64),
+            sigma=smooth_sigma, verbose=False
+        )
+
+        map_kappa_unbound    += weight_k * delta_smooth
+        weight_over_mmpp_sum += weight_k / mmpp
+
+        print(f"  z={zval:.3f}: chi={chi_v:.1f} Mpc/h, "
+              f"weight_k={weight_k:.4e}, mmpp={mmpp:.4e}")
+
+    # Divide by n_snaps so that weight_eff * map_rhom_dmb (which is already
+    # stacked over all snapshots) gives the correctly weighted 1-halo kappa.
+    weight_eff = weight_over_mmpp_sum / n_snaps
+    return map_kappa_unbound, weight_eff
+
+
+def compute_kappa_map(
+    sim_file_path, snap_num_all, zval_all, zmin, zmax,
+    Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict,
+    map_rhom_dmb, smooth_sigma=None,
+    unbound_cache_path=None, weight_cache_path=None,):
+    """
+    Compute the CMB lensing convergence map:
+
+        kappa = kappa_2halo + weight_eff * map_rhom_dmb
+
+    kappa_2halo    : 2-halo term from unbound N-body particles
+    weight_eff * map_rhom_dmb : 1-halo term from baryonified halo profiles (rhommap_final)
+
+    kappa_2halo and weight_eff are identical for all SBI samples sharing the
+    same N-body lightcone. Cache them to avoid redundant FITS I/O.
+
+    Args:
+        sim_file_path, snap_num_all, zval_all, zmin, zmax,
+        Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict, smooth_sigma :
+            See compute_kappa_unbound_and_weight.
+        map_rhom_dmb       : np.ndarray --> halo matter map from generate_maps()
+                             (rhommap_final: baryons + DM, 1-halo term,
+                             units Msun/h per pixel)
+        unbound_cache_path : str or None --> path to save/load map_kappa_unbound.npy
+        weight_cache_path  : str or None --> path to save/load weight_eff.npy
+
+    Returns:
+        map_kappa : np.ndarray, shape (12*nside**2,), dtype float32
+    """
+    use_cache = (unbound_cache_path is not None) and (weight_cache_path is not None)
+
+    if use_cache and os.path.exists(unbound_cache_path) and os.path.exists(weight_cache_path):
+        print("Loading cached unbound kappa from disk...")
+        map_kappa_unbound = np.load(unbound_cache_path)
+        weight_eff        = float(np.load(weight_cache_path))
+    else:
+        map_kappa_unbound, weight_eff = compute_kappa_unbound_and_weight(
+            sim_file_path, snap_num_all, zval_all, zmin, zmax,
+            Prof_test, nside, part_mass, chi_CMB, cosmo_params_dict,
+            smooth_sigma=smooth_sigma,
+        )
+        if use_cache:
+            np.save(unbound_cache_path, map_kappa_unbound)
+            np.save(weight_cache_path,  np.array(weight_eff))
+            print(f"Cached unbound kappa -> {unbound_cache_path}")
+            print(f"Cached weight_eff    -> {weight_cache_path}")
+
+    # 1-halo contribution [dimensionless kappa]
+    kappa_1halo = weight_eff * np.array(map_rhom_dmb, dtype=np.float64)
+
+    map_kappa = map_kappa_unbound + kappa_1halo
+
+    print(f"\nKappa diagnostics:")
+    print(f"  2-halo (unbound): mean|kappa| = {np.abs(map_kappa_unbound).mean():.4e}")
+    print(f"  1-halo (halos):   mean|kappa| = {np.abs(kappa_1halo).mean():.4e}")
+    print(f"  1halo/2halo ratio:             {np.abs(kappa_1halo).mean() / (np.abs(map_kappa_unbound).mean() + 1e-30):.3f}")
+    print(f"  Total:            mean={map_kappa.mean():.4e}, "
+          f"max={np.abs(map_kappa).max():.4e}")
+
+    return map_kappa.astype(np.float32)
