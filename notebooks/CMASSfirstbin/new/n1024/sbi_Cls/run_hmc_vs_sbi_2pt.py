@@ -117,12 +117,12 @@ EQUAL_ARCH = {
 }
 
 # HMC settings
-HMC_NUM_WARMUP     = 2000
+HMC_NUM_WARMUP     = 3000
 HMC_NUM_SAMPLES    = 2000
 HMC_NUM_CHAINS     = 4
-HMC_MAX_TREE_DEPTH = 6
+HMC_MAX_TREE_DEPTH = 10
 HMC_DENSE_MASS     = True
-HMC_TARGET_ACCEPT  = 0.8
+HMC_TARGET_ACCEPT  = 0.9
 HMC_CHAIN_METHOD   = 'vectorized'
 HMC_SEED           = 42
 
@@ -641,7 +641,7 @@ def make_triangle_plot(
         [hmc_gd, sbi_gd],
         params=names,
         filled=True,
-        legend_labels=['HMC / NUTS', 'SBI / NPE+NSF'],
+        legend_labels=['HMC / NUTS', 'SBI / NPE+MDN'],
         contour_colors=['#1f77b4', '#d62728'],
         markers={n: v for n, v in zip(names, FIDUCIAL)},
         marker_args={'color': 'black', 'lw': 1.2, 'ls': '--'},
