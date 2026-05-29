@@ -2,7 +2,7 @@
 """
 run_hmc_vs_sbi_2pt.py
 
-HMC (NumPyro NUTS) vs SBI (LtU-ILI NPE+NSF) comparison on 2pt Cl statistics.
+HMC (NumPyro NUTS) vs SBI (LtU-ILI NPE+MDN) comparison on 2pt Cl statistics.
 
 HMC:
   - Forward model : analytical theory Cls via theory_sbi_utils / run_hmc_theory_cls
@@ -10,7 +10,7 @@ HMC:
   - Observation   : x_obs.npy sliced to the relevant 2pt probe indices
 
 SBI:
-  - Trains NPE+NSF on simulation Cls (x_train_full.npy / theta_train_full.npy)
+  - Trains NPE+MDN on simulation Cls (x_train_full.npy / theta_train_full.npy)
   - One posterior per probe: gy, gtau, gkappa, all_2pt
   - Normalisation: per-feature z-score (matching main SBI pipeline)
   - Observation   : x_obs.npy sliced + normalised with saved scalers
@@ -171,6 +171,11 @@ def _sample_member_thread(member, x_t, n_samples, result, exception):
             x_t = x_t.to(member_device)
         except Exception:
             pass
+    # Substitute x_obs.npy as the observation:
+    # selected['selection'].indices are ell-indices into the theory product's
+    # own ordering (gg, gy, gtau, gkappa).  We need the matching slice of
+    # x_obs.npy which uses the ordering [g2y, g2tau, g2kappa, gy, gtau, gkappa].
+    # We map probe names -> x_obs indices via STAT_MAP_2PT / _s.
         s = member.sample((n_samples,), x=x_t, show_progress_bars=False)
         result[0] = s.detach().cpu().numpy()
     except Exception as e:
@@ -292,13 +297,6 @@ def run_hmc_probe(
     selected_for_validation['data_vector'] = x_obs_sel
     selected_for_validation['chol'] = selected['chol']   # covariance unchanged
     validate_theory_vector(vector_fn, selected_for_validation, param_specs)
-
-    # Substitute x_obs.npy as the observation:
-    # selected['selection'].indices are ell-indices into the theory product's
-    # own ordering (gg, gy, gtau, gkappa).  We need the matching slice of
-    # x_obs.npy which uses the ordering [g2y, g2tau, g2kappa, gy, gtau, gkappa].
-    # We map probe names -> x_obs indices via STAT_MAP_2PT / _s.
-    x_obs_sel = _slice_xobs_for_probes(x_obs_full, probes_arg)
 
     obs  = jnp.asarray(x_obs_sel,        dtype=jnp.float64)
     chol = jnp.asarray(selected['chol'],  dtype=jnp.float64)
@@ -632,7 +630,7 @@ def make_triangle_plot(
     sbi_gd = MCSamples(
         samples=sbi_samples,
         names=names, labels=labels,
-        label='SBI / NPE+NSF',
+        label='SBI / NPE+MDN',
         settings=gd_settings,
     )
 
