@@ -2,7 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+sbi-logs/
+outputs/
 data/
 logs/
 results/
