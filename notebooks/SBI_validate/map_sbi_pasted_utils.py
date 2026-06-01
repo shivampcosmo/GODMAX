@@ -558,6 +558,7 @@ def generate_component_map_product(
         "get_kSZmap": False,
         "get_taumap": bool(get_signal_maps),
         "get_kappamap": bool(get_signal_maps),
+        "get_baryonifiedmap": bool(get_signal_maps),
         "get_galmap": bool(get_galaxies),
         "smooth_profiles": True,
         "random_seed": int(random_seed),

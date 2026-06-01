@@ -79,6 +79,45 @@ def configure_kappa_source(analysis_dict: dict, other_params_dict: dict,
     other_params_dict["mult_shear_bias_array"] = jnp.zeros(1)
 
 
+def make_jax_cosmology(cosmo_params: Mapping[str, float]):
+    """Construct the jax-cosmo object matching a GODMAX cosmology dictionary."""
+
+    from jax_cosmo import Cosmology
+
+    return Cosmology(
+        Omega_c=cosmo_params["Om0"] - cosmo_params["Ob0"],
+        Omega_b=cosmo_params["Ob0"],
+        h=cosmo_params["H0"] / 100.0,
+        sigma8=cosmo_params["sigma8"],
+        n_s=cosmo_params["ns"],
+        Omega_k=0.0,
+        w0=cosmo_params["w0"],
+        wa=0.0,
+    )
+
+
+def refresh_lens_nz_for_cosmology(analysis_dict: dict, cosmo_jax) -> None:
+    """Recompute the lens redshift kernel after cosmology overrides.
+
+    ``paste_backlight_utils.build_config`` builds ``nz_lens`` before applying
+    its hard-coded Backlight cosmology override.  Any later cosmology override
+    must therefore refresh the normalized lens kernel from the same constant
+    comoving ``nbar(z)`` source.
+    """
+
+    ensure_repo_paths()
+    from paste_backlight_utils import nbar_to_nz_lens
+
+    z = np.asarray(analysis_dict["nbar_gal_comoving_zarray"], dtype=float)
+    nbar = np.asarray(analysis_dict["nbar_gal_comoving_val"], dtype=float)
+    nz_lens = nbar_to_nz_lens(nbar, z, cosmo_jax)
+    nz_info = copy.deepcopy(analysis_dict["nz_lens_info_dict"])
+    nz_info["z_array_lens"] = z
+    nz_info["nbins_lens"] = 1
+    nz_info["nz0"] = np.maximum(nz_lens, 1.0e-10)
+    analysis_dict["nz_lens_info_dict"] = nz_info
+
+
 def compute_ne0_cm3(cosmo_params: Mapping[str, float],
                     helium_fraction: float = 0.24) -> float:
     """Mean z=0 electron density in cm^-3."""
@@ -156,6 +195,7 @@ def build_theory_objects(
     kappa_source: str = "cmb",
     remove_galaxy_baryon_suppression: bool = True,
     sim_param_overrides: Mapping[str, float] | None = None,
+    halo_param_overrides: Mapping[str, float] | None = None,
     other_param_overrides: Mapping[str, float] | None = None,
 ):
     """Build base/profile/Pk/Cl objects for the fiducial validation point."""
@@ -196,9 +236,16 @@ def build_theory_objects(
             else:
                 sim_params_dict[name] = value
 
+    if halo_param_overrides:
+        for name, value in halo_param_overrides.items():
+            halo_params_dict[name] = value
+
     if other_param_overrides:
         for name, value in other_param_overrides.items():
             other_params_dict[name] = value
+
+    current_cosmo_jax = make_jax_cosmology(sim_params_dict["cosmo"])
+    refresh_lens_nz_for_cosmology(analysis_dict, current_cosmo_jax)
 
     base_obj = base_class(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
     profiles = Profiles(
@@ -240,7 +287,7 @@ def build_theory_objects(
         "halo_params_dict": halo_params_dict,
         "analysis_dict": analysis_dict,
         "other_params_dict": other_params_dict,
-        "cosmo_jax": cosmo_jax,
+        "cosmo_jax": base_obj.cosmo_jax,
         "zarray_lens": zarray_lens,
         "nz_lens": nz_lens,
         "gal_zrange": gal_zrange,
@@ -253,6 +300,7 @@ def build_theory_objects(
         "kappa_source": kappa_source,
         "remove_galaxy_baryon_suppression": remove_galaxy_baryon_suppression,
         "sim_param_overrides": dict(sim_param_overrides or {}),
+        "halo_param_overrides": dict(halo_param_overrides or {}),
         "other_param_overrides": dict(other_param_overrides or {}),
     }
     return context
@@ -774,7 +822,9 @@ def build_and_save_fiducial(
     theory_mode: str = "map_matched_resolved",
     paint_r200c_factor: float = DEFAULT_PAINT_R200C_FACTOR,
     sim_param_overrides: Mapping[str, float] | None = None,
+    halo_param_overrides: Mapping[str, float] | None = None,
     other_param_overrides: Mapping[str, float] | None = None,
+    extra_metadata: Mapping[str, object] | None = None,
 ) -> Dict[str, object]:
     """Build theory, covariance, and save the validation product."""
 
@@ -785,6 +835,7 @@ def build_and_save_fiducial(
         hod_mass_cut=hod_mass_cut,
         kappa_source=kappa_source,
         sim_param_overrides=sim_param_overrides,
+        halo_param_overrides=halo_param_overrides,
         other_param_overrides=other_param_overrides,
     )
     cls = context["cls"]
@@ -830,6 +881,9 @@ def build_and_save_fiducial(
         "sim_param_overrides": {
             key: float(value) for key, value in (sim_param_overrides or {}).items()
         },
+        "halo_param_overrides": {
+            key: float(value) for key, value in (halo_param_overrides or {}).items()
+        },
         "other_param_overrides": {
             key: float(value) for key, value in (other_param_overrides or {}).items()
         },
@@ -838,6 +892,8 @@ def build_and_save_fiducial(
         "quality_checks": checks,
         "remove_galaxy_baryon_suppression": bool(context["remove_galaxy_baryon_suppression"]),
     }
+    if extra_metadata:
+        metadata.update(extra_metadata)
 
     output_path = pathlib.Path(output_path)
     save_validation_product(
@@ -925,6 +981,8 @@ def main() -> None:
     parser.add_argument("--paint-r200c-factor", type=float, default=DEFAULT_PAINT_R200C_FACTOR)
     parser.add_argument("--sim-param", action="append", default=[],
                         help="Override a simulation parameter as name=value. Use cosmo.NAME for cosmology.")
+    parser.add_argument("--halo-param", action="append", default=[],
+                        help="Override a halo_params_dict entry as name=value.")
     parser.add_argument("--other-param", action="append", default=[],
                         help="Override an other_params_dict entry as name=value.")
     args = parser.parse_args()
@@ -939,6 +997,7 @@ def main() -> None:
         theory_mode=args.theory_mode,
         paint_r200c_factor=args.paint_r200c_factor,
         sim_param_overrides=parse_key_value_overrides(args.sim_param),
+        halo_param_overrides=parse_key_value_overrides(args.halo_param),
         other_param_overrides=parse_key_value_overrides(args.other_param),
     )
     print(f"Saved fiducial theory product to {result['output_path']}")

@@ -194,24 +194,43 @@ class base_class:
         self.n_nt = sim_params_dict.get('n_nt',0.3)
 
 
-        # Stellar profile parameters. Basically these are the parameters for the HOD of galaxies as well. See Leauthaud et al. 2011 for more details.
-        # The parameters control the amplitude and redshift evolution of the stellar profile.
-        self.log10M1_fshmr = sim_params_dict.get('log10M1_fshmr', 12.35)
-        self.log10M1_a_fshmr = sim_params_dict.get('log10M1_a_fshmr', 0.28)        
-        self.log10Mstar0_fshmr = sim_params_dict.get('log10Mstar0_fshmr', 10.72)
-        self.log10Mstar0_a_fshmr = sim_params_dict.get('log10Mstar0_a_fshmr', 0.55)        
-        self.beta_fshmr = sim_params_dict.get('beta_fshmr', 0.44)        
-        self.beta_a_fshmr = sim_params_dict.get('beta_a_fshmr', 0.18)        
-        self.delta_fshmr = sim_params_dict.get('delta_fshmr', 0.57)        
-        self.delta_a_fshmr = sim_params_dict.get('delta_a_fshmr', 0.17)                
-        self.gamma_fshmr = sim_params_dict.get('gamma_fshmr', 1.56)        
-        self.gamma_a_fshmr = sim_params_dict.get('gamma_a_fshmr', 2.51)                
-        self.siglogMstar_Ncen = sim_params_dict.get('siglogMstar_Ncen', 0.25)                
-        self.alphasat_Nsat = sim_params_dict.get('alphasat_Nsat', 1.0)                
-        self.Bcut_Nsat = sim_params_dict.get('Bcut_Nsat', 1.69)                        
-        self.Bsat_Nsat = sim_params_dict.get('Bsat_Nsat', 9.01)                                
-        self.betacut_Nsat = sim_params_dict.get('betacut_Nsat', 0.6)                                
-        self.betasat_Nsat = sim_params_dict.get('betasat_Nsat', 0.74)    
+        # Stellar profile parameters. These are also the galaxy HOD parameters.
+        # Keep scalar attributes for older configs and array attributes for per-bin HOD configs.
+        def set_hod_param(name, default):
+            array_name = f'{name}_array'
+            array_val = sim_params_dict.get(array_name, None)
+            scalar_val = sim_params_dict.get(name, None)
+            if array_val is not None:
+                array_val = np.atleast_1d(array_val)
+            if scalar_val is None:
+                scalar_val = array_val[0] if array_val is not None else default
+            if array_val is None:
+                array_val = [scalar_val]
+            setattr(self, name, scalar_val)
+            setattr(self, array_name, jnp.array(array_val))
+
+        set_hod_param('log10M1_fshmr', 12.35)
+        set_hod_param('log10M1_a_fshmr', 0.28)
+        set_hod_param('log10Mstar0_fshmr', 10.72)
+        set_hod_param('log10Mstar0_a_fshmr', 0.55)
+        set_hod_param('beta_fshmr', 0.44)
+        set_hod_param('beta_a_fshmr', 0.18)
+        set_hod_param('delta_fshmr', 0.57)
+        set_hod_param('delta_a_fshmr', 0.17)
+        set_hod_param('gamma_fshmr', 1.56)
+        set_hod_param('gamma_a_fshmr', 2.51)
+        set_hod_param('siglogMstar_Ncen', 0.25)
+        set_hod_param('alphasat_Nsat', 1.0)
+        set_hod_param('Bcut_Nsat', 1.69)
+        set_hod_param('Bsat_Nsat', 9.01)
+        set_hod_param('betacut_Nsat', 0.6)
+        set_hod_param('betasat_Nsat', 0.74)
+
+        fcen_array = sim_params_dict.get('fcen_array', None)
+        if fcen_array is not None:
+            fcen_array = np.atleast_1d(fcen_array)
+        self.fcen = sim_params_dict.get('fcen', fcen_array[0] if fcen_array is not None else 1.0)
+        self.fcen_array = jnp.array(fcen_array if fcen_array is not None else [self.fcen])
 
         # In case don't want to model proper galaxies, then can just set simple stellar profile parameters:
         self.eta_star=sim_params_dict.get('eta_star',0.3)
@@ -264,6 +283,7 @@ class base_class:
         self.model_tSZ = analysis_dict.get('model_tSZ',True)
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
+        self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
 
         self.lowpass_Pmm1h_lowk = analysis_dict.get('lowpass_Pmm1h_lowk', True)
         self.kthresh_lowpass_Pmm1h_lowk = float(analysis_dict.get('kthresh_lowpass_Pmm1h_lowk', 1e-2))
@@ -354,10 +374,14 @@ class base_class:
             for jb in range(self.nbins_lens):
                 pzs_inp_mat[jb, :] = nz_info_dict['nz' + str(jb)]
             self.pzs_inp_mat_inp_lens = jnp.array(pzs_inp_mat)
+            self.z_edges_bins_lens = jnp.array(
+                nz_info_dict.get('z_edges_bins_lens', [[self.z_array_nz_lens[0], self.z_array_nz_lens[-1]]])
+            )
         except:
             self.nbins_lens = 1
             self.z_array_nz_lens = jnp.linspace(0.01, 1.5, 128)
             self.pzs_inp_mat_inp_lens = jnp.array([jnp.ones_like(self.z_array_nz_lens)])
+            self.z_edges_bins_lens = jnp.array([[self.z_array_nz_lens[0], self.z_array_nz_lens[-1]]])
 
 
         self.zmax = self.z_array_nz[-1]
@@ -370,8 +394,10 @@ class base_class:
         self.mult_shear_bias_array = jnp.array(other_params_dict.get('mult_shear_bias_array', [0.0]))
 
         self.tSZ_transition_model = analysis_dict.get('tSZ_transition_model', 'poweradd')
+        self.gg_transition_model = analysis_dict.get('gg_transition_model', 'poweradd')
         self.alpha_ky = other_params_dict.get('alpha_ky', 1.0)
         self.alpha_gy = other_params_dict.get('alpha_gy', 1.0)
+        self.alpha_gg = other_params_dict.get('alpha_gg', 1.0)
 
     @timing_decorator
     def get_power_spectra_cosmo(self):

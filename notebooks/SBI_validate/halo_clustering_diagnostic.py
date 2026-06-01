@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 from typing import Dict, Mapping, Tuple
 
@@ -19,6 +20,9 @@ REPO_ROOT = THIS_DIR.parents[1]
 OUTPUT_DIR = THIS_DIR / "outputs"
 DEFAULT_HALO_CATALOG = REPO_ROOT / "data" / "backlight" / "halo_catalog_Mlim_1e13_zlim_0.4_0.6.h5"
 DEFAULT_OUTPUT = OUTPUT_DIR / "halo_clustering_large_scale_diagnostic.npz"
+DEFAULT_BACKLIGHT_LIGHTCONE_DIR = pathlib.Path(
+    "/mnt/ceph/users/backlight/AbacusBacklight_base_c0000_ph000/lightcone_halos"
+)
 
 
 def ensure_repo_paths() -> None:
@@ -28,17 +32,143 @@ def ensure_repo_paths() -> None:
             sys.path.insert(0, spath)
 
 
-def load_theory_context() -> Mapping[str, object]:
+def load_theory_context(
+    cosmo_overrides: Mapping[str, float] | None = None,
+    halo_overrides: Mapping[str, float] | None = None,
+) -> Mapping[str, object]:
     ensure_repo_paths()
     from fiducial_theory_datavector import build_theory_objects
 
-    return build_theory_objects()
+    sim_param_overrides = {}
+    for name, value in (cosmo_overrides or {}).items():
+        sim_param_overrides[f"cosmo.{name}"] = value
+    context = dict(build_theory_objects(
+        sim_param_overrides=sim_param_overrides or None,
+        halo_param_overrides=halo_overrides or None,
+    ))
+    # build_config returns a separate cosmo_jax object.  For cosmology overrides,
+    # use the actual Base/Profiles cosmology used by the HMF, bias and P(k) code.
+    context["cosmo_jax"] = context["base"].cosmo_jax
+    return context
 
 
 def load_halo_catalog(path: pathlib.Path | str = DEFAULT_HALO_CATALOG) -> Dict[str, np.ndarray]:
     path = pathlib.Path(path)
     with h5py.File(path, "r") as handle:
-        return {key: handle[key][()] for key in ("ra", "dec", "z", "M200c", "vlos")}
+        catalog = {key: handle[key][()] for key in ("ra", "dec", "z", "M200c", "vlos")}
+        catalog["hdf_attrs"] = dict(handle.attrs)
+    return catalog
+
+
+def _extract_z_from_path(path: pathlib.Path) -> float | None:
+    match = re.search(r"z(\d+\.\d+)", str(path))
+    return float(match.group(1)) if match else None
+
+
+def find_representative_backlight_asdf(
+    catalog: Mapping[str, np.ndarray],
+    lightcone_dir: pathlib.Path | str = DEFAULT_BACKLIGHT_LIGHTCONE_DIR,
+) -> pathlib.Path | None:
+    """Find the Backlight ASDF slice closest to the catalog median redshift."""
+
+    lightcone_dir = pathlib.Path(lightcone_dir)
+    if not lightcone_dir.exists():
+        return None
+
+    z_target = float(np.nanmedian(np.asarray(catalog["z"], dtype=float)))
+    candidates = []
+    for path in lightcone_dir.glob("z*/lightcone_halo_info_000.asdf"):
+        z_val = _extract_z_from_path(path)
+        if z_val is not None:
+            candidates.append((abs(z_val - z_target), path))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
+
+
+def load_backlight_source_metadata(
+    catalog: Mapping[str, np.ndarray],
+    lightcone_dir: pathlib.Path | str = DEFAULT_BACKLIGHT_LIGHTCONE_DIR,
+) -> Dict[str, object]:
+    """Read source cosmology and mass-unit metadata from a representative ASDF."""
+
+    path = find_representative_backlight_asdf(catalog, lightcone_dir=lightcone_dir)
+    if path is None:
+        return {
+            "source_asdf": None,
+            "status": "Backlight ASDF directory unavailable; using existing catalog units and default theory cosmology.",
+            "raw_mass_unit": "unknown",
+            "theory_mass_factor": 1.0,
+            "cosmo_overrides": {},
+        }
+
+    try:
+        import asdf
+
+        with asdf.open(path, lazy_load=True) as af:
+            header = af["header"]
+            h = float(header["H0"]) / 100.0
+            cosmo_overrides = {
+                "H0": float(header["H0"]),
+                "Om0": float(header["Omega_M"]),
+                "Ob0": float(header["CAMB_Omega_b"]),
+                "sigma8": float(header["CAMB_sigma8"]),
+                "ns": float(header["CAMB_ns"]),
+                "w0": float(header.get("w0", -1.0)),
+            }
+            return {
+                "source_asdf": str(path),
+                "status": "Backlight ASDF header loaded.",
+                "raw_mass_unit": "physical_Msun_from_InterpolatedN_times_ParticleMassMsun",
+                "theory_mass_unit": "Msun_over_h_particle_count_proxy",
+                "theory_mass_factor": h,
+                "particle_mass_msun": float(header["ParticleMassMsun"]),
+                "particle_mass_hmsun": float(header["ParticleMassHMsun"]),
+                "h": h,
+                "cosmo_overrides": cosmo_overrides,
+                "mass_definition_warning": (
+                    "The saved catalog column is a particle-count mass proxy, not a recovered SO M200c. "
+                    "The diagnostic now handles its h units consistently, but a true M200c comparison "
+                    "requires regenerating the catalog with HaloIndex/SO mass information."
+                ),
+            }
+    except Exception as exc:  # pragma: no cover - depends on local ASDF install
+        return {
+            "source_asdf": str(path),
+            "status": f"Failed to read Backlight ASDF header: {exc}",
+            "raw_mass_unit": "unknown",
+            "theory_mass_factor": 1.0,
+            "cosmo_overrides": {},
+        }
+
+
+def prepare_catalog_for_theory(
+    catalog: Mapping[str, np.ndarray],
+    source_metadata: Mapping[str, object],
+) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
+    """Return a catalog whose M200c entry is in GODMAX theory mass units."""
+
+    mass_raw = np.asarray(catalog["M200c"], dtype=float)
+    factor = float(source_metadata.get("theory_mass_factor", 1.0))
+    mass_theory = mass_raw * factor
+    out = {
+        key: np.asarray(value)
+        for key, value in catalog.items()
+        if isinstance(value, np.ndarray)
+    }
+    out["M200c_raw"] = mass_raw
+    out["M200c"] = mass_theory
+
+    mass_metadata = {
+        "raw_mass_column": "M200c",
+        "raw_mass_min": float(np.nanmin(mass_raw)),
+        "raw_mass_max": float(np.nanmax(mass_raw)),
+        "theory_mass_min": float(np.nanmin(mass_theory)),
+        "theory_mass_max": float(np.nanmax(mass_theory)),
+        "theory_mass_factor_applied": factor,
+        "theory_mass_unit": source_metadata.get("theory_mass_unit", "catalog_native"),
+    }
+    return out, mass_metadata
 
 
 def _bin_spectrum(ell_int: np.ndarray, cl_int: np.ndarray,
@@ -51,6 +181,12 @@ def _bin_spectrum(ell_int: np.ndarray, cl_int: np.ndarray,
         if np.any(sel):
             out[i] = np.nanmean(cl_int[sel])
     return out
+
+
+def _bin_pixel_window_sq(nside: int, ell_int: np.ndarray,
+                         ell_bins: np.ndarray, delta_ell: np.ndarray) -> np.ndarray:
+    pixwin = hp.pixwin(nside, lmax=int(np.max(ell_int)))
+    return _bin_spectrum(ell_int, pixwin[ell_int.astype(int)] ** 2, ell_bins, delta_ell)
 
 
 def _catalog_bias_interpolator(context: Mapping[str, object]) -> RegularGridInterpolator:
@@ -86,10 +222,16 @@ def halo_map_cls(catalog: Mapping[str, np.ndarray], nside: int = 256,
     delta = counts / np.mean(counts) - 1.0
     shot_noise = 4.0 * np.pi / float(len(catalog["z"]))
     cl_raw = hp.anafast(delta, lmax=lmax)
+    ell_int = np.arange(lmax + 1, dtype=float)
+    pixwin = hp.pixwin(nside, lmax=lmax)
+    pixwin_sq = np.clip(pixwin ** 2, 1.0e-30, np.inf)
+    cl_signal = cl_raw - shot_noise
     return {
-        "ell_int": np.arange(lmax + 1, dtype=float),
+        "ell_int": ell_int,
         "cl_raw": cl_raw,
-        "cl_signal": cl_raw - shot_noise,
+        "cl_signal": cl_signal,
+        "cl_signal_deconvolved": cl_signal / pixwin_sq,
+        "pixwin": pixwin,
         "shot_noise": np.asarray(shot_noise),
         "counts": counts,
         "delta": delta,
@@ -140,10 +282,38 @@ def catalog_window_and_bias(
     }
 
 
+def _integrate_hmf_range(
+    ln_mass: np.ndarray,
+    hmf_z: np.ndarray,
+    bias_z: np.ndarray,
+    mass_lo: float,
+    mass_hi: float,
+    n_eval: int = 256,
+) -> Tuple[float, float, float]:
+    """Integrate dn/dlnM and bias on a dense log-mass grid."""
+
+    log_lo = max(np.log(mass_lo), float(ln_mass[0]))
+    log_hi = min(np.log(mass_hi), float(ln_mass[-1]))
+    if not np.isfinite(log_lo) or not np.isfinite(log_hi) or log_hi <= log_lo:
+        return np.nan, np.nan, np.nan
+
+    logm_eval = np.linspace(log_lo, log_hi, n_eval)
+    hmf_eval = np.exp(np.interp(
+        logm_eval,
+        ln_mass,
+        np.log(np.clip(hmf_z, 1.0e-300, np.inf)),
+    ))
+    bias_eval = np.interp(logm_eval, ln_mass, bias_z)
+    nden = np.trapz(hmf_eval, x=logm_eval)
+    bnum = np.trapz(hmf_eval * bias_eval, x=logm_eval)
+    beff = bnum / nden if nden > 0 else np.nan
+    return float(nden), float(bnum), float(beff)
+
+
 def hmf_effective_bias_curves(
     context: Mapping[str, object],
     catalog: Mapping[str, np.ndarray],
-    mass_min: float = 1.0e13,
+    mass_min: float | None = None,
 ) -> Dict[str, np.ndarray]:
     """Compute number-selected b_eff(z) using HMF and catalog-weighted masses."""
 
@@ -153,16 +323,28 @@ def hmf_effective_bias_curves(
     ln_mass = np.log(mass)
     hmf = np.asarray(pkz.hmf_Mz_mat, dtype=float)
     bias = np.asarray(pkz.bias_Mz_mat, dtype=float)
+    cat_min = float(np.nanmin(catalog["M200c"])) if mass_min is None else float(mass_min)
     cat_max = float(np.nanmax(catalog["M200c"]))
 
     out = {"z_grid": z_grid}
-    for name, sel in {
-        "hmf_gridmax": mass >= mass_min,
-        "hmf_catalog_max": (mass >= mass_min) & (mass <= cat_max),
-    }.items():
-        nden = np.trapz(hmf[:, sel], x=ln_mass[sel], axis=1)
-        bnum = np.trapz(hmf[:, sel] * bias[:, sel], x=ln_mass[sel], axis=1)
-        out[name] = bnum / nden
+    ranges = {
+        "hmf_gridmax": (cat_min, float(mass[-1])),
+        "hmf_catalog_max": (cat_min, cat_max),
+        "hmf_nominal_1e13": (1.0e13, float(mass[-1])),
+    }
+    for name, (mass_lo, mass_hi) in ranges.items():
+        nden = np.empty_like(z_grid)
+        bnum = np.empty_like(z_grid)
+        beff = np.empty_like(z_grid)
+        for iz in range(len(z_grid)):
+            nden[iz], bnum[iz], beff[iz] = _integrate_hmf_range(
+                ln_mass,
+                hmf[iz],
+                bias[iz],
+                mass_lo,
+                mass_hi,
+            )
+        out[name] = beff
         out[f"{name}_number_density"] = nden
 
     return out
@@ -179,17 +361,22 @@ def mass_bin_summary(
     ensure_repo_paths()
     from paste_backlight_utils import compute_dV_dz_per_sr
 
-    if mass_edges_log10 is None:
-        mass_edges_log10 = np.asarray([13.0, 13.25, 13.5, 13.75, 14.0, 14.25, 14.5, 15.0, 15.75])
-    if z_edges is None:
-        z_edges = np.linspace(0.4, 0.6, 9)
-
     pkz = context["pkz"]
     mass = np.asarray(pkz.M_array, dtype=float)
     z_grid = np.asarray(pkz.z_array, dtype=float)
     ln_mass = np.log(mass)
     hmf = np.asarray(pkz.hmf_Mz_mat, dtype=float)
     bias_grid = np.asarray(pkz.bias_Mz_mat, dtype=float)
+
+    if mass_edges_log10 is None:
+        cat_logm_min = float(np.nanmin(np.log10(catalog["M200c"])))
+        fixed_edges = np.asarray([13.0, 13.25, 13.5, 13.75, 14.0, 14.25, 14.5, 15.0, 15.75])
+        if cat_logm_min < fixed_edges[0]:
+            mass_edges_log10 = np.concatenate([[cat_logm_min], fixed_edges])
+        else:
+            mass_edges_log10 = fixed_edges
+    if z_edges is None:
+        z_edges = np.linspace(0.4, 0.6, 9)
 
     z_centers = 0.5 * (z_edges[1:] + z_edges[:-1])
     dvol = compute_dV_dz_per_sr(context["cosmo_jax"], z_centers) * 4.0 * np.pi * np.diff(z_edges)
@@ -199,17 +386,21 @@ def mass_bin_summary(
 
     rows = []
     for lo, hi in zip(mass_edges_log10[:-1], mass_edges_log10[1:]):
-        grid_sel = (np.log10(mass) >= lo) & (np.log10(mass) < hi)
+        mass_lo = 10.0 ** lo
+        mass_hi = 10.0 ** hi
         cat_sel_all = (cat_logm >= lo) & (cat_logm < hi)
-        if np.count_nonzero(grid_sel) < 2:
+        nden = np.empty_like(z_grid)
+        b_hmf = np.empty_like(z_grid)
+        for iz in range(len(z_grid)):
+            nden[iz], _, b_hmf[iz] = _integrate_hmf_range(
+                ln_mass,
+                hmf[iz],
+                bias_grid[iz],
+                mass_lo,
+                mass_hi,
+            )
+        if not np.any(np.isfinite(nden)):
             continue
-
-        nden = np.trapz(hmf[:, grid_sel], x=ln_mass[grid_sel], axis=1)
-        b_hmf = np.trapz(
-            hmf[:, grid_sel] * bias_grid[:, grid_sel],
-            x=ln_mass[grid_sel],
-            axis=1,
-        ) / nden
         expected = np.interp(z_centers, z_grid, nden) * dvol
         counts = []
         for zlo, zhi in zip(z_edges[:-1], z_edges[1:]):
@@ -370,8 +561,14 @@ def run_diagnostic(
 ) -> Dict[str, object]:
     """Run and save the halo-clustering diagnostic."""
 
-    context = load_theory_context()
-    catalog = load_halo_catalog(halo_catalog)
+    raw_catalog = load_halo_catalog(halo_catalog)
+    source_metadata = load_backlight_source_metadata(raw_catalog)
+    catalog, mass_metadata = prepare_catalog_for_theory(raw_catalog, source_metadata)
+    mass_grid_min = max(10.0, float(np.floor(20.0 * np.log10(mass_metadata["theory_mass_min"])) / 20.0) - 0.05)
+    context = load_theory_context(
+        source_metadata.get("cosmo_overrides", {}),
+        halo_overrides={"lg10_Mmin": mass_grid_min},
+    )
     halo_cls = halo_map_cls(catalog, nside=nside, lmax=lmax)
     z_edges = np.linspace(0.4, 0.6, 81)
     window_bias = catalog_window_and_bias(context, catalog, z_edges=z_edges)
@@ -381,7 +578,9 @@ def run_diagnostic(
     ell_bins = np.asarray(cls.ell_array, dtype=float)
     delta_ell = np.asarray(context["analysis_dict"]["dl_array_survey"], dtype=float)
     ell_int = halo_cls["ell_int"]
-    map_binned = _bin_spectrum(ell_int, halo_cls["cl_signal"], ell_bins, delta_ell)
+    map_raw_binned = _bin_spectrum(ell_int, halo_cls["cl_signal"], ell_bins, delta_ell)
+    map_binned = _bin_spectrum(ell_int, halo_cls["cl_signal_deconvolved"], ell_bins, delta_ell)
+    pixwin_sq_binned = _bin_pixel_window_sq(nside, ell_int, ell_bins, delta_ell)
 
     z_for = window_bias["z_for"]
     window_for = window_bias["window_for"]
@@ -428,6 +627,15 @@ def run_diagnostic(
         name: _bin_spectrum(ell_int, cl, ell_bins, delta_ell)
         for name, cl in theory_curves.items()
     }
+    theory_raw_binned = {
+        name: _bin_spectrum(
+            ell_int,
+            cl * halo_cls["pixwin"] ** 2,
+            ell_bins,
+            delta_ell,
+        )
+        for name, cl in theory_curves.items()
+    }
     if pyccl_nonlimber_binned is not None:
         theory_binned["pyccl_nonlimber_catalog_mass_weighted"] = pyccl_nonlimber_binned
     if pyccl_limber_bincenter is not None:
@@ -436,15 +644,30 @@ def run_diagnostic(
         name: map_binned / theory
         for name, theory in theory_binned.items()
     }
+    ratio_raw_binned = {
+        name: map_raw_binned / theory
+        for name, theory in theory_raw_binned.items()
+    }
 
     mass_summary = mass_bin_summary(context, catalog)
+    cosmo_params = context["sim_params_dict"]["cosmo"]
     metadata = {
         "halo_catalog": str(halo_catalog),
         "nside": int(nside),
         "lmax": int(lmax),
         "mass_min": float(np.nanmin(catalog["M200c"])),
         "mass_max": float(np.nanmax(catalog["M200c"])),
+        "mass_unit": mass_metadata["theory_mass_unit"],
+        "raw_mass_min": mass_metadata["raw_mass_min"],
+        "raw_mass_max": mass_metadata["raw_mass_max"],
+        "theory_mass_factor_applied": mass_metadata["theory_mass_factor_applied"],
+        "theory_lg10_Mmin_used": mass_grid_min,
         "catalog_count": int(len(catalog["z"])),
+        "source_metadata": source_metadata,
+        "theory_cosmology": {
+            key: float(cosmo_params[key])
+            for key in ("H0", "Om0", "Ob0", "sigma8", "ns", "w0")
+        },
         "pyccl_status": pyccl_status,
         "pyccl_limber_bincenter_status": pyccl_limber_bincenter_status,
         "pyccl_nonlimber_status": pyccl_nonlimber_status,
@@ -456,7 +679,10 @@ def run_diagnostic(
         "delta_ell": delta_ell,
         "halo_cl_raw": halo_cls["cl_raw"],
         "halo_cl_signal": halo_cls["cl_signal"],
+        "halo_cl_signal_deconvolved": halo_cls["cl_signal_deconvolved"],
+        "halo_cl_signal_raw_binned": map_raw_binned,
         "halo_cl_signal_binned": map_binned,
+        "pixwin_sq_binned": pixwin_sq_binned,
         "shot_noise": halo_cls["shot_noise"],
         "z_for": z_for,
         "catalog_window_for": window_for,
@@ -472,8 +698,12 @@ def run_diagnostic(
         payload[f"theory_{name}"] = arr
     for name, arr in theory_binned.items():
         payload[f"theory_{name}_binned"] = arr
+    for name, arr in theory_raw_binned.items():
+        payload[f"theory_{name}_raw_binned"] = arr
     for name, arr in ratio_binned.items():
         payload[f"ratio_{name}_binned"] = arr
+    for name, arr in ratio_raw_binned.items():
+        payload[f"ratio_{name}_raw_binned"] = arr
 
     output_path = pathlib.Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

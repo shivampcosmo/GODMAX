@@ -375,6 +375,7 @@ def generate_pasted_map_product(
         "get_kSZmap": True,
         "get_taumap": True,
         "get_kappamap": True,
+        "get_baryonifiedmap": True,
         "get_galmap": True,
         "smooth_profiles": True,
         "random_seed": int(random_seed),

@@ -64,8 +64,8 @@ class get_Pkz(Profiles):
         else: self.uk_y = jnp.zeros((1,1,1))
         if self.model_galaxies:
             self.uk_clm = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 2).T
-            self.nbarz = jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen_mat + self.Nsat_mat), jnp.log(self.M_array), axis=-1)
-            self.ukg_cross = (self.Ncen_mat[None,:,:] + self.Nsat_mat[None,:,:] * self.uk_clm)/self.nbarz[None,:,None]
+            self.nbarz = jnp.maximum(jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen_mat + self.Nsat_mat), jnp.log(self.M_array), axis=-1), 1e-10)
+            self.ukg_cross = jnp.maximum((self.Ncen_mat[None,:,:] + self.Nsat_mat[None,:,:] * self.uk_clm)/self.nbarz[None,:,None], 1e-10)
             ukg_auto_arg = jnp.clip(jnp.nan_to_num(2 * self.Ncen_mat[None,:,:] * self.Nsat_mat[None,:,:] * self.uk_clm + (self.Nsat_mat[None,:,:] * self.uk_clm)**2), 1e-10, 2e4)
             self.ukg_auto_sqr = (ukg_auto_arg)/(self.nbarz[None,:,None] ** 2)
             self.uk_ne = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 4).T
@@ -159,7 +159,9 @@ class get_Pkz(Profiles):
             self.Pgy_tot_mat = ((self.Pgy_1h_kz_mat)**(self.alpha_gy) + (self.Pgy_2h_kz_mat)**(self.alpha_gy))**(1/self.alpha_gy)
             if self.tSZ_transition_model == 'response':
                 self.Pgy_tot_mat = self.Pgy_tot_mat * self.Pmm_sup_tot_mat
-            self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat
+            self.Pgg_tot_mat = ((self.Pgg_1h_kz_mat)**(self.alpha_gg) + (self.Pgg_2h_kz_mat)**(self.alpha_gg))**(1/self.alpha_gg)
+            if self.gg_transition_model == 'response':
+                self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat
 
 
 

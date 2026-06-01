@@ -20,6 +20,7 @@ from fiducial_theory_datavector import (
     ensure_repo_paths,
     load_validation_product,
 )
+from backlight_metadata import backlight_validation_settings
 
 
 THIS_DIR = pathlib.Path(__file__).resolve().parent
@@ -45,7 +46,12 @@ def load_pickle(path: pathlib.Path | str) -> dict:
         return pk.load(handle)
 
 
-def map_product_is_compatible(data: Mapping[str, object], nside: int) -> bool:
+def map_product_is_compatible(
+    data: Mapping[str, object],
+    nside: int,
+    mass_metadata: Mapping[str, object] | None = None,
+    source_metadata: Mapping[str, object] | None = None,
+) -> bool:
     """Check whether an existing pickle has the required map structure."""
 
     npix = hp.nside2npix(nside)
@@ -56,6 +62,21 @@ def map_product_is_compatible(data: Mapping[str, object], nside: int) -> bool:
     for key in ("map_ymap", "map_tau", "map_kappa"):
         if len(np.asarray(data[key])) != npix:
             return False
+    map_meta = data.get("map_metadata", {})
+    if map_meta.get("field_accumulation_version") != "single_add_v2":
+        return False
+    if mass_metadata is not None:
+        expected_factor = float(mass_metadata.get("theory_mass_factor_applied", 1.0))
+        found_factor = map_meta.get("theory_mass_factor_applied")
+        if found_factor is None or not np.isclose(float(found_factor), expected_factor, rtol=1.0e-6, atol=0.0):
+            return False
+        if map_meta.get("mass_unit_for_maps") != mass_metadata.get("theory_mass_unit"):
+            return False
+    if source_metadata is not None:
+        expected_source = source_metadata.get("source_asdf")
+        found_source = map_meta.get("source_asdf")
+        if expected_source is not None and found_source != expected_source:
+            return False
     return True
 
 
@@ -64,6 +85,11 @@ def load_or_generate_maps(
     halo_catalog: pathlib.Path | str = DEFAULT_HALO_CATALOG,
     nside: int = 512,
     regenerate: bool = False,
+    sim_param_overrides: Mapping[str, float] | None = None,
+    halo_param_overrides: Mapping[str, float] | None = None,
+    hod_mass_cut: float = 1.0e13,
+    mass_metadata: Mapping[str, object] | None = None,
+    source_metadata: Mapping[str, object] | None = None,
 ) -> Tuple[dict, pathlib.Path, bool]:
     """Load a pasted map product or regenerate the analytic-test map product."""
 
@@ -71,7 +97,12 @@ def load_or_generate_maps(
     halo_catalog = pathlib.Path(halo_catalog)
     if map_path.exists() and not regenerate:
         data = load_pickle(map_path)
-        if map_product_is_compatible(data, nside):
+        if map_product_is_compatible(
+            data,
+            nside,
+            mass_metadata=mass_metadata,
+            source_metadata=source_metadata,
+        ):
             return data, map_path, False
 
     ensure_repo_paths()
@@ -80,7 +111,12 @@ def load_or_generate_maps(
     from get_sim_maps import setup_sim_map
     from paste_backlight_utils import generate_maps, load_halo_catalog
 
-    context = build_theory_objects()
+    context = build_theory_objects(
+        hod_mass_cut=hod_mass_cut,
+        kappa_source="cmb",
+        sim_param_overrides=sim_param_overrides,
+        halo_param_overrides=halo_param_overrides,
+    )
     sim_params_dict = context["sim_params_dict"]
     halo_params_dict = context["halo_params_dict"]
     analysis_dict = context["analysis_dict"]
@@ -105,6 +141,7 @@ def load_or_generate_maps(
         "get_kSZmap": True,
         "get_taumap": True,
         "get_kappamap": True,
+        "get_baryonifiedmap": True,
         "get_galmap": True,
         "smooth_profiles": True,
     }
@@ -117,7 +154,11 @@ def load_or_generate_maps(
         Profiles_obj=profiles,
     )
 
-    ra, dec, z, mass, vlos = load_halo_catalog(str(halo_catalog))
+    ra, dec, z, mass_raw, vlos = load_halo_catalog(str(halo_catalog))
+    mass_factor = 1.0
+    if mass_metadata is not None:
+        mass_factor = float(mass_metadata.get("theory_mass_factor_applied", 1.0))
+    mass = np.asarray(mass_raw, dtype=float) * mass_factor
     valid = (
         (ra > 2.0e-5)
         & (ra < 360.0 - 2.0e-5)
@@ -137,9 +178,27 @@ def load_or_generate_maps(
         halo_params_dict,
         analysis_dict,
         other_params_dict,
-        save_path=str(map_path),
+        save_path=None,
         profile_timing=True,
     )
+    data.setdefault("map_metadata", {})
+    data["map_metadata"].update({
+        "mass_unit_for_maps": None if mass_metadata is None else mass_metadata.get("theory_mass_unit"),
+        "raw_mass_unit": None if source_metadata is None else source_metadata.get("raw_mass_unit"),
+        "theory_mass_factor_applied": float(mass_factor),
+        "raw_mass_min": float(np.nanmin(mass_raw)),
+        "raw_mass_max": float(np.nanmax(mass_raw)),
+        "theory_mass_min": float(np.nanmin(mass)),
+        "theory_mass_max": float(np.nanmax(mass)),
+        "hod_mass_cut_theory": float(hod_mass_cut),
+        "halo_param_overrides": dict(halo_param_overrides or {}),
+        "sim_param_overrides": dict(sim_param_overrides or {}),
+        "source_asdf": None if source_metadata is None else source_metadata.get("source_asdf"),
+        "source_metadata": dict(source_metadata or {}),
+    })
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(map_path, "wb") as handle:
+        pk.dump(data, handle)
     jax.clear_caches()
     return data, map_path, True
 
@@ -316,11 +375,35 @@ def measure_pasted_map_cls(
     """Measure pasted-map spectra and save comparison arrays."""
 
     theory = load_validation_product(theory_path)
+    backlight_settings = backlight_validation_settings(halo_catalog)
+    theory_meta = theory["metadata"]
+    sim_param_overrides = theory_meta.get(
+        "sim_param_overrides",
+        backlight_settings["sim_param_overrides"],
+    )
+    halo_param_overrides = theory_meta.get(
+        "halo_param_overrides",
+        backlight_settings["halo_param_overrides"],
+    )
+    hod_mass_cut = float(theory_meta.get("hod_mass_cut", backlight_settings["hod_mass_cut"]))
+    mass_metadata = theory_meta.get(
+        "backlight_mass_metadata",
+        backlight_settings["mass_metadata"],
+    )
+    source_metadata = theory_meta.get(
+        "backlight_source_metadata",
+        backlight_settings["source_metadata"],
+    )
     map_data, used_map_path, regenerated = load_or_generate_maps(
         map_path=map_path,
         halo_catalog=halo_catalog,
         nside=nside,
         regenerate=regenerate_maps,
+        sim_param_overrides=sim_param_overrides,
+        halo_param_overrides=halo_param_overrides,
+        hod_mass_cut=hod_mass_cut,
+        mass_metadata=mass_metadata,
+        source_metadata=source_metadata,
     )
 
     npix = hp.nside2npix(nside)
@@ -504,6 +587,8 @@ def measure_pasted_map_cls(
         "map_path": str(used_map_path),
         "map_metadata": map_data.get("map_metadata", {}),
         "halo_catalog": str(halo_catalog),
+        "backlight_source_metadata": source_metadata,
+        "backlight_mass_metadata": mass_metadata,
         "map_regenerated": bool(regenerated),
         "nside": int(nside),
         "lmax": int(lmax),
