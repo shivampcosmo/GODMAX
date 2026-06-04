@@ -43,6 +43,7 @@ CSV_FILES = [
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/lhs_samples.csv', 0),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round2_samples.csv', 500),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round3_samples.csv', 700),
+    ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round4_samples.csv', 900),
 ]
 NEXT_ROUND = len(CSV_FILES) + 1
 
@@ -131,12 +132,21 @@ N_STATISTICS = len(STAT_MAP)
 
 # ── Architecture ──────────────────────────────────────────────────────────────
 FORCE_EQUAL_ARCH = False
+'''for NSF
 EQUAL_ARCH = {
     'hidden_features': 64,   # was 32 — too small for 120-dim input
     'num_transforms':  6,    # was 5
     'learning_rate':   1e-4, # was 2e-4
     'batch_size':      64,   # was 32
     'max_num_epochs':  500,
+    'repeats':         6,
+}'''
+EQUAL_ARCH = {
+    'hidden_features': 64,
+    'num_components':  5,    # MDN mixture components
+    'learning_rate':   5e-4, # MDN trains faster, higher lr is fine
+    'batch_size':      64,
+    'max_num_epochs':  200,  # MDN converges faster
     'repeats':         6,
 }
 
@@ -155,12 +165,14 @@ def load_optuna_hyperparams(model_dir, study_name='study'):
     mcfg    = best.user_attrs['mcfg']
     print(f'  [{os.path.basename(model_dir)}] '
           f'Best trial #{best.number}  score={best.value:.4f}  '
-          f'hfs={mcfg["hidden_features"]}  nts={mcfg["num_transforms"]}  '
+          f'hfs={mcfg["hidden_features"]}  num_components={mcfg["num_components"]}  '
+          #f'hfs={mcfg["hidden_features"]}  nts={mcfg["num_transforms"]}  '
           f'lr={mcfg["learning_rate"]:.2e}  '
           f'batch={mcfg["batch_size"]}  epochs={mcfg["max_epochs"]}')
     return {
         'hidden_features': mcfg['hidden_features'],
-        'num_transforms':  mcfg['num_transforms'],
+        #'num_transforms':  mcfg['num_transforms'],
+        'num_components':  mcfg["num_components"],
         'learning_rate':   mcfg['learning_rate'],
         'batch_size':      mcfg['batch_size'],
         'max_num_epochs':  mcfg['max_epochs'],
@@ -430,12 +442,13 @@ def train_one_statistic(args):
 
         if FORCE_EQUAL_ARCH:
             hfs        = EQUAL_ARCH['hidden_features']
-            nts        = EQUAL_ARCH['num_transforms']
+            #nts        = EQUAL_ARCH['num_transforms'] #NSF
+            num_components=EQUAL_ARCH['num_components'] #MDN
             batch_size = EQUAL_ARCH['batch_size']
             lr         = EQUAL_ARCH['learning_rate']
             max_epochs = EQUAL_ARCH['max_num_epochs']
             repeats    = EQUAL_ARCH['repeats']
-            print(f'{name:12s}  [forced arch: hfs={hfs}, nts={nts}, '
+            print(f'{name:12s}  [forced arch: hfs={hfs}, num_components={num_components}, '#nts={nts}, '
                   f'lr={lr:.2e}, batch={batch_size}, epochs={max_epochs}]',
                   flush=True)
         elif opt_hps is not None:
@@ -461,17 +474,21 @@ def train_one_statistic(args):
             'training_batch_size': batch_size,
             'learning_rate':       lr,
             'max_num_epochs':      max_epochs,
-            'stop_after_epochs':   100,   # was 50 — Cls converge slower
+            'stop_after_epochs':   50,   # was 100 for NSF
             'clip_max_norm':       5.0,
             'validation_fraction': VAL_FRACTION,
         }
 
-        nets = load_nde_sbi(
-            engine='NPE', model='nsf',
-            repeats=repeats, hidden_features=hfs, num_transforms=nts,
-        )
-        arch_str = (f'NSF  n_stats={n_stats}  ratio={ratio:.1f}  '
-                    f'repeats={repeats}  hfs={hfs}  nts={nts}')
+        #nets = load_nde_sbi(engine='NPE', model='nsf',
+         #   repeats=repeats, hidden_features=hfs, num_transforms=nts,)
+        nets = load_nde_sbi(engine='NPE', model='mdn',
+                            repeats=repeats, hidden_features=hfs, 
+                            num_components=EQUAL_ARCH['num_components'],)
+
+        arch_str = (f'MDN  n_stats={n_stats}  ratio={ratio:.1f} '
+                    f'repeats={repeats}  hfs={hfs}  num_components={num_components} ')
+        #(f'NSF  n_stats={n_stats}  ratio={ratio:.1f}  '
+         #           f'repeats={repeats}  hfs={hfs}  nts={nts}')
 
         runner = InferenceRunner.load(
             backend='sbi', engine='NPE',
@@ -606,7 +623,7 @@ if __name__ == '__main__':
     for name, success, msg in results:
         status = 'OK  ' if success else 'FAIL'
         print(f'  [{status}] {msg}')
-    
+    #''' 
     # ── Validation ────────────────────────────────────────────────────────────
     if not os.path.exists(VALIDATION_CSV):
         print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
@@ -712,7 +729,7 @@ if __name__ == '__main__':
             print(f'  OK:     {val_ok}')
             if val_failed:
                 print(f'  Failed: {val_failed}')
-    
+    #'''
     # ── Active learning proposal ──────────────────────────────────────────────
     print(f'\nGenerating round {NEXT_ROUND} proposals from '
           f'{PROPOSAL_STAT} posterior...')
