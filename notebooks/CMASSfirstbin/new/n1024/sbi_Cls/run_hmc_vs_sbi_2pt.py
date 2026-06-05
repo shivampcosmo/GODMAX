@@ -853,6 +853,19 @@ if __name__ == '__main__':
             else:
                 print(f'  [SBI/{probe_name}] --skip-sbi set and no cache found.')
 
+        # ── Save flat samples for standalone plotting script ──────────────
+        if probe_name in hmc_samples_dict:
+            save_path = os.path.join(output_dir, f'hmc_samples_{probe_name}.npy')
+            np.save(save_path, {
+                'theta_ej_0':    hmc_samples_dict[probe_name][:, 0],
+                'nu_theta_ej_M': hmc_samples_dict[probe_name][:, 1],
+            })
+            print(f'  [save/{probe_name}] Written: {save_path}')
+
+        if probe_name in sbi_samples_dict:
+            save_path = os.path.join(output_dir, f'sbi_samples_{probe_name}.npy')
+            np.save(save_path, sbi_samples_dict[probe_name])   # shape (N, 2)
+            print(f'  [save/{probe_name}] Written: {save_path}')
         # ── Plot ─────────────────────────────────────────────────────────────
         if probe_name in hmc_samples_dict and probe_name in sbi_samples_dict:
             make_triangle_plot(
