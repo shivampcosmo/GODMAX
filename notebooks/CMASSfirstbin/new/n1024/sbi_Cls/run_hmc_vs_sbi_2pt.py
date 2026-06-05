@@ -87,6 +87,8 @@ from sbi.utils import BoxUniform
 # =============================================================================
 # CONSTANTS  (matching your main SBI pipeline exactly)
 # =============================================================================
+ADD_SURVEY_NOISE = True   # must match your main SBI pipeline
+_CACHE_SUFFIX    = '_noisy' if ADD_SURVEY_NOISE else ''
 
 PRIOR_LOW    = [1.0, -0.3]
 PRIOR_HIGH   = [6.0,  0.0]
@@ -746,7 +748,7 @@ if __name__ == '__main__':
               f'range=[{x_obs_full[sl].min():.4e}, {x_obs_full[sl].max():.4e}]')
 
     # ── 2. Load training data ─────────────────────────────────────────────────
-    x_train_path     = os.path.join(WORK_DIR, 'x_train_full.npy')
+    x_train_path = os.path.join(WORK_DIR, f'x_train_full{_CACHE_SUFFIX}.npy')
     theta_train_path = os.path.join(WORK_DIR, 'theta_train_full.npy')
     if not os.path.exists(x_train_path) or not os.path.exists(theta_train_path):
         raise FileNotFoundError(
