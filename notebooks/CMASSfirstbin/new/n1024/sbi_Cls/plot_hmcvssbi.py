@@ -72,43 +72,50 @@ plot_settings.legend_fontsize      = 18
 plot_settings.title_limit_fontsize = 18
 
 # =============================================================================
-# ── TUNEABLE PARAMETERS ───────────────────────────────────────────────────────
+# TUNEABLE PARAMETERS
 # =============================================================================
 SBI_N_SAMPLES   = 4000
-HMC_COLOR       = '#1f77b4'   # blue
-SBI_COLOR       = '#d62728'   # red
-
-# ↓ Control 1D posterior line widths here
+HMC_COLOR       = '#1f77b4'
+SBI_COLOR       = '#d62728'
 HMC_1D_LW      = 3.0
 SBI_1D_LW      = 3.0
-
-# ↓ Control 2D contour alpha
 HMC_ALPHA       = 0.4
 SBI_ALPHA       = 0.6
 
 PARAM_NAMES     = ['p1', 'p2']
-PARAM_LABELS_GD = [r'\theta_{ej,0}', r'\nu_{\theta_{ej}}^{M}']   # no outer $
+PARAM_LABELS_GD = [r'\theta_{ej,0}', r'\nu_{\theta_{ej}}^{M}']
 TRUTH_VALUES    = np.array([2.0, -0.1])
 PARAM_LIMITS    = [(1.0, 6.0), (-0.3, 0.0)]
 
 OUTPUT_DIR      = 'plotcontours_hmcvssbi'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Probes to plot — each produces one triangle plot (HMC vs SBI)
+#HMC outputs live in hmc_vs_sbi_outputs/, not the current directory.
+#SBI posteriors and xobs scalers live in the current directory (sbi_Cls/).
+HMC_OUTPUT_DIR  = 'hmc_vs_sbi_outputs'
+
 PROBES = ['gy', 'gtau', 'gkappa', 'all_2pt']
 
-# File name templates — adjust to match what your HMC/SBI scripts save
 def hmc_samples_path(probe):
-    return f'hmc_samples_{probe}.npy'
+    return os.path.join(HMC_OUTPUT_DIR, f'hmc_samples_{probe}.npz')
 
 def sbi_posterior_path(probe):
-    return f'ili_posterior_{probe}.pkl'
+    # Main pipeline posteriors live in sbi_Cls/ (current dir).
+    # Fall back to 2pt-specific posteriors if main ones are absent.
+    main = f'ili_posterior_{probe}.pkl'
+    own  = f'ili_posterior_2pt_{probe}.pkl'
+    return main if Path(main).exists() else own
 
 def sbi_xobs_path(probe):
-    return f'xobs_{probe}.npy'
+    # Main pipeline saves xobs_{probe}.npy; fallback is xobs_2pt_{probe}.npy.
+    main = f'xobs_{probe}.npy'
+    own  = f'xobs_2pt_{probe}.npy'
+    return main if Path(main).exists() else own
 
+#Diagnostics are inside hmc_vs_sbi_outputs/hmc_{probe}/.
 def hmc_diagnostics_path(probe):
-    return f'hmc_{probe}/hmc_diagnostics_{probe}.json'
+    return os.path.join(HMC_OUTPUT_DIR, f'hmc_{probe}',
+                        f'hmc_diagnostics_{probe}.json')
 
 # =============================================================================
 # CPU LOADING UTILITIES
@@ -167,19 +174,17 @@ def load_sbi_posterior(path):
 # =============================================================================
 def load_hmc_mcsamples(probe, label='HMC / NUTS'):
     """
-    Loads HMC samples saved as a numpy dict:
-        np.save('hmc_samples_{probe}.npy',
-                {'theta_ej_0': arr, 'nu_theta_ej_M': arr})
-    Shape of each value: (num_chains * num_samples,)
+    Loads HMC samples saved by np.savez_compressed with named arrays:
+        theta_ej_0    : shape (num_chains * num_samples,)
+        nu_theta_ej_M : shape (num_chains * num_samples,)
     """
     path = hmc_samples_path(probe)
     if not Path(path).exists():
         print(f'[SKIP] HMC samples not found: {path}')
         return None
 
-    data = np.load(path, allow_pickle=True).item()   # dict of arrays
+    data = np.load(path)
 
-    # Stack into (N, 2) in the same order as PARAM_NAMES
     try:
         samples = np.column_stack([
             data['theta_ej_0'].ravel(),
@@ -187,17 +192,21 @@ def load_hmc_mcsamples(probe, label='HMC / NUTS'):
         ])
     except KeyError as e:
         print(f'[ERROR] Unexpected key structure in {path}: {e}')
+        print(f'        Available keys: {list(data.keys())}')
         return None
+
+    print(f'  [{probe}] HMC samples loaded: {samples.shape}  '
+          f'theta_ej_0={samples[:,0].mean():.3f}+/-{samples[:,0].std():.3f}  '
+          f'nu={samples[:,1].mean():.3f}+/-{samples[:,1].std():.3f}')
 
     # Print diagnostics summary if available
     diag_path = hmc_diagnostics_path(probe)
     if Path(diag_path).exists():
         with open(diag_path) as f:
             diag = json.load(f)
-        r_hats = diag.get('max_rhat', {})
-        ess    = diag.get('min_ess_bulk', '?')
         print(f'  [{probe}] HMC diagnostics — '
-              f'r_hat: {r_hats} | min_ess_bulk: {ess}')
+              f'r_hat_max: {diag.get("max_rhat", "?")}  '
+              f'min_ess_bulk: {diag.get("min_ess_bulk", "?")}')
 
     return MCSamples(
         samples=samples,
@@ -212,9 +221,15 @@ def load_sbi_mcsamples(probe, label='SBI / NPE+MDN', n_samples=SBI_N_SAMPLES):
     pkl_path  = sbi_posterior_path(probe)
     xobs_path = sbi_xobs_path(probe)
 
-    if not (Path(pkl_path).exists() and Path(xobs_path).exists()):
-        print(f'[SKIP] SBI files not found for {probe}')
+    if not Path(pkl_path).exists():
+        print(f'[SKIP] SBI posterior not found: {pkl_path}')
         return None
+    if not Path(xobs_path).exists():
+        print(f'[SKIP] SBI xobs not found: {xobs_path}')
+        return None
+
+    print(f'  [{probe}] Loading SBI posterior: {pkl_path}')
+    print(f'  [{probe}] Loading SBI xobs:      {xobs_path}')
 
     posterior  = load_sbi_posterior(pkl_path)
     x_obs_norm = np.load(xobs_path)
@@ -231,7 +246,7 @@ def load_sbi_mcsamples(probe, label='SBI / NPE+MDN', n_samples=SBI_N_SAMPLES):
     for i, member in enumerate(members):
         n_draw = base + (extra if i == 0 else 0)
         try:
-            s = member.sample((n_draw,), x=x_tensor)
+            s = member.sample((n_draw,), x=x_tensor, show_progress_bars=False)
             all_samples.append(s.detach().cpu().numpy())
         except Exception as e:
             print(f'  [WARN] SBI member {i} failed for {probe}: {e}')
@@ -241,6 +256,9 @@ def load_sbi_mcsamples(probe, label='SBI / NPE+MDN', n_samples=SBI_N_SAMPLES):
         return None
 
     samples = np.vstack(all_samples)
+    print(f'  [{probe}] SBI samples drawn: {samples.shape}  '
+          f'theta_ej_0={samples[:,0].mean():.3f}+/-{samples[:,0].std():.3f}  '
+          f'nu={samples[:,1].mean():.3f}+/-{samples[:,1].std():.3f}')
 
     return MCSamples(
         samples=samples,
@@ -264,7 +282,6 @@ for probe in PROBES:
         print(f'[SKIP] No data for {probe}')
         continue
 
-    # Build list in consistent order: HMC first, SBI second
     mcsamples_list = [s for s in [hmc_smp, sbi_smp] if s is not None]
     colors         = [HMC_COLOR, SBI_COLOR][:len(mcsamples_list)]
     legend_labels  = ['HMC / NUTS', 'SBI / NPE+MDN'][:len(mcsamples_list)]
@@ -285,15 +302,12 @@ for probe in PROBES:
         ][:len(mcsamples_list)],
     )
 
-    # ── Apply axis limits and truth lines ────────────────────────────────────
+    # ── Apply axis limits and truth lines ─────────────────────────────────────
     for i, (lo_i, hi_i) in enumerate(PARAM_LIMITS):
-
-        # Diagonal: 1D marginal
         ax_diag = g.subplots[i, i]
         ax_diag.set_xlim(lo_i, hi_i)
         ax_diag.axvline(TRUTH_VALUES[i], color='black', ls='--', lw=2, zorder=10)
 
-        # Lower triangle: 2D contours
         for j in range(i):
             lo_j, hi_j = PARAM_LIMITS[j]
             ax_off = g.subplots[i, j]
@@ -302,14 +316,12 @@ for probe in PROBES:
             ax_off.axvline(TRUTH_VALUES[j], color='black', ls='--', lw=2, zorder=10)
             ax_off.axhline(TRUTH_VALUES[i], color='black', ls='--', lw=2, zorder=10)
 
-    # ── Add r_hat warning annotation if gtau/all_2pt ─────────────────────────
     diag_path = hmc_diagnostics_path(probe)
     if Path(diag_path).exists():
         with open(diag_path) as f:
             diag = json.load(f)
-        max_rhat = max(diag.get('r_hat', {0: 1.0}).values())
+        max_rhat = float(diag.get('max_rhat', 1.0))
         if max_rhat > 1.01:
-            # Annotate top-right of the top-left (diagonal [0,0]) panel
             g.subplots[0, 0].text(
                 0.97, 0.95,
                 rf'$\hat{{R}}_\mathrm{{max}}={max_rhat:.2f}$ ⚠️',
