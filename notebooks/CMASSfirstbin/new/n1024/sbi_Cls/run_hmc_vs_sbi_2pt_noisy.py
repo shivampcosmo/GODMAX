@@ -10,13 +10,14 @@ HMC:
   - Observation   : x_obs.npy sliced to the relevant 2pt probe indices
 
 SBI:
-  - Trains NPE+MDN on simulation Cls (x_train_full.npy / theta_train_full.npy)
+  - Loads existing NPE+MDN posteriors from the main SBI pipeline where available,
+    or trains new ones from x_train_full_noisy.npy / theta_train_full.npy
   - One posterior per probe: gy, gtau, gkappa, all_2pt
   - Normalisation: per-feature z-score (matching main SBI pipeline)
   - Observation   : x_obs.npy sliced + normalised with saved scalers
 
 Output: one GetDist triangle plot per probe saved to WORK_DIR/
-  hmc_vs_sbi_gy.pdf, hmc_vs_sbi_gtau.pdf, hmc_vs_sbi_gkappa.pdf, hmc_vs_sbi_all_2pt.pdf
+  hmc_vs_sbi_gy.pdf  hmc_vs_sbi_gtau.pdf  hmc_vs_sbi_gkappa.pdf  hmc_vs_sbi_all_2pt.pdf
 
 Run from:
   /work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/
@@ -31,7 +32,6 @@ import time
 import pickle as pk
 import pathlib
 import threading
-import multiprocessing as mp
 
 import numpy as np
 import torch
@@ -51,7 +51,6 @@ for p in [SBI_VALIDATE, LTU_ILI_PATH, WORK_DIR]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-# ── imports from SBI_validate ─────────────────────────────────────────────────
 from theory_sbi_utils import (
     DEFAULT_FIDUCIAL_PATH,
     THEORY_SBI_DIR,
@@ -67,12 +66,10 @@ from theory_sbi_utils import (
 )
 from run_hmc_theory_cls import run_hmc
 
-# ── LtU-ILI ──────────────────────────────────────────────────────────────────
 from ili.dataloaders import StaticNumpyLoader
 from ili.inference   import InferenceRunner
 from ili.utils       import load_nde_sbi
 
-# ── JAX / NumPyro ─────────────────────────────────────────────────────────────
 from jax import config as jax_config
 jax_config.update("jax_enable_x64", True)
 import jax
@@ -85,8 +82,11 @@ from numpyro.infer import MCMC, NUTS, init_to_value
 from sbi.utils import BoxUniform
 
 # =============================================================================
-# CONSTANTS  (matching your main SBI pipeline exactly)
+# CONSTANTS  (matching main SBI pipeline exactly)
 # =============================================================================
+ADD_SURVEY_NOISE = True
+_CACHE_SUFFIX    = '_noisy' if ADD_SURVEY_NOISE else ''
+
 PRIOR_LOW    = [1.0, -0.3]
 PRIOR_HIGH   = [6.0,  0.0]
 PARAM_NAMES  = ['theta_ej_0', 'nu_theta_ej_M']
@@ -98,24 +98,21 @@ LMAX       = 1500
 N_ELL_BINS = 20
 
 # x_obs.npy ordering: [g2y | g2tau | g2kappa | gy | gtau | gkappa]
-# each block is N_ELL_BINS_ACTUAL wide.
-CL_SPECS_FULL = [
-    'g2y', 'g2tau', 'g2kappa', 'gy', 'gtau', 'gkappa',
-]
+CL_SPECS_FULL = ['g2y', 'g2tau', 'g2kappa', 'gy', 'gtau', 'gkappa']
 
 VAL_FRACTION     = 0.10
 INDIVIDUAL_STATS = {'gy', 'gtau', 'gkappa'}
 
+# Must match main pipeline: MDN with num_components, not NSF with num_transforms
 EQUAL_ARCH = {
     'hidden_features': 64,
-    'num_transforms':  6,
-    'learning_rate':   1e-4,
+    'num_components':  5,
+    'learning_rate':   5e-4,
     'batch_size':      64,
-    'max_num_epochs':  500,
+    'max_num_epochs':  200,
     'repeats':         6,
 }
 
-# HMC settings
 HMC_NUM_WARMUP     = 3000
 HMC_NUM_SAMPLES    = 2000
 HMC_NUM_CHAINS     = 4
@@ -125,11 +122,10 @@ HMC_TARGET_ACCEPT  = 0.9
 HMC_CHAIN_METHOD   = 'vectorized'
 HMC_SEED           = 42
 
-# SBI settings
 SBI_N_SAMPLES = 4000
 
 # =============================================================================
-# ELL BINNING  (matching your main pipeline exactly)
+# ELL BINNING  (matching main pipeline exactly)
 # =============================================================================
 
 def make_ell_bins(lmin=LMIN, lmax=LMAX, n_bins=N_ELL_BINS):
@@ -142,7 +138,6 @@ def make_ell_bins(lmin=LMIN, lmax=LMAX, n_bins=N_ELL_BINS):
 ELL_EDGES, ELL_CENTRES = make_ell_bins()
 N_ELL_BINS_ACTUAL = len(ELL_EDGES) - 1
 
-# ── STAT_MAP: indices into x_obs.npy ─────────────────────────────────────────
 _s = {
     label: list(range(i * N_ELL_BINS_ACTUAL, (i + 1) * N_ELL_BINS_ACTUAL))
     for i, label in enumerate(CL_SPECS_FULL)
@@ -155,54 +150,41 @@ STAT_MAP_2PT = {
     'all_2pt': _s['gy'] + _s['gtau'] + _s['gkappa'],
 }
 
-# Ordered list of 2pt probe names that make up all_2pt (for covariance probes arg)
 ALL_2PT_PROBES = ['gy', 'gtau', 'gkappa']
 
 # =============================================================================
-# SAMPLING UTILITY  (unchanged from your main pipeline)
+# SAMPLING UTILITIES
 # =============================================================================
 
 def _sample_member_thread(member, x_t, n_samples, result, exception):
     try:
-        # ensure x_t is on the same device as this ensemble member
         try:
             member_device = next(member.parameters()).device
             x_t = x_t.to(member_device)
         except Exception:
             pass
-    # Substitute x_obs.npy as the observation:
-    # selected['selection'].indices are ell-indices into the theory product's
-    # own ordering (gg, gy, gtau, gkappa).  We need the matching slice of
-    # x_obs.npy which uses the ordering [g2y, g2tau, g2kappa, gy, gtau, gkappa].
-    # We map probe names -> x_obs indices via STAT_MAP_2PT / _s.
         s = member.sample((n_samples,), x=x_t, show_progress_bars=False)
         result[0] = s.detach().cpu().numpy()
     except Exception as e:
         exception[0] = e
 
+
 def sample_ensemble_direct(posterior, x_obs_norm, n_samples=500,
                             timeout_per_member=120):
     x_t = torch.from_numpy(np.asarray(x_obs_norm)).float().reshape(1, -1)
-    # Move x_t to whatever device the posterior lives on
-    try:
-        post_device = next(iter(
-            posterior.posteriors[0].parameters()
-            if hasattr(posterior, 'posteriors')
-            else posterior.parameters()
-        )).device
-        x_t = x_t.to(post_device)
-    except Exception:
-        # fallback: try cuda if available
-        if torch.cuda.is_available():
-            x_t = x_t.cuda()
+
     try:
         members = posterior.posteriors
     except AttributeError:
+        members = None
+
+    if members is None:
         result, exception = [None], [None]
         t = threading.Thread(
             target=_sample_member_thread,
             args=(posterior, x_t, n_samples, result, exception),
-            daemon=True,)
+            daemon=True,
+        )
         t.start()
         t.join(timeout=timeout_per_member)
         if t.is_alive():
@@ -250,10 +232,23 @@ def sample_ensemble_direct(posterior, x_obs_norm, n_samples=500,
 
 
 # =============================================================================
-# HMC: run per probe using run_hmc_theory_cls.run_hmc,
-#      but substitute x_obs.npy as the observation via a thin NUTS wrapper
-#      that reuses the covariance from the fiducial product.
+# HMC
 # =============================================================================
+
+def _slice_xobs_for_probes(x_obs_full: np.ndarray,
+                            probes_arg: tuple) -> np.ndarray:
+    """
+    Extract elements of x_obs_full corresponding to the requested probes,
+    in the same order that selected_product_arrays returns them.
+
+    x_obs.npy ordering : [g2y | g2tau | g2kappa | gy | gtau | gkappa]
+    probes_arg ordering : e.g. ('gy',) or ('gy', 'gtau', 'gkappa')
+    """
+    idx = []
+    for probe in probes_arg:
+        idx.extend(_s[probe])
+    return x_obs_full[np.array(idx)]
+
 
 def run_hmc_probe(
     probe_name: str,
@@ -264,8 +259,8 @@ def run_hmc_probe(
     probes_arg: tuple,
 ) -> np.ndarray:
     """
-    Run NUTS for one probe.  The covariance comes from the fiducial .npz
-    product; the observation is the matching slice of x_obs.npy.
+    Run NUTS for one probe.  Covariance from fiducial .npz; observation
+    from matching slice of x_obs.npy.
 
     Returns flat samples array of shape (num_chains * num_samples, n_params).
     """
@@ -277,39 +272,39 @@ def run_hmc_probe(
 
     print(f'\n[HMC/{probe_name}] Setting up...')
 
-    # Load covariance + selection from fiducial product
     selected = selected_product_arrays(
         fiducial_path, probes=probes_arg, ell_min=None, ell_max=None,
     )
-    selection = selected['selection']
 
-    # extract x_obs slice first, then use it as the linearisation point
     x_obs_sel = _slice_xobs_for_probes(x_obs_full, probes_arg)
 
-    vector_fn, theory_info = make_inference_theory_vector_function(param_specs,
-                            selection,fiducial_vector=x_obs_sel,    # <-- simulation observation
-                            backend='linearized',fiducial_offset=True,jit_compile=True,)
+    vector_fn, theory_info = make_inference_theory_vector_function(
+        param_specs,
+        selected['selection'],
+        fiducial_vector=x_obs_sel,
+        backend='linearized',
+        fiducial_offset=True,
+        jit_compile=True,
+    )
 
-    #validate against x_obs_sel, not the theory fiducial
-    #(mismatches vs theory fiducial are expected and not errors)
+    # Validate against x_obs_sel (mismatches vs theory fiducial are expected)
     selected_for_validation = dict(selected)
     selected_for_validation['data_vector'] = x_obs_sel
-    selected_for_validation['chol'] = selected['chol']   # covariance unchanged
+    selected_for_validation['chol']        = selected['chol']
     validate_theory_vector(vector_fn, selected_for_validation, param_specs)
 
-    obs  = jnp.asarray(x_obs_sel,        dtype=jnp.float64)
-    chol = jnp.asarray(selected['chol'],  dtype=jnp.float64)
+    obs  = jnp.asarray(x_obs_sel,       dtype=jnp.float64)
+    chol = jnp.asarray(selected['chol'], dtype=jnp.float64)
 
-    low_j  = jnp.asarray([PRIOR_LOW[0],  PRIOR_LOW[1]],  dtype=jnp.float64)
-    high_j = jnp.asarray([PRIOR_HIGH[0], PRIOR_HIGH[1]], dtype=jnp.float64)
+    low_j  = jnp.asarray(PRIOR_LOW,  dtype=jnp.float64)
+    high_j = jnp.asarray(PRIOR_HIGH, dtype=jnp.float64)
     init_values = {spec.name: float(spec.fiducial) for spec in param_specs}
 
     def model():
-        values = []
-        for ip, spec in enumerate(param_specs):
-            values.append(
-                numpyro.sample(spec.name, dist.Uniform(low_j[ip], high_j[ip]))
-            )
+        values = [
+            numpyro.sample(spec.name, dist.Uniform(low_j[ip], high_j[ip]))
+            for ip, spec in enumerate(param_specs)
+        ]
         theta = jnp.stack(values)
         mu    = vector_fn(theta)
         resid = obs - mu
@@ -345,11 +340,10 @@ def run_hmc_probe(
     samples_chain = mcmc.get_samples(group_by_chain=True)
     extra         = mcmc.get_extra_fields(group_by_chain=True)
 
-    # Save
     payload = {
         'x_obs_sel': np.asarray(x_obs_sel),
-        'cov':  np.asarray(selected['cov']),
-        'chol': np.asarray(selected['chol']),
+        'cov':       np.asarray(selected['cov']),
+        'chol':      np.asarray(selected['chol']),
     }
     for spec in param_specs:
         payload[f'samples_{spec.name}']       = np.asarray(samples_flat[spec.name])
@@ -358,17 +352,16 @@ def run_hmc_probe(
         payload[f'extra_{k}'] = np.asarray(v)
     np.savez_compressed(out_path, **payload)
 
-    # ArviZ diagnostics
     try:
         import arviz as az
-        idata = az.from_numpyro(mcmc)
+        idata   = az.from_numpyro(mcmc)
         summary = az.summary(idata, var_names=PARAM_NAMES)
         diag = {
-            'probe':          probe_name,
-            'runtime_sec':    runtime,
-            'max_rhat':       float(summary['r_hat'].max()),
-            'min_ess_bulk':   float(summary['ess_bulk'].min()),
-            'arviz_summary':  json.loads(summary.to_json()),
+            'probe':         probe_name,
+            'runtime_sec':   runtime,
+            'max_rhat':      float(summary['r_hat'].max()),
+            'min_ess_bulk':  float(summary['ess_bulk'].min()),
+            'arviz_summary': json.loads(summary.to_json()),
         }
         with (output_dir / f'hmc_diagnostics_{probe_name}.json').open('w') as f:
             json.dump(diag, f, indent=2, sort_keys=True)
@@ -382,27 +375,8 @@ def run_hmc_probe(
     ])
 
 
-def _slice_xobs_for_probes(x_obs_full: np.ndarray,
-                            probes_arg: tuple) -> np.ndarray:
-    """
-    Extract the elements of x_obs_full (shape N_SUMMARY,) that correspond
-    to the requested probes, in the same order that selected_product_arrays
-    returns them.
-
-    x_obs.npy ordering : [g2y | g2tau | g2kappa | gy | gtau | gkappa]
-    theory product ordering (probes_arg) : e.g. ('gy',) or ('gy','gtau','gkappa')
-
-    Both use N_ELL_BINS_ACTUAL bins per spectrum, so we can directly index
-    via STAT_MAP_2PT / _s.
-    """
-    idx = []
-    for probe in probes_arg:
-        idx.extend(_s[probe])
-    return x_obs_full[np.array(idx)]
-
-
 # =============================================================================
-# SBI: train one posterior per probe on simulation Cls
+# SBI: load from main pipeline where possible, train fallback if not
 # =============================================================================
 
 def make_blocks(n_features):
@@ -412,10 +386,19 @@ def make_blocks(n_features):
     ]
 
 
+def _normalise_xobs(x_obs_full, probe_name, x_obs_idx, x_mean, x_std):
+    xo = x_obs_full[x_obs_idx].astype(np.float32)
+    return (xo - x_mean) / np.where(x_std < 1e-10, 1.0, x_std)
+
+
 def train_sbi_probe(args):
-    """Worker function: train one NPE+NSF posterior. Runs in a subprocess."""
+    """
+    Worker: train one NPE+MDN posterior (matching main pipeline architecture).
+    Saves scalers and normalised arrays with the '2pt_' prefix so they do not
+    clash with the main pipeline's files.
+    """
     torch.set_num_threads(1)
-    (name, x_obs_idx, x_train, theta_train, work_dir, device) = args
+    name, x_obs_idx, x_train, theta_train, x_obs_full, work_dir, device = args
 
     sys.path.insert(0, LTU_ILI_PATH)
     from ili.dataloaders import StaticNumpyLoader
@@ -431,20 +414,18 @@ def train_sbi_probe(args):
         n_train = len(theta_train)
 
         xt_full = x_train[:, x_obs_idx].astype(np.float32)
-        xo      = np.load(fpath('x_obs.npy'))[x_obs_idx].astype(np.float32)
+        xo      = x_obs_full[x_obs_idx].astype(np.float32)
 
         is_individual = name in INDIVIDUAL_STATS
         blocks = None if is_individual else make_blocks(n_stats)
 
         if blocks is None:
-            # Per-feature z-score (single spectrum)
             x_mean = np.mean(xt_full, axis=0)
             x_std  = np.std(xt_full,  axis=0)
             x_std[x_std < 1e-10] = 1.0
             xt_norm = (xt_full - x_mean) / x_std
             xo_norm = (xo      - x_mean) / x_std
         else:
-            # Per-block z-score (composite)
             xt_norm = np.empty_like(xt_full)
             xo_norm = np.empty(n_stats, dtype=np.float32)
             x_mean  = np.empty(n_stats, dtype=np.float32)
@@ -465,7 +446,6 @@ def train_sbi_probe(args):
               f'frac_below={frac_below:.2f}  frac_above={frac_above:.2f}',
               flush=True)
 
-        # Save scalers and normalised arrays
         np.save(fpath(f'scaler_2pt_{name}_mean.npy'), x_mean)
         np.save(fpath(f'scaler_2pt_{name}_std.npy'),  x_std)
         np.save(fpath(f'x_2pt_{name}.npy'),           xt_norm)
@@ -480,7 +460,7 @@ def train_sbi_probe(args):
         )
 
         hfs        = EQUAL_ARCH['hidden_features']
-        nts        = EQUAL_ARCH['num_transforms']
+        nc         = EQUAL_ARCH['num_components']
         batch_size = EQUAL_ARCH['batch_size']
         lr         = EQUAL_ARCH['learning_rate']
         max_epochs = EQUAL_ARCH['max_num_epochs']
@@ -490,16 +470,16 @@ def train_sbi_probe(args):
             'training_batch_size': batch_size,
             'learning_rate':       lr,
             'max_num_epochs':      max_epochs,
-            'stop_after_epochs':   100,
+            'stop_after_epochs':   50,
             'clip_max_norm':       5.0,
             'validation_fraction': VAL_FRACTION,
         }
 
         nets = load_nde_sbi(
-            engine='NPE', model='nsf',
+            engine='NPE', model='mdn',
             repeats=repeats,
             hidden_features=hfs,
-            num_transforms=nts,
+            num_components=nc,
         )
 
         runner = InferenceRunner.load(
@@ -519,7 +499,7 @@ def train_sbi_probe(args):
             pk.dump(posterior, f)
 
         return name, True, (f'[{name}] DONE  n_stats={n_stats}  n_train={n_train}  '
-                            f'hfs={hfs}  nts={nts}  repeats={repeats}')
+                            f'hfs={hfs}  num_components={nc}  repeats={repeats}')
 
     except Exception:
         import traceback
@@ -536,60 +516,122 @@ def run_sbi_probe(
     force_retrain: bool = False,
 ) -> np.ndarray | None:
     """
-    Train (if needed) and sample one SBI posterior.
+    Load or train one SBI posterior, then draw samples.
+
+    Priority order for posterior source:
+      1. Main pipeline posterior  (ili_posterior_{name}.pkl  + scaler_{name}_*.npy)
+      2. This script's own posterior  (ili_posterior_2pt_{name}.pkl)
+      3. Train a new posterior from scratch
+
     Returns samples array of shape (SBI_N_SAMPLES, n_params) or None on failure.
     """
-    posterior_path = os.path.join(work_dir, f'ili_posterior_2pt_{probe_name}.pkl')
+    x_obs_idx = STAT_MAP_2PT[probe_name]
 
-    if not os.path.exists(posterior_path) or force_retrain:
-        print(f'\n[SBI/{probe_name}] Training posterior...')
-        x_obs_idx = STAT_MAP_2PT[probe_name]
-        name, success, msg = train_sbi_probe((
-            probe_name, x_obs_idx, x_train, theta_train, work_dir, device,
-        ))
-        print(f'  {msg}')
-        if not success:
-            return None
-    else:
-        # Still need to save normalised xobs if scalers already exist
-        # (re-derive from saved scalers so x_obs.npy is never modified)
-        scaler_mean_path = os.path.join(work_dir, f'scaler_2pt_{probe_name}_mean.npy')
-        scaler_std_path  = os.path.join(work_dir, f'scaler_2pt_{probe_name}_std.npy')
-        xobs_norm_path   = os.path.join(work_dir, f'xobs_2pt_{probe_name}.npy')
+    # ── helper: derive and cache normalised x_obs for a given scaler prefix ──
+    def _get_xobs_norm(prefix):
+        """
+        Load scalers with the given prefix, normalise x_obs, cache result.
+        prefix examples: 'scaler_'  (main pipeline) or 'scaler_2pt_'  (this script)
+        Returns (xo_norm, xobs_norm_path) or (None, None) if scalers missing.
+        """
+        mean_path = os.path.join(work_dir, f'{prefix}{probe_name}_mean.npy')
+        std_path  = os.path.join(work_dir, f'{prefix}{probe_name}_std.npy')
+        if not (os.path.exists(mean_path) and os.path.exists(std_path)):
+            return None, None
+        x_mean = np.load(mean_path)
+        x_std  = np.load(std_path)
+        xo_norm = _normalise_xobs(x_obs_full, probe_name, x_obs_idx,
+                                  x_mean, x_std)
+        # cache next to the posterior so sampling doesn't need to recompute
+        out_path = os.path.join(work_dir, f'xobs_2pt_{probe_name}.npy')
+        np.save(out_path, xo_norm)
+        return xo_norm, out_path
 
-        if (os.path.exists(scaler_mean_path)
-                and os.path.exists(scaler_std_path)
-                and not os.path.exists(xobs_norm_path)):
-            x_mean = np.load(scaler_mean_path)
-            x_std  = np.load(scaler_std_path)
-            xo     = x_obs_full[STAT_MAP_2PT[probe_name]].astype(np.float32)
-            np.save(xobs_norm_path, (xo - x_mean) / x_std)
+    # ── 1. Try main pipeline posterior ────────────────────────────────────────
+    main_pkl = os.path.join(work_dir, f'ili_posterior_{probe_name}.pkl')
+    if os.path.exists(main_pkl) and not force_retrain:
+        print(f'\n[SBI/{probe_name}] Using main pipeline posterior: {main_pkl}')
+        xo_norm, _ = _get_xobs_norm('scaler_')
+        if xo_norm is None:
+            print(f'  [SBI/{probe_name}] Main pipeline scalers missing — '
+                  f'falling through to fallback.')
+        else:
+            with open(main_pkl, 'rb') as f:
+                posterior = pk.load(f)
+            print(f'  [SBI/{probe_name}] Sampling {SBI_N_SAMPLES} samples...')
+            samples = sample_ensemble_direct(posterior, xo_norm,
+                                             n_samples=SBI_N_SAMPLES)
+            if samples is not None:
+                samples = np.clip(samples,
+                                  a_min=np.array(PRIOR_LOW,  dtype=np.float32),
+                                  a_max=np.array(PRIOR_HIGH, dtype=np.float32))
+                print(f'  [SBI/{probe_name}] theta_ej_0  = '
+                      f'{samples[:,0].mean():.3f} +/- {samples[:,0].std():.3f}')
+                print(f'  [SBI/{probe_name}] nu_theta_ej = '
+                      f'{samples[:,1].mean():.3f} +/- {samples[:,1].std():.3f}')
+                return samples
+            print(f'  [SBI/{probe_name}] Sampling from main posterior failed — '
+                  f'falling through.')
 
-        print(f'\n[SBI/{probe_name}] Loading cached posterior from {posterior_path}')
+    # ── 2. Try this script's own cached posterior ─────────────────────────────
+    own_pkl = os.path.join(work_dir, f'ili_posterior_2pt_{probe_name}.pkl')
+    if os.path.exists(own_pkl) and not force_retrain:
+        print(f'\n[SBI/{probe_name}] Loading cached 2pt posterior: {own_pkl}')
+        xo_norm, _ = _get_xobs_norm('scaler_2pt_')
+        if xo_norm is None:
+            # scalers missing — recompute from training data
+            print(f'  [SBI/{probe_name}] 2pt scalers missing, recomputing...')
+            xt = x_train[:, x_obs_idx].astype(np.float32)
+            xo = x_obs_full[x_obs_idx].astype(np.float32)
+            x_mean = np.mean(xt, axis=0)
+            x_std  = np.std(xt,  axis=0)
+            x_std[x_std < 1e-10] = 1.0
+            np.save(os.path.join(work_dir, f'scaler_2pt_{probe_name}_mean.npy'), x_mean)
+            np.save(os.path.join(work_dir, f'scaler_2pt_{probe_name}_std.npy'),  x_std)
+            xo_norm = (xo - x_mean) / x_std
+            np.save(os.path.join(work_dir, f'xobs_2pt_{probe_name}.npy'), xo_norm)
 
-    with open(posterior_path, 'rb') as f:
-        posterior = pk.load(f)
+        with open(own_pkl, 'rb') as f:
+            posterior = pk.load(f)
+        print(f'  [SBI/{probe_name}] Sampling {SBI_N_SAMPLES} samples...')
+        samples = sample_ensemble_direct(posterior, xo_norm, n_samples=SBI_N_SAMPLES)
+        if samples is not None:
+            samples = np.clip(samples,
+                              a_min=np.array(PRIOR_LOW,  dtype=np.float32),
+                              a_max=np.array(PRIOR_HIGH, dtype=np.float32))
+            print(f'  [SBI/{probe_name}] theta_ej_0  = '
+                  f'{samples[:,0].mean():.3f} +/- {samples[:,0].std():.3f}')
+            print(f'  [SBI/{probe_name}] nu_theta_ej = '
+                  f'{samples[:,1].mean():.3f} +/- {samples[:,1].std():.3f}')
+            return samples
+        print(f'  [SBI/{probe_name}] Sampling from cached 2pt posterior failed — '
+              f'retraining.')
 
-    # Load normalised x_obs
-    xobs_norm_path = os.path.join(work_dir, f'xobs_2pt_{probe_name}.npy')
-    if not os.path.exists(xobs_norm_path):
-        print(f'  [SBI/{probe_name}] xobs_2pt_{probe_name}.npy not found — '
-              f'run training first.')
+    # ── 3. Train from scratch ─────────────────────────────────────────────────
+    print(f'\n[SBI/{probe_name}] Training new posterior...')
+    name, success, msg = train_sbi_probe((
+        probe_name, x_obs_idx, x_train, theta_train, x_obs_full, work_dir, device,
+    ))
+    print(f'  {msg}')
+    if not success:
         return None
-    xo_norm = np.load(xobs_norm_path)
 
-    print(f'  [SBI/{probe_name}] Sampling {SBI_N_SAMPLES} posterior samples...')
+    xo_norm, _ = _get_xobs_norm('scaler_2pt_')
+    if xo_norm is None:
+        print(f'  [SBI/{probe_name}] Scalers still missing after training — aborting.')
+        return None
+
+    with open(own_pkl, 'rb') as f:
+        posterior = pk.load(f)
+    print(f'  [SBI/{probe_name}] Sampling {SBI_N_SAMPLES} samples...')
     samples = sample_ensemble_direct(posterior, xo_norm, n_samples=SBI_N_SAMPLES)
     if samples is None:
         print(f'  [SBI/{probe_name}] Sampling failed.')
         return None
 
-    # Clip to prior
-    samples = np.clip(
-        samples,
-        a_min=np.array(PRIOR_LOW,  dtype=np.float32),
-        a_max=np.array(PRIOR_HIGH, dtype=np.float32),
-    )
+    samples = np.clip(samples,
+                      a_min=np.array(PRIOR_LOW,  dtype=np.float32),
+                      a_max=np.array(PRIOR_HIGH, dtype=np.float32))
     print(f'  [SBI/{probe_name}] theta_ej_0  = '
           f'{samples[:,0].mean():.3f} +/- {samples[:,0].std():.3f}')
     print(f'  [SBI/{probe_name}] nu_theta_ej = '
@@ -598,7 +640,7 @@ def run_sbi_probe(
 
 
 # =============================================================================
-# PLOTTING  (GetDist triangle plot, one per probe)
+# PLOTTING
 # =============================================================================
 
 def make_triangle_plot(
@@ -607,7 +649,6 @@ def make_triangle_plot(
     sbi_samples: np.ndarray,
     output_dir: str,
 ):
-    """One GetDist triangle plot overlaying HMC and SBI for a single probe."""
     try:
         from getdist import MCSamples, plots
     except ImportError:
@@ -617,7 +658,6 @@ def make_triangle_plot(
 
     names  = PARAM_NAMES
     labels = [r'\theta_{\rm ej,0}', r'\nu_{\theta_{\rm ej}}^{M}']
-
     gd_settings = {'smooth_scale_1D': 0.35, 'smooth_scale_2D': 0.35}
 
     hmc_gd = MCSamples(
@@ -634,8 +674,8 @@ def make_triangle_plot(
     )
 
     g = plots.get_subplot_plotter(width_inch=6.2)
-    g.settings.legend_fontsize  = 9
-    g.settings.axes_labelsize   = 10
+    g.settings.legend_fontsize = 9
+    g.settings.axes_labelsize  = 10
     g.triangle_plot(
         [hmc_gd, sbi_gd],
         params=names,
@@ -656,7 +696,6 @@ def _make_fallback_plot(
     sbi_samples: np.ndarray,
     output_dir: str,
 ):
-    """Simple 1D marginal overlay as fallback when getdist is unavailable."""
     from scipy.stats import gaussian_kde
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -666,7 +705,7 @@ def _make_fallback_plot(
         xs = np.linspace(lo, hi, 400)
         for samples, color, label in [
             (hmc_samples, '#1f77b4', 'HMC / NUTS'),
-            (sbi_samples, '#d62728', 'SBI / NPE+NSF'),
+            (sbi_samples, '#d62728', 'SBI / NPE+MDN'),
         ]:
             kde = gaussian_kde(samples[:, pi])
             ys  = kde(xs)
@@ -703,11 +742,11 @@ if __name__ == '__main__':
     parser.add_argument('--skip-sbi', action='store_true')
     parser.add_argument('--probes', default='gy,gtau,gkappa,all_2pt',
                         help='Comma-separated probe names to compare.')
-    parser.add_argument('--sbi-n-samples', type=int, default=SBI_N_SAMPLES)
+    parser.add_argument('--sbi-n-samples',    type=int, default=SBI_N_SAMPLES)
     parser.add_argument('--hmc-num-warmup',   type=int, default=HMC_NUM_WARMUP)
     parser.add_argument('--hmc-num-samples',  type=int, default=HMC_NUM_SAMPLES)
     parser.add_argument('--hmc-num-chains',   type=int, default=HMC_NUM_CHAINS)
-    parser.add_argument('--output-dir', default=WORK_DIR)
+    parser.add_argument('--output-dir',       default=WORK_DIR)
     args = parser.parse_args()
 
     HMC_NUM_WARMUP  = args.hmc_num_warmup
@@ -721,7 +760,8 @@ if __name__ == '__main__':
     probe_list = [p.strip() for p in args.probes.split(',') if p.strip()]
     for p in probe_list:
         if p not in STAT_MAP_2PT:
-            raise ValueError(f'Unknown probe "{p}". Choose from {list(STAT_MAP_2PT)}')
+            raise ValueError(
+                f'Unknown probe "{p}". Choose from {list(STAT_MAP_2PT)}')
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f'Device      : {device}')
@@ -735,7 +775,7 @@ if __name__ == '__main__':
     if not os.path.exists(x_obs_path):
         raise FileNotFoundError(
             f'x_obs.npy not found at {x_obs_path}. '
-            'Run the main SBI pipeline first to generate it.')
+            'Run the main SBI pipeline first.')
     x_obs_full = np.load(x_obs_path)
     print(f'\nx_obs shape : {x_obs_full.shape}  '
           f'(expect {N_ELL_BINS_ACTUAL * len(CL_SPECS_FULL)})')
@@ -745,7 +785,7 @@ if __name__ == '__main__':
               f'range=[{x_obs_full[sl].min():.4e}, {x_obs_full[sl].max():.4e}]')
 
     # ── 2. Load training data ─────────────────────────────────────────────────
-    x_train_path = os.path.join(WORK_DIR, f'x_train_full.npy')
+    x_train_path     = os.path.join(WORK_DIR, f'x_train_full{_CACHE_SUFFIX}.npy')
     theta_train_path = os.path.join(WORK_DIR, 'theta_train_full.npy')
     if not os.path.exists(x_train_path) or not os.path.exists(theta_train_path):
         raise FileNotFoundError(
@@ -769,8 +809,6 @@ if __name__ == '__main__':
     hmc_samples_dict = {}
     sbi_samples_dict = {}
 
-    # Map probe name -> tuple of probe names recognised by theory_sbi_utils
-    # (these must be in TARGET_SPECTRA from gaussian_covariance.py)
     PROBE_TO_THEORY = {
         'gy':      ('gy',),
         'gtau':    ('gtau',),
@@ -789,12 +827,12 @@ if __name__ == '__main__':
             hmc_out_dir = pathlib.Path(output_dir) / f'hmc_{probe_name}'
             hmc_out_dir.mkdir(parents=True, exist_ok=True)
             hmc_samples = run_hmc_probe(
-                probe_name   = probe_name,
-                x_obs_full   = x_obs_full,
-                fiducial_path= fiducial_path,
-                param_specs  = param_specs,
-                output_dir   = hmc_out_dir,
-                probes_arg   = PROBE_TO_THEORY[probe_name],
+                probe_name    = probe_name,
+                x_obs_full    = x_obs_full,
+                fiducial_path = fiducial_path,
+                param_specs   = param_specs,
+                output_dir    = hmc_out_dir,
+                probes_arg    = PROBE_TO_THEORY[probe_name],
             )
             hmc_samples_dict[probe_name] = hmc_samples
             print(f'  [HMC/{probe_name}] {len(hmc_samples)} samples  '
@@ -803,68 +841,90 @@ if __name__ == '__main__':
                   f'nu={hmc_samples[:,1].mean():.3f}'
                   f'+/-{hmc_samples[:,1].std():.3f}')
         else:
-            # Try loading cached
-            cached = pathlib.Path(output_dir) / f'hmc_{probe_name}' \
-                     / f'hmc_samples_{probe_name}.npz'
+            cached = (pathlib.Path(output_dir) / f'hmc_{probe_name}'
+                      / f'hmc_samples_{probe_name}.npz')
             if cached.exists():
                 d = np.load(cached)
                 hmc_samples_dict[probe_name] = np.column_stack(
                     [d[f'samples_{n}'] for n in PARAM_NAMES])
-                print(f'  [HMC/{probe_name}] Loaded {len(hmc_samples_dict[probe_name])} '
-                      f'cached samples.')
+                print(f'  [HMC/{probe_name}] Loaded '
+                      f'{len(hmc_samples_dict[probe_name])} cached samples.')
             else:
                 print(f'  [HMC/{probe_name}] --skip-hmc set and no cache found.')
 
         # ── SBI ──────────────────────────────────────────────────────────────
         if not args.skip_sbi:
             sbi_samples = run_sbi_probe(
-                probe_name   = probe_name,
-                x_obs_full   = x_obs_full,
-                x_train      = x_train,
-                theta_train  = theta_train,
-                work_dir     = WORK_DIR,
-                device       = device,
-                force_retrain= args.force_retrain,
+                probe_name    = probe_name,
+                x_obs_full    = x_obs_full,
+                x_train       = x_train,
+                theta_train   = theta_train,
+                work_dir      = WORK_DIR,
+                device        = device,
+                force_retrain = args.force_retrain,
             )
             if sbi_samples is not None:
                 sbi_samples_dict[probe_name] = sbi_samples
         else:
-            # Try loading cached posterior and sampling
-            posterior_path = os.path.join(
-                WORK_DIR, f'ili_posterior_2pt_{probe_name}.pkl')
-            xobs_norm_path = os.path.join(
-                WORK_DIR, f'xobs_2pt_{probe_name}.npy')
-            if os.path.exists(posterior_path) and os.path.exists(xobs_norm_path):
-                with open(posterior_path, 'rb') as f:
+            # Try loading cached posterior and sampling without retraining
+            # Priority: main pipeline posterior first, then 2pt-specific
+            loaded = False
+            for pkl_name, scaler_prefix in [
+                (f'ili_posterior_{probe_name}.pkl',      'scaler_'),
+                (f'ili_posterior_2pt_{probe_name}.pkl',  'scaler_2pt_'),
+            ]:
+                pkl_path = os.path.join(WORK_DIR, pkl_name)
+                if not os.path.exists(pkl_path):
+                    continue
+                mean_path = os.path.join(WORK_DIR,
+                                         f'{scaler_prefix}{probe_name}_mean.npy')
+                std_path  = os.path.join(WORK_DIR,
+                                         f'{scaler_prefix}{probe_name}_std.npy')
+                if not (os.path.exists(mean_path) and os.path.exists(std_path)):
+                    continue
+                x_mean  = np.load(mean_path)
+                x_std   = np.load(std_path)
+                xo_norm = _normalise_xobs(
+                    x_obs_full, probe_name,
+                    STAT_MAP_2PT[probe_name], x_mean, x_std,
+                )
+                with open(pkl_path, 'rb') as f:
                     posterior = pk.load(f)
-                xo_norm = np.load(xobs_norm_path)
                 sbi_samples = sample_ensemble_direct(
                     posterior, xo_norm, n_samples=SBI_N_SAMPLES)
                 if sbi_samples is not None:
                     sbi_samples = np.clip(
                         sbi_samples,
-                        a_min=np.array(PRIOR_LOW),
-                        a_max=np.array(PRIOR_HIGH),
+                        a_min=np.array(PRIOR_LOW,  dtype=np.float32),
+                        a_max=np.array(PRIOR_HIGH, dtype=np.float32),
                     )
                     sbi_samples_dict[probe_name] = sbi_samples
-                    print(f'  [SBI/{probe_name}] Loaded cached posterior, '
+                    print(f'  [SBI/{probe_name}] Loaded from {pkl_name}, '
                           f'{len(sbi_samples)} samples.')
-            else:
-                print(f'  [SBI/{probe_name}] --skip-sbi set and no cache found.')
+                    loaded = True
+                    break
+            if not loaded:
+                print(f'  [SBI/{probe_name}] --skip-sbi set and no usable '
+                      f'cached posterior found.')
 
-        # ── Save flat samples for standalone plotting script ──────────────
+        # ── Save flat samples ─────────────────────────────────────────────────
         if probe_name in hmc_samples_dict:
-            save_path = os.path.join(output_dir, f'hmc_samples_{probe_name}.npy')
-            np.save(save_path, {
-                'theta_ej_0':    hmc_samples_dict[probe_name][:, 0],
-                'nu_theta_ej_M': hmc_samples_dict[probe_name][:, 1],
-            })
+            save_path = os.path.join(output_dir,
+                                     f'hmc_samples_{probe_name}.npz')
+            s = hmc_samples_dict[probe_name]
+            np.savez_compressed(
+                save_path,
+                theta_ej_0    = s[:, 0],
+                nu_theta_ej_M = s[:, 1],
+            )
             print(f'  [save/{probe_name}] Written: {save_path}')
 
         if probe_name in sbi_samples_dict:
-            save_path = os.path.join(output_dir, f'sbi_samples_{probe_name}.npy')
-            np.save(save_path, sbi_samples_dict[probe_name])   # shape (N, 2)
+            save_path = os.path.join(output_dir,
+                                     f'sbi_samples_{probe_name}.npy')
+            np.save(save_path, sbi_samples_dict[probe_name])  # shape (N, 2)
             print(f'  [save/{probe_name}] Written: {save_path}')
+
         # ── Plot ─────────────────────────────────────────────────────────────
         if probe_name in hmc_samples_dict and probe_name in sbi_samples_dict:
             make_triangle_plot(
@@ -881,14 +941,29 @@ if __name__ == '__main__':
                 missing.append('SBI')
             print(f'  [plot/{probe_name}] Skipping — missing: {missing}')
 
-    # ── 5. Summary ───────────────────────────────────────────────────────────
+    # ── 5. Summary ────────────────────────────────────────────────────────────
     print(f'\n{"="*60}')
     print('  SUMMARY')
     print(f'{"="*60}')
     for probe_name in probe_list:
         hmc_ok = probe_name in hmc_samples_dict
         sbi_ok = probe_name in sbi_samples_dict
-        print(f'  {probe_name:10s}  HMC={"OK" if hmc_ok else "MISSING":7s}  '
-              f'SBI={"OK" if sbi_ok else "MISSING"}')
+        if hmc_ok:
+            s = hmc_samples_dict[probe_name]
+            hmc_str = (f'OK  ({len(s)} samples  '
+                       f'theta_ej_0={s[:,0].mean():.3f}+/-{s[:,0].std():.3f}  '
+                       f'nu={s[:,1].mean():.3f}+/-{s[:,1].std():.3f})')
+        else:
+            hmc_str = 'MISSING'
+        if sbi_ok:
+            s = sbi_samples_dict[probe_name]
+            sbi_str = (f'OK  ({len(s)} samples  '
+                       f'theta_ej_0={s[:,0].mean():.3f}+/-{s[:,0].std():.3f}  '
+                       f'nu={s[:,1].mean():.3f}+/-{s[:,1].std():.3f})')
+        else:
+            sbi_str = 'MISSING'
+        print(f'  {probe_name:10s}')
+        print(f'    HMC : {hmc_str}')
+        print(f'    SBI : {sbi_str}')
 
     print('\nAll done.')
