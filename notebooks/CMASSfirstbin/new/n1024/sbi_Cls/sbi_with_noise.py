@@ -53,6 +53,7 @@ CSV_FILES = [
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round2_samples.csv', 500),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round3_samples.csv', 700),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round4_samples.csv', 900),
+    ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round5_samples.csv',1100),
 ]
 NEXT_ROUND = len(CSV_FILES) + 1
 
@@ -65,7 +66,7 @@ GAL_ZMAX   = 0.5
 
 PRIOR_LOW    = [1.0, -0.3]
 PRIOR_HIGH   = [6.0,  0.0]
-PARAM_LABELS = [r'$$\theta_{ej,0}$$', r'$${\nu_{\theta_{ej}}}^{M}$$']
+PARAM_LABELS = [r'$\theta_{ej,0}$', r'${\nu_{\theta_{ej}}}^{M}$']
 PARAM_NAMES  = ['theta_ej_0', 'nu_theta_ej_M']
 PROPOSAL_STAT = 'JOINT'
 VAL_FRACTION  = 0.10
