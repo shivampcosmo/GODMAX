@@ -589,6 +589,12 @@ def train_one_statistic(args):
 
 if __name__ == '__main__':
 
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--force-reload', action='store_true',
+                        help='Ignore cached x_train/theta_train and rebuild from CSVs.')
+    args, _ = parser.parse_known_args()
+
     os.makedirs(CACHE_DIR,     exist_ok=True)
     os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
