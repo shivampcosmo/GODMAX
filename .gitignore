@@ -9,6 +9,7 @@ logs/
 papers/
 summary/
 results/
+slurm-logs/
 .claude/
 .codex/
 *.slurm
