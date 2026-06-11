@@ -6,7 +6,11 @@ sbi-logs/
 outputs/
 data/
 logs/
+papers/
+summary/
 results/
+.claude/
+.codex/
 *.slurm
 *.npy
 *.pdf
