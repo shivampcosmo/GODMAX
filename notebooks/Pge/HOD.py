@@ -606,7 +606,7 @@ class DarkMatter(bfg.Profiles.Schneider19.SchneiderProfiles):
         for m_i in range(M_use.size):
             r_integral     = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             prof_integral  = 1/(r_integral/r_s[m_i] * (1 + r_integral/r_s[m_i])**2) * 1/(1 + (r_integral/r_t[m_i])**2)**2
-            Normalization[m_i] = np.trapz(4*np.pi*r_integral**2 * prof_integral, r_integral)
+            Normalization[m_i] = np.trapezoid(4*np.pi*r_integral**2 * prof_integral, r_integral)
 
 
         rho_c = M_use/Normalization

@@ -1,0 +1,72 @@
+project:
+  name: abacus_xdesi_pasting
+  xdesi_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI
+  output_root: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/outputs
+
+abacus:
+  input_root: /mnt/ceph/users/backlight/AbacusBacklight_base_c9999_ph9999/lightcone_halos
+  sim_name: AbacusBacklight_base_c9999_ph9999
+  read_only: true
+  redshift_dir_padding: 0.08
+
+catalogs:
+  zlt1p0_logMgt12p5:
+    output_name: abacus_c9999_ph9999_zlt1p0_logMgt12p5_halos.h5
+    z_min: 0.0001
+    z_max: 1.0
+    log10_m_min_hmsun: 12.5
+  zlt0p5_logMgt14p0:
+    output_name: abacus_c9999_ph9999_zlt0p5_logMgt14p0_halos.h5
+    z_min: 0.0001
+    z_max: 0.5
+    log10_m_min_hmsun: 14.0
+
+godmax:
+  default_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/params_default.yaml
+  xdesi_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/xDESI/params_fit_abacus.yaml
+  xdesi_fit_summary: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/abacus_LRG_nz_Clgg_v5_deltaell_100_combined_16sims.pkl
+  source_nz_fits: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/forecast/lsst_simulate_Y1.fits
+  source_nz_hdu: nz_source
+  source_nz_z_column: Z_MID
+  source_nz_bin_column: BIN5
+  source_nz_floor: 1.0e-4
+  use_fit_lens_nz: true
+  override_cosmology_from_catalog: true
+  theory_mass_cut_applied_to_hod: true
+
+pasting:
+  run_name: abacus_c9999_ph9999_xdesi
+  nside: 1024
+  max_paint_R200c_factor: 5.0
+  smooth_profiles: true
+  profile_timing: false
+  random_seed: 42
+  get_galmap: true
+  get_ymap: true
+  get_kszmap: true
+  get_taumap: true
+  get_kappa_cmb: true
+  get_kappa_wl: true
+  get_baryonifiedmap: true
+  chunk_halos_by_nside:
+    64: 1000000
+    128: 500000
+    256: 250000
+    512: 100000
+    1024: 50000
+    2048: 10000
+  pixel_batch_size: 2000
+  num_splits: 4
+
+slurm:
+  conda_env: ili-sbi
+  partition: gpu
+  constraint: a100-80gb
+  preprocess_time: "08:00:00"
+  paste_time: "12:00:00"
+  combine_time: "02:00:00"
+  preprocess_mem: 256G
+  paste_mem: 256G
+  combine_mem: 128G
+  cpus_per_gpu: 16
+  logs_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/run_scripts/logs

@@ -1,0 +1,42 @@
+description: >
+  Stage-31 NumPyro HMC configuration for fitting the xDESI fast1024
+  multi-probe measurement with fixed Abacus/Backlight-like cosmology and
+  varied astrophysical HOD/baryonic parameters. This is a 1600-sample-per-chain
+  run with 4 vectorized chains per GPU.
+
+comparison_config: param_files/xDESI/params_multiprobe_fast1024_true_nz_theory_abacus_cosmo.yaml
+prior_file: param_files/xDESI/priors_multiprobe_fast1024_hmc_stage31.yaml
+
+stage: stage31_legacy_core_abacus_cosmo
+output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_fast1024_true_nz_hmc_stage31_abacus_cosmo
+minimum_halo_log10_m200c_hmsun: 11.147538
+
+covariance:
+  type: whitened_correlation_eigencut
+  eigenvalue_threshold: 1.0e-8
+
+sampler:
+  seed: 42
+  num_warmup: 400
+  num_samples: 1600
+  num_chains: 4
+  chain_method: vectorized
+  dense_mass: true
+  max_tree_depth: 4
+  target_accept_prob: 0.85
+  forward_mode_differentiation: false
+  jit_model_args: true
+  progress_bar: false
+
+smoke_sampler:
+  seed: 43
+  num_warmup: 40
+  num_samples: 160
+  num_chains: 1
+  chain_method: sequential
+  dense_mass: true
+  max_tree_depth: 4
+  target_accept_prob: 0.8
+  forward_mode_differentiation: false
+  jit_model_args: true
+  progress_bar: true

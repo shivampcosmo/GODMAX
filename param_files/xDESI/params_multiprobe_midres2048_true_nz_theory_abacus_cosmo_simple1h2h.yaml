@@ -1,0 +1,95 @@
+description: >
+  Path-backed GODMAX analytic theory configuration for fitting the xDESI
+  midres2048 multi-probe NaMaster measurement with calibrated DESI
+  true-redshift n(z) kernels, fixed Abacus/Backlight-like cosmology, and
+  explicit simple 1-halo + 2-halo transition models for all configurable
+  tracer probe combinations.
+
+base_params: param_files/params_default.yaml
+xdesi_params: param_files/xDESI/params_fit_abacus.yaml
+
+measurement_h5: data/xDESI/processed/multiprobe_namaster_true_nz/midres2048/xdesi_multiprobe_cls_cov_nside2048_lmax4096_nbin10_linear.h5
+map_h5: data/xDESI/processed/multiprobe_namaster_true_nz/midres2048/xdesi_multiprobe_maps_nside2048_lmax4096_nbin10_linear.h5
+
+stage: midres2048_true_nz_abacus_cosmo_simple1h2h
+output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_midres2048_true_nz_abacus_cosmo_simple1h2h
+minimum_halo_log10_m200c_hmsun: 11.147538
+
+cosmology:
+  flat: true
+  H0: 67.11
+  Om0: 0.3175
+  Ob0: 0.049
+  sigma8: 0.834
+  ns: 0.9624
+  w0: -1.0
+  wa: 0.0
+
+datasets:
+  des_source_nz:
+    file: measurement_h5
+    z_mid: nz/des_shear/z_mid
+    dndz_by_bin: nz/des_shear/dndz_by_bin
+  desi_lens_nz:
+    file: map_h5
+    z_mid: nz/desi/z_mid
+    z_edges: nz/desi/z_edges
+    dndz_by_pz: nz/desi/nz_dndz_by_pz
+    required_redshift_kind: spectroscopic_calibrated_true_redshift
+  theory_interface:
+    file: measurement_h5
+    group: theory_interface
+  field_metadata:
+    file: measurement_h5
+    group: fields
+
+nbar:
+  floor_comoving_hmpc3: 1.0e-10
+  source: measured_nbar_per_sr_times_calibrated_true_dndz_over_chi2_dchidz
+
+overrides:
+  halo_params:
+    # Backlight-compatible M200c floor: log10(M / [Msun/h]) = 11.147538.
+    lg10_Mmin: 11.147538
+    zmin: 0.005
+    zmax: 3.0
+    nz: 96
+  analysis:
+    hod_params_model: perbin
+    # Keep matter on the existing DMB-response convention; tracer poweradd with
+    # alpha=1 is exactly P_1h + P_2h in src/get_Pkzs.py.
+    matter_transition_model: response
+    mm_transition_model: response
+    tSZ_transition_model: poweradd
+    gg_transition_model: poweradd
+    galaxy_matter_transition_model: poweradd
+    gm_transition_model: poweradd
+    galaxy_electron_transition_model: poweradd
+    ge_transition_model: poweradd
+    beam_fwhm_arcmin: 0.0
+    zmin_for_Cls: 0.005
+    zmax_for_Cls: 3.0
+    nz_for_Cls: 192
+  other_params:
+    alpha_ky: 1.0
+    alpha_gy: 1.0
+    alpha_gg: 1.0
+    alpha_gm: 1.0
+    alpha_ge: 1.0
+    mult_shear_bias_array:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+
+theory_to_data_vector:
+  include_default_pixel_windows: true
+  include_default_act_beams: true
+  theory_shear_e_is_positive_kappa: true
+  ksz_velocity_correlation: 0.3
+
+plotting:
+  use_cl_for_families:
+    - desi_g_auto
+  use_dell_for_other_families: true
+  ksz_positive_convention: "-D_ell^{pi,T}"

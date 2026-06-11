@@ -240,7 +240,7 @@ class get_Cl(get_Pkz):
 
         @vmap
         def integrand(z_prime):
-            chi_prime = jnp.exp(jnp.interp(z_prime, self.z_array, jnp.log(self.chi_array)))
+            chi_prime = jnp.interp(z_prime, self.z_array_nz, self.chi_array_nz)
             dndz = (jnp.interp(z_prime, self.z_array_nz, self.pzs_inp_mat[jb, :]))
             return dndz * jnp.clip(chi_prime - chi, 0) / jnp.clip(chi_prime, 0.1)
 

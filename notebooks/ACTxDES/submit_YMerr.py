@@ -273,7 +273,7 @@ for jind in range(len(indsel)):
         Pe_jz_jM = profiles_test.Pe_mat_physical[:, indz, jM]
         interpPe = interp1d(np.log(profiles_test.r_array), np.log(Pe_jz_jM), fill_value='extrapolate')
         Pe_jM = np.exp(interpPe(np.log(r_array_jM)))
-        Y_jM = np.trapz(4 * np.pi * r_array_jM**3 * Pe_jM, np.log(r_array_jM))
+        Y_jM = np.trapezoid(4 * np.pi * r_array_jM**3 * Pe_jM, np.log(r_array_jM))
     
         Y_model_all[jM] = const_coeff * Y_jM * (oneMpc_h_to_cm**3)
         # Y_ss_all[jM] = Y_ss

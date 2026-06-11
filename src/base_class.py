@@ -201,13 +201,13 @@ class base_class:
             array_val = sim_params_dict.get(array_name, None)
             scalar_val = sim_params_dict.get(name, None)
             if array_val is not None:
-                array_val = np.atleast_1d(array_val)
+                array_val = jnp.atleast_1d(jnp.asarray(array_val))
             if scalar_val is None:
                 scalar_val = array_val[0] if array_val is not None else default
             if array_val is None:
-                array_val = [scalar_val]
+                array_val = jnp.atleast_1d(jnp.asarray(scalar_val))
             setattr(self, name, scalar_val)
-            setattr(self, array_name, jnp.array(array_val))
+            setattr(self, array_name, jnp.asarray(array_val))
 
         set_hod_param('log10M1_fshmr', 12.35)
         set_hod_param('log10M1_a_fshmr', 0.28)
@@ -228,9 +228,9 @@ class base_class:
 
         fcen_array = sim_params_dict.get('fcen_array', None)
         if fcen_array is not None:
-            fcen_array = np.atleast_1d(fcen_array)
+            fcen_array = jnp.atleast_1d(jnp.asarray(fcen_array))
         self.fcen = sim_params_dict.get('fcen', fcen_array[0] if fcen_array is not None else 1.0)
-        self.fcen_array = jnp.array(fcen_array if fcen_array is not None else [self.fcen])
+        self.fcen_array = jnp.asarray(fcen_array if fcen_array is not None else [self.fcen])
 
         # In case don't want to model proper galaxies, then can just set simple stellar profile parameters:
         self.eta_star=sim_params_dict.get('eta_star',0.3)
@@ -364,6 +364,7 @@ class base_class:
             self.nbins = 1
             self.z_array_nz = jnp.linspace(0.01, 1.5, 128)
             self.pzs_inp_mat_inp = jnp.array([jnp.ones_like(self.z_array_nz)])
+        self.chi_array_nz = radial_comoving_distance(self.cosmo_jax, 1.0 / (1.0 + self.z_array_nz))
 
         nz_info_dict = analysis_dict.get('nz_lens_info_dict', None)
         try:
@@ -395,9 +396,19 @@ class base_class:
 
         self.tSZ_transition_model = analysis_dict.get('tSZ_transition_model', 'poweradd')
         self.gg_transition_model = analysis_dict.get('gg_transition_model', 'poweradd')
+        self.galaxy_matter_transition_model = analysis_dict.get(
+            'galaxy_matter_transition_model',
+            analysis_dict.get('gm_transition_model', 'poweradd'),
+        )
+        self.galaxy_electron_transition_model = analysis_dict.get(
+            'galaxy_electron_transition_model',
+            analysis_dict.get('ge_transition_model', 'poweradd'),
+        )
         self.alpha_ky = other_params_dict.get('alpha_ky', 1.0)
         self.alpha_gy = other_params_dict.get('alpha_gy', 1.0)
         self.alpha_gg = other_params_dict.get('alpha_gg', 1.0)
+        self.alpha_gm = other_params_dict.get('alpha_gm', 1.0)
+        self.alpha_ge = other_params_dict.get('alpha_ge', 1.0)
 
     @timing_decorator
     def get_power_spectra_cosmo(self):

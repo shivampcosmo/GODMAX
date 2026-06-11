@@ -262,7 +262,7 @@ def catalog_window_and_bias(
     cls = context["cls"]
     z_for = np.asarray(cls.z_array_for_Cls, dtype=float)
     window = interp1d(z_centers, counts_smooth, bounds_error=False, fill_value=0.0)(z_for)
-    norm = np.trapz(window, z_for)
+    norm = np.trapezoid(window, z_for)
     if norm > 0:
         window = window / norm
     bias_for = interp1d(
@@ -304,8 +304,8 @@ def _integrate_hmf_range(
         np.log(np.clip(hmf_z, 1.0e-300, np.inf)),
     ))
     bias_eval = np.interp(logm_eval, ln_mass, bias_z)
-    nden = np.trapz(hmf_eval, x=logm_eval)
-    bnum = np.trapz(hmf_eval * bias_eval, x=logm_eval)
+    nden = np.trapezoid(hmf_eval, x=logm_eval)
+    bnum = np.trapezoid(hmf_eval * bias_eval, x=logm_eval)
     beff = bnum / nden if nden > 0 else np.nan
     return float(nden), float(bnum), float(beff)
 
@@ -459,7 +459,7 @@ def godmax_limber_halo_cls(
         kval = (ell + 0.5) / np.clip(chi, 1.0, np.inf)
         pk = np.exp(interp_power(np.column_stack([np.log(kval), z_for])))
         integrand = window_for ** 2 * bias_for ** 2 * pk / (chi ** 2 * dchi_dz)
-        out[i] = np.trapz(integrand, z_for)
+        out[i] = np.trapezoid(integrand, z_for)
     return out
 
 

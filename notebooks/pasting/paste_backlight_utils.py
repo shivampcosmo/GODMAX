@@ -65,7 +65,7 @@ def nbar_to_nz_lens(nbar_comoving, z_array, cosmo_jax):
     """
     dVdz = compute_dV_dz_per_sr(cosmo_jax, z_array)
     unnorm = np.array(nbar_comoving) * dVdz
-    norm = np.trapz(unnorm, z_array)
+    norm = np.trapezoid(unnorm, z_array)
     if norm > 0:
         return unnorm / norm
     return unnorm
@@ -180,7 +180,7 @@ def update_nz_from_mock_catalog(mock_gals, analysis_dict, zarray_lens, cosmo_jax
     if smooth and len(nz_raw) > 3:
         nz_raw = gaussian_filter1d(nz_raw, sigma=smooth_sigma)
 
-    norm = np.trapz(nz_raw, zarray_lens)
+    norm = np.trapezoid(nz_raw, zarray_lens)
     nz_realized = nz_raw / norm if norm > 0 else nz_raw
 
     # Update analysis_dict in place
@@ -895,7 +895,7 @@ def compare_sim_vs_theory_hmf(halo_M200c, halo_z, Cls_test, nM_bins=12, nz_bins=
             mask_M = (logM_th >= lm_lo) & (logM_th < lm_hi)
             if mask_M.sum() > 0:
                 # ∫ (dn/dlnM) dlnM  →  number density in this mass bin
-                ndens_bin = np.trapz(dndlnM_z[mask_M], np.log(M_th[mask_M]))
+                ndens_bin = np.trapezoid(dndlnM_z[mask_M], np.log(M_th[mask_M]))
                 theory_counts_abs[iz, im] = ndens_bin * z_bin_volumes[iz]
 
     # Also provide renormalized theory (old behavior) as secondary diagnostic
@@ -996,8 +996,8 @@ def compute_Cl_gg_1h_2h(Cls_test):
 
         integrand_1h = prefac**2 * chi_arr**2 * dchi_dz * Pkz_1h_at_ell
         integrand_2h = prefac**2 * chi_arr**2 * dchi_dz * Pkz_2h_at_ell
-        Cl_1h[jl] = np.trapz(integrand_1h, z_arr)
-        Cl_2h[jl] = np.trapz(integrand_2h, z_arr)
+        Cl_1h[jl] = np.trapezoid(integrand_1h, z_arr)
+        Cl_2h[jl] = np.trapezoid(integrand_2h, z_arr)
 
     return dict(ell=ell_array, Cl_1h=Cl_1h, Cl_2h=Cl_2h, Cl_tot=Cl_1h + Cl_2h)
 
@@ -1028,7 +1028,7 @@ def compute_hod_shot_noise_Cl(Cls_test, jb=0):
     nbar_at_z = np.where(nbar_at_z > 1e-15, nbar_at_z, 1e-15)
 
     integrand = prefac**2 * chi_arr**2 * dchi_dz / nbar_at_z
-    Cl_shot_hod = float(np.trapz(integrand, z_arr))
+    Cl_shot_hod = float(np.trapezoid(integrand, z_arr))
 
     # Also compute the 2nd-moment contribution: <N(N-1)> - <N>^2 = <Nsat> (Poisson) + 0 (Bernoulli Ncen)
     # For Poisson Nsat: <N^2> - <N>^2 = <N> → extra variance = Ntot / nbar^2

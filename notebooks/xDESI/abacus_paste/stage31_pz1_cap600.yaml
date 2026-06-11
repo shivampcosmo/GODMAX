@@ -1,0 +1,105 @@
+project:
+  name: stage31_pz1_cap600
+  xdesi_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI
+  output_root: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/abacus_backlight/stage31_pz1_cap600
+  catalog_subdir: halos
+  map_subdir: maps
+  measurement_subdir: measurements
+  theory_subdir: theory
+  plot_subdir: plots
+
+abacus:
+  input_root: /mnt/ceph/users/backlight/AbacusBacklight_base_c9999_ph9999/lightcone_halos
+  sim_name: AbacusBacklight_base_c9999_ph9999
+  read_only: true
+  redshift_dir_padding: 0.08
+
+catalogs:
+  pz1cap600_z0p30_0p62_logMgt11p0:
+    output_name: abacus_c9999_ph9999_pz1cap600_z0p30_0p62_logMgt11p0_halos.h5
+    z_min: 0.30
+    z_max: 0.62
+    log10_m_min_hmsun: 11.0
+    metadata:
+      desi_pz_bin: 1
+      redshift_kind: spectroscopic_calibrated_true_redshift
+      selection_note: pz1 is a photometric tracer label; halos are selected by true redshift only.
+      pz1_true_nz_retained_fraction: 0.990946645971498
+      pz1_true_nz_low_fraction_missed: 0.005011713729019202
+      pz1_true_nz_high_fraction_missed: 0.004041640299482782
+      analytic_hod_log10_m_floor: 10.5
+      resolved_catalog_log10_m_min_hmsun: 11.0
+      unresolved_correction_log10m_range: "10.5 <= log10(M200c/[Msun/h]) < 11.0"
+
+sky_patch:
+  area_deg2: 600.0
+  edge_buffer_deg: 1.0
+  selection_fields:
+    - g1
+    - pi1
+    - y
+    - T
+    - kappa
+    - s1
+    - s2
+    - s3
+    - s4
+  # Filled by the select-cap command unless explicitly supplied.
+  center_ra_deg:
+  center_dec_deg:
+  radius_deg:
+
+godmax:
+  comparison_config: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/xDESI/params_multiprobe_fast1024_true_nz_theory.yaml
+  bestfit_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_fast1024_true_nz_hmc_stage31_multigpu/stage31_hmc_8000x16_v2/combined/bestfit_params_stage31_multigpu_v2.yaml
+  measurement_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_cls_cov_nside1024_lmax1024_nbin10_linear.h5
+  map_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_maps_nside1024_lmax1024_nbin10_linear.h5
+  analytic_hod_log10_m_floor: 10.5
+  resolved_catalog_log10_m_min_hmsun: 11.0
+  override_cosmology_from_catalog: true
+
+pasting:
+  run_name: stage31_pz1_cap600
+  catalog_key: pz1cap600_z0p30_0p62_logMgt11p0
+  pz_bin: 1
+  nside: 1024
+  lmax: 1024
+  ell_min: 8
+  n_bins: 10
+  binning: linear
+  random_seed: 42
+  verbose: true
+  pixel_workers: 0
+  pixel_start_method: fork
+  persistent_pixel_pool: true
+  pixel_pool_warmup: true
+  jax:
+    preallocate: true
+    memory_fraction: 0.95
+    platforms: cuda
+  max_paint_R200c_factor: 5.0
+  smooth_profiles: true
+  profile_timing: false
+  pixel_batch_size: 1000000
+  pixel_gc_collect_every_n_batches: 0
+  compute_covariance: false
+  include_diagnostic_gtau: true
+  source_bins_for_galaxy_cross:
+    - 1
+    - 2
+    - 3
+    - 4
+  chunk_halos_by_nside:
+    128: 500000
+    1024: 50000
+  num_splits_by_nside:
+    128: 1
+    1024: 4
+
+validation:
+  smoke_nside: 128
+  production_nside: 1024
+  cap_candidate_nside: 64
+  cap_refine_top_n: 128
+  target_pz1_surface_density_per_deg2: 167.866
+  pz1_true_nz_retained_fraction: 0.990946645971498

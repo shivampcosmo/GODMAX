@@ -20,6 +20,10 @@ RHO_CRIT_0_MPC3 = 2.77536627245708E11
 # Maximum log10 stellar mass supported by the SHMR interpolation (get_Mstar_Mh uses logspace(8,14))
 # All threshold searches and stellar-fraction integrations must stay within this range.
 MSTAR_LOG10_MAX = 15.0
+# Keep SHMR halo-mass values finite for autodiff. The high-Mstar tail can map
+# to absurd halo masses for some xDESI bins; those points only encode zero
+# occupation in later HOD factors, but literal inf values poison gradients.
+SHMR_LOG10MH_RETURN_MAX = 100.0
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 mp = (1.6726219e-27*u.kg).to(u.Msun).value
 mue = 1.14
@@ -588,7 +592,7 @@ class Profiles(base_class):
         return Mnfw
 
     @partial(jit, static_argnums=(0,))
-    def get_Mh_Mstar(self, jz, jM, Mstar_array=None): 
+    def get_log10Mh_Mstar(self, jz, jM, Mstar_array=None):
         npoints = self.num_points_gal_cal
         aval = self.scale_fac_a_array[jz]
         log10M1 = self.log10M1_fshmr_z[jz] + self.log10M1_a_fshmr_z[jz] * (aval - 1)
@@ -600,6 +604,13 @@ class Profiles(base_class):
         if Mstar_array is None:
             Mstar_array = jnp.logspace(8, MSTAR_LOG10_MAX, npoints)
         log10Mh = log10M1 + beta * jnp.log10(Mstar_array / Mstar0) + ((Mstar_array/Mstar0)**delta)/(1 + (Mstar_array/Mstar0)**(-gamma)) - 0.5
+        return log10Mh
+
+
+    @partial(jit, static_argnums=(0,))
+    def get_Mh_Mstar(self, jz, jM, Mstar_array=None): 
+        log10Mh = self.get_log10Mh_Mstar(jz, jM, Mstar_array=Mstar_array)
+        log10Mh = jnp.minimum(log10Mh, SHMR_LOG10MH_RETURN_MAX)
         return 10**log10Mh
 
 
@@ -609,7 +620,7 @@ class Profiles(base_class):
         Mval = self.M_array[jM]
         Mval_no_h = Mval/self.h
         Mstar_array = jnp.logspace(8, MSTAR_LOG10_MAX, npoints)
-        log10Mh = jnp.log10(self.get_Mh_Mstar(jz, jM))
+        log10Mh = self.get_log10Mh_Mstar(jz, jM, Mstar_array=Mstar_array)
         log10Mstar_Mh = jnp.interp(jnp.log10(Mval_no_h),log10Mh,jnp.log10(Mstar_array))
         Mstar_Mh = 10**log10Mstar_Mh
         Mstar_wh = Mstar_Mh * self.h
