@@ -5,12 +5,13 @@ Run ONCE to extract instrumental/reconstruction noise power spectra
 from the fiducial theory product and save them for use in extract_Cls.
 
 Noise saved (on the theory ell grid):
+    nl_gg     -> N_ell^{gg}         galaxy shot noise (1/n_bar)
     nl_yy     -> N_ell^{yy}         instrumental noise for y map
     nl_tautau -> N_ell^{tautau}     instrumental noise for tau map
     nl_kk     -> N_ell^{kappakappa} CMB lensing reconstruction noise
 
-Shot noise for gg is NOT stored here. It is computed per-simulation
-from the actual galaxy counts in each pkl file inside extract_Cls.
+Note: SBI computes nl_gg per-simulation from actual galaxy counts.
+      This file stores the fiducial value for use in the HMC covariance.
 
 Usage
 -----
@@ -47,9 +48,10 @@ def build_noise_pkg(
     Extract noise spectra from the fiducial theory product and save.
 
     The theory product stores noise under field-name keys:
-        noise["y"]     -> N_ell^{yy}
-        noise["tau"]   -> N_ell^{tautau}
-        noise["kappa"] -> N_ell^{kappakappa}
+        noise["g"]     -> N_ell^{gg}         galaxy shot noise
+        noise["y"]     -> N_ell^{yy}         y-map instrumental noise
+        noise["tau"]   -> N_ell^{tautau}     tau-map instrumental noise
+        noise["kappa"] -> N_ell^{kappakappa} CMB lensing reconstruction noise
 
     Returns the noise package dict (same format as load_noise_pkg).
     """
@@ -66,18 +68,16 @@ def build_noise_pkg(
         )
 
     # ── Load theory product ───────────────────────────────────────────────────
-    # Use the loader from fiducial_theory_datavector if available,
-    # otherwise load the npz directly.
     try:
         _ftd_dir = str(theory_path.parent)
         if _ftd_dir not in sys.path:
             sys.path.insert(0, _ftd_dir)
         from fiducial_theory_datavector import load_validation_product
-        theory = load_validation_product(theory_path)
+        theory     = load_validation_product(theory_path)
         noise_dict = theory["noise"]   # keys: "g", "y", "tau", "kappa"
-        ell       = np.asarray(theory["ell"],       dtype=float)
-        delta_ell = np.asarray(theory["delta_ell"], dtype=float)
-        meta      = theory["metadata"]
+        ell        = np.asarray(theory["ell"],       dtype=float)
+        delta_ell  = np.asarray(theory["delta_ell"], dtype=float)
+        meta       = theory["metadata"]
     except ImportError:
         data      = np.load(theory_path, allow_pickle=True)
         ell       = np.asarray(data["ell"],       dtype=float)
@@ -89,7 +89,7 @@ def build_noise_pkg(
         }
         meta = {}
 
-    # ── Extract the three instrumental / reconstruction noise spectra ─────────
+    # ── Extract noise spectra ─────────────────────────────────────────────────
     def _get(field: str) -> np.ndarray:
         """Return N_ell for a field, zero-padded if missing."""
         for key in (field, f"noise_{field}"):
@@ -100,6 +100,7 @@ def build_noise_pkg(
         print(f"  [WARN] noise key '{field}' not found in theory product — using zeros")
         return np.zeros_like(ell)
 
+    nl_gg     = _get("g")
     nl_yy     = _get("y")
     nl_tautau = _get("tau")
     nl_kk     = _get("kappa")
@@ -107,7 +108,7 @@ def build_noise_pkg(
     # ── fsky from covariance metadata ─────────────────────────────────────────
     fsky = float(
         meta.get("covariance", {}).get("fsky",
-        meta.get("fsky", 0.4))
+        meta.get("fsky", 1.0))
     )
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -117,6 +118,7 @@ def build_noise_pkg(
         ell       = ell,
         delta_ell = delta_ell,
         fsky      = np.float64(fsky),
+        nl_gg     = nl_gg,
         nl_yy     = nl_yy,
         nl_tautau = nl_tautau,
         nl_kk     = nl_kk,
@@ -124,12 +126,18 @@ def build_noise_pkg(
     print(f"[gen_noise] Saved -> {output_path}")
     print(f"  ell range  : {ell[0]:.1f} – {ell[-1]:.1f}  ({len(ell)} bins)")
     print(f"  fsky       : {fsky:.3f}")
-    print(f"  nl_yy      : [{nl_yy.min():.3e}, {nl_yy.max():.3e}]")
+    print(f"  nl_gg      : [{nl_gg.min():.3e},     {nl_gg.max():.3e}]")
+    print(f"  nl_yy      : [{nl_yy.min():.3e},     {nl_yy.max():.3e}]")
     print(f"  nl_tautau  : [{nl_tautau.min():.3e}, {nl_tautau.max():.3e}]")
-    print(f"  nl_kk      : [{nl_kk.min():.3e}, {nl_kk.max():.3e}]")
+    print(f"  nl_kk      : [{nl_kk.min():.3e},     {nl_kk.max():.3e}]")
+
+    if nl_gg.max() == 0.0:
+        print("  [WARN] nl_gg is all zeros — theory product may not store galaxy "
+              "shot noise. HMC covariance will fall back to the per-simulation "
+              "estimate from extract_Cls.")
 
     return dict(ell=ell, delta_ell=delta_ell, fsky=fsky,
-                nl_yy=nl_yy, nl_tautau=nl_tautau, nl_kk=nl_kk)
+                nl_gg=nl_gg, nl_yy=nl_yy, nl_tautau=nl_tautau, nl_kk=nl_kk)
 
 
 def load_noise_pkg(path: pathlib.Path | str = NOISE_PATH) -> dict:
@@ -142,9 +150,10 @@ def load_noise_pkg(path: pathlib.Path | str = NOISE_PATH) -> dict:
         ell       : (n_ell,)  theory multipole bin centres
         delta_ell : (n_ell,)  theory bin widths
         fsky      : float
-        nl_yy     : (n_ell,)  N_ell^{yy}
-        nl_tautau : (n_ell,)  N_ell^{tautau}
-        nl_kk     : (n_ell,)  N_ell^{kappakappa}
+        nl_gg     : (n_ell,)  N_ell^{gg}           galaxy shot noise
+        nl_yy     : (n_ell,)  N_ell^{yy}           y-map noise
+        nl_tautau : (n_ell,)  N_ell^{tautau}        tau-map noise
+        nl_kk     : (n_ell,)  N_ell^{kappakappa}    lensing recon noise
     """
     path = pathlib.Path(path)
     if not path.exists():
@@ -153,10 +162,15 @@ def load_noise_pkg(path: pathlib.Path | str = NOISE_PATH) -> dict:
             "Run:  python gen_fid_noise_spectra.py"
         )
     data = np.load(path)
+
+    # backward-compatible: nl_gg may be absent in old files
+    nl_gg = data["nl_gg"].astype(float) if "nl_gg" in data else np.zeros_like(data["ell"])
+
     return dict(
         ell       = data["ell"].astype(float),
         delta_ell = data["delta_ell"].astype(float),
         fsky      = float(data["fsky"]),
+        nl_gg     = nl_gg,
         nl_yy     = data["nl_yy"].astype(float),
         nl_tautau = data["nl_tautau"].astype(float),
         nl_kk     = data["nl_kk"].astype(float),
