@@ -3,24 +3,6 @@
 run_hmc_vs_sbi_2pt.py
 
 HMC (NumPyro NUTS) vs SBI (LtU-ILI NPE+MDN) comparison on 2pt Cl statistics.
-
-HMC:
-  - Forward model : analytical theory Cls via theory_sbi_utils / run_hmc_theory_cls
-  - Covariance    : theory Gaussian covariance from the fiducial .npz product
-  - Observation   : x_obs.npy sliced to the relevant 2pt probe indices
-
-SBI:
-  - Loads existing NPE+MDN posteriors from the main SBI pipeline where available,
-    or trains new ones from x_train_full_noisy.npy / theta_train_full.npy
-  - One posterior per probe: gy, gtau, gkappa, all_2pt
-  - Normalisation: per-feature z-score (matching main SBI pipeline)
-  - Observation   : x_obs.npy sliced + normalised with saved scalers
-
-Output: one GetDist triangle plot per probe saved to WORK_DIR/
-  hmc_vs_sbi_gy.pdf  hmc_vs_sbi_gtau.pdf  hmc_vs_sbi_gkappa.pdf  hmc_vs_sbi_all_2pt.pdf
-
-Run from:
-  /work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/
 """
 
 from __future__ import annotations
@@ -41,12 +23,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy.interpolate import interp1d as _interp1d
 
 # =============================================================================
 # PATHS
 # =============================================================================
 
 WORK_DIR     = str(pathlib.Path(__file__).parent.resolve())
+OUTPUTS_DIR  = str(pathlib.Path(WORK_DIR).parent / 'outputs')
+NOISE_PATH   = os.path.join(OUTPUTS_DIR, 'sbi_noise_spectra.npz')
 SBI_VALIDATE = '/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate'
 LTU_ILI_PATH = '/work/hdd/bdne/aacharya2/ltu-ili'
 
@@ -58,15 +43,11 @@ from theory_sbi_utils import (
     DEFAULT_FIDUCIAL_PATH,
     default_parameter_specs,
     ensure_default_fiducial_product,
-    fiducial_theta,
     make_inference_theory_vector_function,
-    parse_probe_list,
-    prior_bounds,
     selected_product_arrays,
     stable_cholesky,
     validate_theory_vector,
 )
-from run_hmc_theory_cls import run_hmc
 
 from ili.dataloaders import StaticNumpyLoader
 from ili.inference   import InferenceRunner
@@ -83,7 +64,7 @@ import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, init_to_value
 
 # =============================================================================
-# CONSTANTS  (matching main SBI pipeline exactly)
+# CONSTANTS
 # =============================================================================
 
 ADD_SURVEY_NOISE = True
@@ -99,9 +80,8 @@ LMIN       = 100
 LMAX       = 1500
 N_ELL_BINS = 20
 
-# x_obs.npy ordering: [g2y | g2tau | g2kappa | gy | gtau | gkappa]
-CL_SPECS_FULL  = ['g2y', 'g2tau', 'g2kappa', 'gy', 'gtau', 'gkappa']
-ALL_2PT_PROBES = ['gy', 'gtau', 'gkappa']
+CL_SPECS_FULL    = ['g2y', 'g2tau', 'g2kappa', 'gy', 'gtau', 'gkappa']
+ALL_2PT_PROBES   = ['gy', 'gtau', 'gkappa']
 INDIVIDUAL_STATS = {'gy', 'gtau', 'gkappa'}
 
 VAL_FRACTION = 0.10
@@ -133,6 +113,13 @@ PROBE_TO_THEORY = {
     'all_2pt': ('gy', 'gtau', 'gkappa'),
 }
 
+# noise key for each 2pt probe (galaxy × field: noise lives in the field map)
+_PROBE_NOISE_KEY = {
+    'gy':     'nl_yy',
+    'gtau':   'nl_tautau',
+    'gkappa': 'nl_kk',
+}
+
 # =============================================================================
 # ELL BINNING  (matching main pipeline exactly)
 # =============================================================================
@@ -145,6 +132,28 @@ def make_ell_bins(lmin: int = LMIN, lmax: int = LMAX, n_bins: int = N_ELL_BINS):
 
 ELL_EDGES, ELL_CENTRES = make_ell_bins()
 N_ELL_BINS_ACTUAL = len(ELL_EDGES) - 1
+
+_ELL_FULL  = np.arange(LMAX + 1)
+_SCALE     = _ELL_FULL * (_ELL_FULL + 1) / (2.0 * np.pi)
+_W         = 2 * _ELL_FULL + 1
+_BIN_MASKS = [
+    (_ELL_FULL >= ELL_EDGES[i]) & (_ELL_FULL < ELL_EDGES[i + 1])
+    for i in range(N_ELL_BINS_ACTUAL)
+]
+_BIN_WSUM = np.array([
+    float(_W[m].sum()) if _W[m].sum() > 0 else 1.0
+    for m in _BIN_MASKS
+])
+
+
+def bin_cl(cl_full: np.ndarray) -> np.ndarray:
+    """Band-power bin Cl with ℓ(ℓ+1)/2π scaling and (2ℓ+1) weighting."""
+    cl_scaled = cl_full[:LMAX + 1] * _SCALE
+    return np.array([
+        np.dot(_W[m], cl_scaled[m]) / _BIN_WSUM[i] if _BIN_MASKS[i].any() else 0.0
+        for i, m in enumerate(_BIN_MASKS)
+    ], dtype=np.float64)
+
 
 # Slice map: label → list of column indices in the full x vector
 _SLICE = {
@@ -160,6 +169,79 @@ STAT_MAP_2PT = {
 }
 
 # =============================================================================
+# NOISE UTILITIES
+# =============================================================================
+
+_NOISE_CACHE: Optional[dict] = None
+
+
+def _get_binned_noise() -> dict[str, np.ndarray]:
+    """
+    Load sbi_noise_spectra.npz, interpolate to integer ell, and bin with
+    bin_cl — identical pipeline to the main SBI extract_Cls.
+    Returns dict mapping noise key → binned nl array of length N_ELL_BINS_ACTUAL.
+    Cached after first call.
+    """
+    global _NOISE_CACHE
+    if _NOISE_CACHE is not None:
+        return _NOISE_CACHE
+
+    if not os.path.exists(NOISE_PATH):
+        raise FileNotFoundError(
+            f'Noise spectra not found: {NOISE_PATH}\n'
+            'Run gen_fid_noise_spectra.py first.')
+
+    data   = np.load(NOISE_PATH)
+    ell_th = data['ell'].astype(float)
+
+    pkg = {}
+    for key in ('nl_yy', 'nl_tautau', 'nl_kk'):
+        vals     = data[key].astype(float)
+        nl_int   = _interp1d(ell_th, vals,
+                             bounds_error=False,
+                             fill_value=(vals[0], vals[-1]))(_ELL_FULL.astype(float))
+        nl_int   = np.clip(nl_int, 0.0, np.inf)
+        nl_int[:2] = 0.0
+        pkg[key] = bin_cl(nl_int)   # shape (N_ELL_BINS_ACTUAL,)
+
+    _NOISE_CACHE = pkg
+    print(f'[noise] Loaded and binned noise spectra from {NOISE_PATH}')
+    for key, vals in pkg.items():
+        print(f'  {key}: binned range [{vals.min():.3e}, {vals.max():.3e}]')
+    return _NOISE_CACHE
+
+
+def _add_noise_to_hmc_cov(cov: np.ndarray, probes_arg: tuple) -> np.ndarray:
+    """
+    Add noise variance to the HMC covariance diagonal.
+
+    For each probe in probes_arg that has an associated noise spectrum,
+    add nl_binned**2 to the corresponding diagonal block.  This matches
+    the increased variance in the measured Cl that results from noise
+    being added to the maps before power spectrum estimation.
+
+    cov : (n_data, n_data) theory covariance from selected_product_arrays
+    Returns updated covariance (copy).
+    """
+    if not ADD_SURVEY_NOISE:
+        return cov
+
+    noise_pkg = _get_binned_noise()
+    cov       = cov.copy()
+    n         = N_ELL_BINS_ACTUAL
+    offset    = 0
+
+    for probe in probes_arg:
+        if probe in _PROBE_NOISE_KEY:
+            nl_binned = noise_pkg[_PROBE_NOISE_KEY[probe]]   # (n,)
+            idx = slice(offset, offset + n)
+            cov[idx, idx] += nl_binned ** 2
+        offset += n
+
+    return cov
+
+
+# =============================================================================
 # UTILITIES
 # =============================================================================
 
@@ -168,12 +250,9 @@ def _fpath(work_dir: str, fname: str) -> str:
 
 
 def _clip_to_prior(samples: np.ndarray) -> np.ndarray:
-    return np.clip(
-        samples,
-        a_min=np.array(PRIOR_LOW,  dtype=np.float32),
-        a_max=np.array(PRIOR_HIGH, dtype=np.float32),
-    )
-
+    return np.clip(samples,
+                   a_min=np.array(PRIOR_LOW,  dtype=np.float32),
+                   a_max=np.array(PRIOR_HIGH, dtype=np.float32))
 
 def _print_sample_stats(tag: str, samples: np.ndarray) -> None:
     print(f'  [{tag}] theta_ej_0  = {samples[:, 0].mean():.3f} +/- {samples[:, 0].std():.3f}')
@@ -181,7 +260,6 @@ def _print_sample_stats(tag: str, samples: np.ndarray) -> None:
 
 
 def _slice_xobs(x_obs_full: np.ndarray, probes: tuple) -> np.ndarray:
-    """Extract elements of x_obs_full for the given probes (in probe order)."""
     idx = []
     for probe in probes:
         idx.extend(_SLICE[probe])
@@ -205,10 +283,7 @@ def _make_blocks(n_features: int) -> list[list[int]]:
 # SAMPLING UTILITIES
 # =============================================================================
 
-def _sample_member_thread(
-    member, x_t: torch.Tensor, n_samples: int,
-    result: list, exception: list,
-) -> None:
+def _sample_member_thread(member, x_t, n_samples, result, exception):
     try:
         try:
             x_t = x_t.to(next(member.parameters()).device)
@@ -220,8 +295,7 @@ def _sample_member_thread(
         exception[0] = e
 
 
-def _run_in_thread(fn_args: tuple, timeout: float) -> tuple[Optional[np.ndarray], Optional[Exception]]:
-    """Run _sample_member_thread in a daemon thread with a timeout."""
+def _run_in_thread(fn_args: tuple, timeout: float):
     result, exception = [None], [None]
     t = threading.Thread(
         target=_sample_member_thread, args=(*fn_args, result, exception), daemon=True
@@ -233,20 +307,11 @@ def _run_in_thread(fn_args: tuple, timeout: float) -> tuple[Optional[np.ndarray]
     return result[0], exception[0]
 
 
-def sample_ensemble_direct(
-    posterior,
-    x_obs_norm: np.ndarray,
-    n_samples: int = 500,
-    timeout_per_member: float = 120.0,
-) -> Optional[np.ndarray]:
-    """
-    Draw samples from a (possibly ensemble) posterior.
-    Returns an array of shape (n_samples, n_params) or None on failure.
-    """
-    x_t = torch.from_numpy(np.asarray(x_obs_norm)).float().reshape(1, -1)
+def sample_ensemble_direct(posterior, x_obs_norm, n_samples=500,
+                            timeout_per_member=120.0):
+    x_t     = torch.from_numpy(np.asarray(x_obs_norm)).float().reshape(1, -1)
     members = getattr(posterior, 'posteriors', None)
 
-    # ── single posterior ──────────────────────────────────────────────────────
     if members is None:
         arr, exc = _run_in_thread((posterior, x_t, n_samples), timeout_per_member)
         if exc is not None:
@@ -256,10 +321,8 @@ def sample_ensemble_direct(
             print(f'    [WARN] Posterior timed out after {timeout_per_member}s.')
         return arr
 
-    # ── ensemble posterior ────────────────────────────────────────────────────
     per_member = max(1, n_samples // len(members))
     collected  = []
-
     for i, member in enumerate(members):
         arr, exc = _run_in_thread((member, x_t, per_member), timeout_per_member)
         if exc is not None:
@@ -272,10 +335,8 @@ def sample_ensemble_direct(
     if not collected:
         print(f'    [WARN] All {len(members)} members failed or timed out.')
         return None
-
-    n_ok = len(collected)
-    if n_ok < len(members):
-        print(f'    [INFO] {n_ok}/{len(members)} members contributed samples.')
+    if len(collected) < len(members):
+        print(f'    [INFO] {len(collected)}/{len(members)} members contributed.')
 
     combined = np.concatenate(collected, axis=0)
     np.random.shuffle(combined)
@@ -296,13 +357,6 @@ def run_hmc_probe(
     output_dir:    pathlib.Path,
     probes_arg:    tuple,
 ) -> np.ndarray:
-    """
-    Run NUTS for one probe.
-
-    Covariance is sourced from the fiducial .npz; the observation is the
-    matching slice of x_obs.npy.  Returns flat samples of shape
-    (num_chains * num_samples, n_params).
-    """
     out_path = output_dir / f'hmc_samples_{probe_name}.npz'
     if out_path.exists():
         print(f'  [HMC/{probe_name}] Loading cached samples from {out_path}')
@@ -311,9 +365,22 @@ def run_hmc_probe(
 
     print(f'\n[HMC/{probe_name}] Setting up...')
 
-    selected   = selected_product_arrays(fiducial_path, probes=probes_arg, ell_min=None, ell_max=None)
-    x_obs_sel  = _slice_xobs(x_obs_full, probes_arg)
+    selected  = selected_product_arrays(fiducial_path, probes=probes_arg,
+                                        ell_min=None, ell_max=None)
+    x_obs_sel = _slice_xobs(x_obs_full, probes_arg)
 
+    # ── Add noise to covariance ───────────────────────────────────────────────
+    cov_noisy  = _add_noise_to_hmc_cov(np.asarray(selected['cov']), probes_arg)
+    try:
+        chol_noisy = np.linalg.cholesky(cov_noisy)
+    except np.linalg.LinAlgError:
+        reg = 1e-8 * np.diag(cov_noisy).mean()
+        print(f'  [HMC/{probe_name}] Covariance not PD, adding regularisation {reg:.2e}')
+        cov_noisy += reg * np.eye(len(cov_noisy))
+        chol_noisy = np.linalg.cholesky(cov_noisy)
+
+    selected = {**selected, 'cov': cov_noisy, 'chol': chol_noisy}
+    print(f'  [HMC/{probe_name}] Noise {"added to" if ADD_SURVEY_NOISE else "NOT added to"} covariance.')
     vector_fn, _ = make_inference_theory_vector_function(
         param_specs,
         selected['selection'],
@@ -325,14 +392,14 @@ def run_hmc_probe(
 
     validate_theory_vector(
         vector_fn,
-        {**selected, 'data_vector': x_obs_sel, 'chol': selected['chol']},
+        {**selected, 'data_vector': x_obs_sel},
         param_specs,
     )
 
-    obs      = jnp.asarray(x_obs_sel,       dtype=jnp.float64)
-    chol     = jnp.asarray(selected['chol'], dtype=jnp.float64)
-    low_j    = jnp.asarray(PRIOR_LOW,        dtype=jnp.float64)
-    high_j   = jnp.asarray(PRIOR_HIGH,       dtype=jnp.float64)
+    obs    = jnp.asarray(x_obs_sel,        dtype=jnp.float64)
+    chol   = jnp.asarray(selected['chol'], dtype=jnp.float64)
+    low_j  = jnp.asarray(PRIOR_LOW,        dtype=jnp.float64)
+    high_j = jnp.asarray(PRIOR_HIGH,       dtype=jnp.float64)
     init_val = {spec.name: float(spec.fiducial) for spec in param_specs}
 
     def model():
@@ -363,10 +430,8 @@ def run_hmc_probe(
     )
 
     t0 = time.time()
-    mcmc.run(
-        jax.random.PRNGKey(HMC_SEED),
-        extra_fields=('potential_energy', 'diverging', 'accept_prob', 'num_steps'),
-    )
+    mcmc.run(jax.random.PRNGKey(HMC_SEED),
+             extra_fields=('potential_energy', 'diverging', 'accept_prob', 'num_steps'))
     runtime = time.time() - t0
     print(f'  [HMC/{probe_name}] Done in {runtime:.1f}s')
 
@@ -375,9 +440,10 @@ def run_hmc_probe(
     extra         = mcmc.get_extra_fields(group_by_chain=True)
 
     payload = {
-        'x_obs_sel': np.asarray(x_obs_sel),
-        'cov':       np.asarray(selected['cov']),
-        'chol':      np.asarray(selected['chol']),
+        'x_obs_sel':  np.asarray(x_obs_sel),
+        'cov':        np.asarray(selected['cov']),
+        'chol':       np.asarray(selected['chol']),
+        'noise_added': np.array(ADD_SURVEY_NOISE),
     }
     for spec in param_specs:
         payload[f'samples_{spec.name}']       = np.asarray(samples_flat[spec.name])
@@ -393,6 +459,7 @@ def run_hmc_probe(
         diag = {
             'probe':         probe_name,
             'runtime_sec':   runtime,
+            'noise_added':   ADD_SURVEY_NOISE,
             'max_rhat':      float(summary['r_hat'].max()),
             'min_ess_bulk':  float(summary['ess_bulk'].min()),
             'arviz_summary': json.loads(summary.to_json()),
@@ -411,32 +478,19 @@ def run_hmc_probe(
 # SBI — normalisation helpers
 # =============================================================================
 
-def _compute_normalisation(
-    xt_full: np.ndarray,
-    xo: np.ndarray,
-    is_individual: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Return (xt_norm, xo_norm, x_mean, x_std).
-    Individual probes: single global z-score.
-    Multi-probe:       per-ell-block z-score.
-    """
+def _compute_normalisation(xt_full, xo, is_individual):
     n_stats = xt_full.shape[1]
-
     if is_individual:
         x_mean = np.mean(xt_full, axis=0)
         x_std  = np.std(xt_full,  axis=0)
         x_std[x_std < 1e-10] = 1.0
-        xt_norm = (xt_full - x_mean) / x_std
-        xo_norm = (xo      - x_mean) / x_std
-        return xt_norm, xo_norm, x_mean, x_std
+        return (xt_full - x_mean) / x_std, (xo - x_mean) / x_std, x_mean, x_std
 
     blocks  = _make_blocks(n_stats)
     xt_norm = np.empty_like(xt_full)
     xo_norm = np.empty(n_stats, dtype=np.float32)
     x_mean  = np.empty(n_stats, dtype=np.float32)
     x_std   = np.empty(n_stats, dtype=np.float32)
-
     for blk in blocks:
         blk = np.asarray(blk)
         m = np.mean(xt_full[:, blk], axis=0)
@@ -446,21 +500,10 @@ def _compute_normalisation(
         xo_norm[blk]    = (xo[blk]          - m) / s
         x_mean[blk]     = m
         x_std[blk]      = s
-
     return xt_norm, xo_norm, x_mean, x_std
 
 
-def _load_scalers_and_normalise(
-    work_dir:    str,
-    prefix:      str,
-    probe_name:  str,
-    x_obs_full:  np.ndarray,
-    x_obs_idx:   list,
-) -> Optional[np.ndarray]:
-    """
-    Load <prefix><probe_name>_{mean,std}.npy and return normalised x_obs,
-    or None if either file is missing.
-    """
+def _load_scalers_and_normalise(work_dir, prefix, probe_name, x_obs_full, x_obs_idx):
     mean_path = _fpath(work_dir, f'{prefix}{probe_name}_mean.npy')
     std_path  = _fpath(work_dir, f'{prefix}{probe_name}_std.npy')
     if not (os.path.exists(mean_path) and os.path.exists(std_path)):
@@ -476,42 +519,22 @@ def _load_scalers_and_normalise(
 # SBI — training
 # =============================================================================
 
-def train_sbi_probe(
-    name:        str,
-    x_obs_idx:   list,
-    x_train:     np.ndarray,
-    theta_train: np.ndarray,
-    x_obs_full:  np.ndarray,
-    work_dir:    str,
-    device:      str,
-) -> tuple[str, bool, str]:
-    """
-    Train one NPE+MDN posterior (matching main pipeline architecture).
-    Saves scalers and normalised arrays with the '2pt_' prefix so they do not
-    clash with the main pipeline's files.
-
-    Returns (name, success, message).
-    """
+def train_sbi_probe(name, x_obs_idx, x_train, theta_train, x_obs_full,
+                    work_dir, device):
     torch.set_num_threads(1)
-
     try:
         n_stats = len(x_obs_idx)
         n_train = len(theta_train)
-
         xt_full = x_train[:, x_obs_idx].astype(np.float32)
         xo      = x_obs_full[x_obs_idx].astype(np.float32)
 
         xt_norm, xo_norm, x_mean, x_std = _compute_normalisation(
-            xt_full, xo, is_individual=(name in INDIVIDUAL_STATS)
-        )
+            xt_full, xo, is_individual=(name in INDIVIDUAL_STATS))
 
         frac_below = float((xo < xt_full.min(axis=0)).mean())
         frac_above = float((xo > xt_full.max(axis=0)).mean())
-        print(
-            f'{name:12s}  n_stats={n_stats}  n_train={n_train}  '
-            f'frac_below={frac_below:.2f}  frac_above={frac_above:.2f}',
-            flush=True,
-        )
+        print(f'{name:12s}  n_stats={n_stats}  n_train={n_train}  '
+              f'frac_below={frac_below:.2f}  frac_above={frac_above:.2f}', flush=True)
 
         np.save(_fpath(work_dir, f'scaler_2pt_{name}_mean.npy'),  x_mean)
         np.save(_fpath(work_dir, f'scaler_2pt_{name}_std.npy'),   x_std)
@@ -525,14 +548,10 @@ def train_sbi_probe(
             theta_file=f'theta_train_2pt_{name}.npy',
             xobs_file=f'xobs_2pt_{name}.npy',
         )
-
-        nets = load_nde_sbi(
-            engine='NPE', model='mdn',
-            repeats=EQUAL_ARCH['repeats'],
-            hidden_features=EQUAL_ARCH['hidden_features'],
-            num_components=EQUAL_ARCH['num_components'],
-        )
-
+        nets = load_nde_sbi(engine='NPE', model='mdn',
+                            repeats=EQUAL_ARCH['repeats'],
+                            hidden_features=EQUAL_ARCH['hidden_features'],
+                            num_components=EQUAL_ARCH['num_components'])
         runner = InferenceRunner.load(
             backend='sbi', engine='NPE',
             prior=BoxUniform(
@@ -552,16 +571,13 @@ def train_sbi_probe(
             },
         )
         posterior, _ = runner(loader)
-
         with open(_fpath(work_dir, f'ili_posterior_2pt_{name}.pkl'), 'wb') as f:
             pk.dump(posterior, f)
 
-        msg = (
-            f'[{name}] DONE  n_stats={n_stats}  n_train={n_train}  '
-            f'hfs={EQUAL_ARCH["hidden_features"]}  '
-            f'num_components={EQUAL_ARCH["num_components"]}  '
-            f'repeats={EQUAL_ARCH["repeats"]}'
-        )
+        msg = (f'[{name}] DONE  n_stats={n_stats}  n_train={n_train}  '
+               f'hfs={EQUAL_ARCH["hidden_features"]}  '
+               f'num_components={EQUAL_ARCH["num_components"]}  '
+               f'repeats={EQUAL_ARCH["repeats"]}')
         return name, True, msg
 
     except Exception:
@@ -572,29 +588,12 @@ def train_sbi_probe(
 # SBI — load or train, then sample
 # =============================================================================
 
-def run_sbi_probe(
-    probe_name:   str,
-    x_obs_full:   np.ndarray,
-    x_train:      np.ndarray,
-    theta_train:  np.ndarray,
-    work_dir:     str,
-    device:       str,
-    force_retrain: bool = False,
-) -> Optional[np.ndarray]:
-    """
-    Load or train one SBI posterior, then draw samples.
-
-    Priority:
-      1. Main pipeline posterior  (ili_posterior_{name}.pkl  + scaler_{name}_*.npy)
-      2. This script's own posterior  (ili_posterior_2pt_{name}.pkl)
-      3. Train a new posterior from scratch
-
-    Returns samples of shape (SBI_N_SAMPLES, n_params) or None on failure.
-    """
+def run_sbi_probe(probe_name, x_obs_full, x_train, theta_train,
+                  work_dir, device, force_retrain=False):
     x_obs_idx = STAT_MAP_2PT[probe_name]
     tag       = f'SBI/{probe_name}'
 
-    def _sample_from_pkl(pkl_path: str, xo_norm: np.ndarray) -> Optional[np.ndarray]:
+    def _sample_from_pkl(pkl_path, xo_norm):
         with open(pkl_path, 'rb') as f:
             posterior = pk.load(f)
         print(f'  [{tag}] Sampling {SBI_N_SAMPLES} samples...')
@@ -609,7 +608,8 @@ def run_sbi_probe(
     main_pkl = _fpath(work_dir, f'ili_posterior_{probe_name}.pkl')
     if os.path.exists(main_pkl) and not force_retrain:
         print(f'\n[{tag}] Using main pipeline posterior: {main_pkl}')
-        xo_norm = _load_scalers_and_normalise(work_dir, 'scaler_', probe_name, x_obs_full, x_obs_idx)
+        xo_norm = _load_scalers_and_normalise(
+            work_dir, 'scaler_', probe_name, x_obs_full, x_obs_idx)
         if xo_norm is None:
             print(f'  [{tag}] Main pipeline scalers missing — falling through.')
         else:
@@ -622,14 +622,14 @@ def run_sbi_probe(
     own_pkl = _fpath(work_dir, f'ili_posterior_2pt_{probe_name}.pkl')
     if os.path.exists(own_pkl) and not force_retrain:
         print(f'\n[{tag}] Loading cached 2pt posterior: {own_pkl}')
-        xo_norm = _load_scalers_and_normalise(work_dir, 'scaler_2pt_', probe_name, x_obs_full, x_obs_idx)
+        xo_norm = _load_scalers_and_normalise(
+            work_dir, 'scaler_2pt_', probe_name, x_obs_full, x_obs_idx)
         if xo_norm is None:
             print(f'  [{tag}] 2pt scalers missing, recomputing from training data...')
             xt = x_train[:, x_obs_idx].astype(np.float32)
             xo = x_obs_full[x_obs_idx].astype(np.float32)
             _, xo_norm, x_mean, x_std = _compute_normalisation(
-                xt, xo, is_individual=(probe_name in INDIVIDUAL_STATS)
-            )
+                xt, xo, is_individual=(probe_name in INDIVIDUAL_STATS))
             np.save(_fpath(work_dir, f'scaler_2pt_{probe_name}_mean.npy'), x_mean)
             np.save(_fpath(work_dir, f'scaler_2pt_{probe_name}_std.npy'),  x_std)
             np.save(_fpath(work_dir, f'xobs_2pt_{probe_name}.npy'),        xo_norm)
@@ -638,18 +638,17 @@ def run_sbi_probe(
         if samples is not None:
             return samples
         print(f'  [{tag}] Sampling from cached 2pt posterior failed — retraining.')
-        # ── 3. Train from scratch ─────────────────────────────────────────────────
+
+    # ── 3. Train from scratch ─────────────────────────────────────────────────
     print(f'\n[{tag}] Training new posterior...')
     name, success, msg = train_sbi_probe(
-        probe_name, x_obs_idx, x_train, theta_train, x_obs_full, work_dir, device,
-    )
+        probe_name, x_obs_idx, x_train, theta_train, x_obs_full, work_dir, device)
     print(f'  {msg}')
     if not success:
         return None
 
     xo_norm = _load_scalers_and_normalise(
-        work_dir, 'scaler_2pt_', probe_name, x_obs_full, x_obs_idx,
-    )
+        work_dir, 'scaler_2pt_', probe_name, x_obs_full, x_obs_idx)
     if xo_norm is None:
         print(f'  [{tag}] Scalers still missing after training — aborting.')
         return None
@@ -664,14 +663,8 @@ def run_sbi_probe(
 # PLOTTING
 # =============================================================================
 
-def _make_fallback_plot(
-    probe_name:  str,
-    hmc_samples: np.ndarray,
-    sbi_samples: np.ndarray,
-    output_dir:  str,
-) -> None:
+def _make_fallback_plot(probe_name, hmc_samples, sbi_samples, output_dir):
     from scipy.stats import gaussian_kde
-
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     for pi, (ax, pname, plabel) in enumerate(zip(axes, PARAM_NAMES, PARAM_LABELS)):
         lo, hi = PRIOR_LOW[pi], PRIOR_HIGH[pi]
@@ -689,7 +682,6 @@ def _make_fallback_plot(
         ax.set_xlim(lo, hi)
         ax.legend(fontsize=9)
         ax.set_title(f'{probe_name} — {pname}')
-
     fig.suptitle(f'HMC vs SBI: {probe_name}', fontsize=13)
     plt.tight_layout()
     out_path = os.path.join(output_dir, f'hmc_vs_sbi_{probe_name}.pdf')
@@ -698,12 +690,7 @@ def _make_fallback_plot(
     print(f'  [plot] Saved {out_path}')
 
 
-def make_triangle_plot(
-    probe_name:  str,
-    hmc_samples: np.ndarray,
-    sbi_samples: np.ndarray,
-    output_dir:  str,
-) -> None:
+def make_triangle_plot(probe_name, hmc_samples, sbi_samples, output_dir):
     try:
         from getdist import MCSamples, plots
     except ImportError:
@@ -715,22 +702,16 @@ def make_triangle_plot(
     labels = [r'\theta_{\rm ej,0}', r'\nu_{\theta_{\rm ej}}^{M}']
     gd_settings = {'smooth_scale_1D': 0.35, 'smooth_scale_2D': 0.35}
 
-    hmc_gd = MCSamples(
-        samples=hmc_samples, names=names, labels=labels,
-        label='HMC / NUTS', settings=gd_settings,
-    )
-    sbi_gd = MCSamples(
-        samples=sbi_samples, names=names, labels=labels,
-        label='SBI / NPE+MDN', settings=gd_settings,
-    )
+    hmc_gd = MCSamples(samples=hmc_samples, names=names, labels=labels,
+                        label='HMC / NUTS', settings=gd_settings)
+    sbi_gd = MCSamples(samples=sbi_samples, names=names, labels=labels,
+                        label='SBI / NPE+MDN', settings=gd_settings)
 
     g = plots.get_subplot_plotter(width_inch=6.2)
     g.settings.legend_fontsize = 9
     g.settings.axes_labelsize  = 10
     g.triangle_plot(
-        [hmc_gd, sbi_gd],
-        params=names,
-        filled=True,
+        [hmc_gd, sbi_gd], params=names, filled=True,
         legend_labels=['HMC / NUTS', 'SBI / NPE+MDN'],
         contour_colors=['#1f77b4', '#d62728'],
         markers={n: v for n, v in zip(names, FIDUCIAL)},
@@ -742,20 +723,17 @@ def make_triangle_plot(
 
 
 # =============================================================================
-# MAIN
+# MAIN helpers
 # =============================================================================
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args():
     parser = argparse.ArgumentParser(
         description='HMC vs SBI comparison on 2pt Cl statistics.')
-    parser.add_argument('--force-retrain',   action='store_true',
-                        help='Retrain SBI posteriors even if .pkl files exist.')
-    parser.add_argument('--force-fiducial',  action='store_true',
-                        help='Regenerate the fiducial .npz theory product.')
+    parser.add_argument('--force-retrain',   action='store_true')
+    parser.add_argument('--force-fiducial',  action='store_true')
     parser.add_argument('--skip-hmc',        action='store_true')
     parser.add_argument('--skip-sbi',        action='store_true')
-    parser.add_argument('--probes',          default='gy,gtau,gkappa,all_2pt',
-                        help='Comma-separated probe names to compare.')
+    parser.add_argument('--probes',          default='gy,gtau,gkappa,all_2pt')
     parser.add_argument('--sbi-n-samples',   type=int, default=SBI_N_SAMPLES)
     parser.add_argument('--hmc-num-warmup',  type=int, default=HMC_NUM_WARMUP)
     parser.add_argument('--hmc-num-samples', type=int, default=HMC_NUM_SAMPLES)
@@ -764,7 +742,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_hmc_cache(probe_name: str, output_dir: str) -> Optional[np.ndarray]:
+def _load_hmc_cache(probe_name, output_dir):
     cached = pathlib.Path(output_dir) / f'hmc_{probe_name}' / f'hmc_samples_{probe_name}.npz'
     if cached.exists():
         d = np.load(cached)
@@ -775,14 +753,7 @@ def _load_hmc_cache(probe_name: str, output_dir: str) -> Optional[np.ndarray]:
     return None
 
 
-def _load_sbi_skip(
-    probe_name: str,
-    x_obs_full: np.ndarray,
-) -> Optional[np.ndarray]:
-    """
-    When --skip-sbi is set, attempt to load samples from any available cached
-    posterior (main pipeline first, then 2pt-specific).
-    """
+def _load_sbi_skip(probe_name, x_obs_full):
     for pkl_name, scaler_prefix in [
         (f'ili_posterior_{probe_name}.pkl',     'scaler_'),
         (f'ili_posterior_2pt_{probe_name}.pkl', 'scaler_2pt_'),
@@ -790,67 +761,57 @@ def _load_sbi_skip(
         pkl_path = _fpath(WORK_DIR, pkl_name)
         if not os.path.exists(pkl_path):
             continue
-
         xo_norm = _load_scalers_and_normalise(
             WORK_DIR, scaler_prefix, probe_name,
-            x_obs_full, STAT_MAP_2PT[probe_name],
-        )
+            x_obs_full, STAT_MAP_2PT[probe_name])
         if xo_norm is None:
             continue
-
         with open(pkl_path, 'rb') as f:
             posterior = pk.load(f)
         samples = sample_ensemble_direct(posterior, xo_norm, n_samples=SBI_N_SAMPLES)
         if samples is not None:
             samples = _clip_to_prior(samples)
-            print(f'  [SBI/{probe_name}] Loaded from {pkl_name}, '
-                  f'{len(samples)} samples.')
+            print(f'  [SBI/{probe_name}] Loaded from {pkl_name}, {len(samples)} samples.')
             return samples
-
     print(f'  [SBI/{probe_name}] --skip-sbi set and no usable cached posterior found.')
     return None
 
 
-def _save_samples(
-    probe_name:       str,
-    hmc_samples_dict: dict,
-    sbi_samples_dict: dict,
-    output_dir:       str,
-) -> None:
+def _save_samples(probe_name, hmc_samples_dict, sbi_samples_dict, output_dir):
     if probe_name in hmc_samples_dict:
-        s = hmc_samples_dict[probe_name]
+        s    = hmc_samples_dict[probe_name]
         path = os.path.join(output_dir, f'hmc_samples_{probe_name}.npz')
         np.savez_compressed(path, theta_ej_0=s[:, 0], nu_theta_ej_M=s[:, 1])
         print(f'  [save/{probe_name}] Written: {path}')
-
     if probe_name in sbi_samples_dict:
         path = os.path.join(output_dir, f'sbi_samples_{probe_name}.npy')
         np.save(path, sbi_samples_dict[probe_name])
         print(f'  [save/{probe_name}] Written: {path}')
 
 
-def _print_summary(probe_list: list, hmc_dict: dict, sbi_dict: dict) -> None:
+def _print_summary(probe_list, hmc_dict, sbi_dict):
     print(f'\n{"="*60}')
     print('  SUMMARY')
     print(f'{"="*60}')
     for probe_name in probe_list:
         for label, d in [('HMC', hmc_dict), ('SBI', sbi_dict)]:
             if probe_name in d:
-                s = d[probe_name]
-                status = (
-                    f'OK  ({len(s)} samples  '
-                    f'theta_ej_0={s[:,0].mean():.3f}+/-{s[:,0].std():.3f}  '
-                    f'nu={s[:,1].mean():.3f}+/-{s[:,1].std():.3f})'
-                )
+                s      = d[probe_name]
+                status = (f'OK  ({len(s)} samples  '
+                          f'theta_ej_0={s[:,0].mean():.3f}+/-{s[:,0].std():.3f}  '
+                          f'nu={s[:,1].mean():.3f}+/-{s[:,1].std():.3f})')
             else:
                 status = 'MISSING'
             print(f'  {probe_name:10s}  {label}: {status}')
 
 
+# =============================================================================
+# MAIN
+# =============================================================================
+
 if __name__ == '__main__':
     args = _parse_args()
 
-    # Override globals from CLI flags
     HMC_NUM_WARMUP  = args.hmc_num_warmup
     HMC_NUM_SAMPLES = args.hmc_num_samples
     HMC_NUM_CHAINS  = args.hmc_num_chains
@@ -865,11 +826,16 @@ if __name__ == '__main__':
             raise ValueError(f'Unknown probe "{p}". Choose from {list(STAT_MAP_2PT)}')
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f'Device      : {device}')
-    print(f'Output dir  : {output_dir}')
-    print(f'Probes      : {probe_list}')
-    print(f'N_ELL_BINS  : {N_ELL_BINS_ACTUAL}')
-    print(f'N_SUMMARY   : {N_ELL_BINS_ACTUAL * len(CL_SPECS_FULL)}')
+    print(f'Device           : {device}')
+    print(f'Output dir       : {output_dir}')
+    print(f'Probes           : {probe_list}')
+    print(f'ADD_SURVEY_NOISE : {ADD_SURVEY_NOISE}')
+    print(f'N_ELL_BINS       : {N_ELL_BINS_ACTUAL}')
+    print(f'N_SUMMARY        : {N_ELL_BINS_ACTUAL * len(CL_SPECS_FULL)}')
+
+    # Pre-load and print noise spectra diagnostics once
+    if ADD_SURVEY_NOISE:
+        _get_binned_noise()
 
     # ── 1. Load x_obs.npy ────────────────────────────────────────────────────
     x_obs_path = _fpath(WORK_DIR, 'x_obs.npy')
