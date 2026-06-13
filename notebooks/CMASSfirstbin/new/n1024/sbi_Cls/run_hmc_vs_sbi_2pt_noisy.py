@@ -263,12 +263,7 @@ def run_hmc_probe(
     output_dir: pathlib.Path,
     probes_arg: tuple,
 ) -> np.ndarray:
-    """
-    Run NUTS for one probe.  The covariance comes from the fiducial .npz
-    product; the observation is the matching slice of x_obs.npy.
 
-    Returns flat samples array of shape (num_chains * num_samples, n_params).
-    """
     out_path = output_dir / f'hmc_samples_{probe_name}.npz'
     if out_path.exists():
         print(f'  [HMC/{probe_name}] Loading cached samples from {out_path}')
@@ -277,28 +272,38 @@ def run_hmc_probe(
 
     print(f'\n[HMC/{probe_name}] Setting up...')
 
-    # Load covariance + selection from fiducial product
+    # Load covariance + HOD fiducial data vector from product
     selected = selected_product_arrays(
         fiducial_path, probes=probes_arg, ell_min=None, ell_max=None,
     )
     selection = selected['selection']
 
-    # extract x_obs slice first, then use it as the linearisation point
+    # Linearize around the HOD fiducial Cls from the .npz — NOT x_obs
+    vector_fn, theory_info = make_inference_theory_vector_function(
+        param_specs,
+        selection,
+        fiducial_vector=selected['data_vector'],   # ← HOD fiducial
+        backend='linearized',
+        fiducial_offset=True,
+        jit_compile=True,
+    )
+
+    jac = theory_info["jacobian"]  # shape (n_data, n_params)
+    for ip, spec in enumerate(param_specs):
+        col = jac[:, ip]
+        print(f'  [JAC/{probe_name}] {spec.name}: '
+              f'max={np.abs(col).max():.4e}  '
+              f'mean={np.abs(col).mean():.4e}  '
+              f'norm={np.linalg.norm(col):.4e}')
+    # Validate against the HOD fiducial (not x_obs)
+    diag = validate_theory_vector(vector_fn, selected, param_specs)
+    print(f'  [HMC/{probe_name}] gradient_norm={diag["gradient_norm"]:.4e}  '
+      f'max_rel_diff={diag["max_rel_diff"]:.4e}  '
+      f'finite_gradient={diag["finite_gradient"]}')
+    # The observation is the simulation Cl slice from x_obs.npy
     x_obs_sel = _slice_xobs_for_probes(x_obs_full, probes_arg)
-
-    vector_fn, theory_info = make_inference_theory_vector_function(param_specs,
-                            selection,fiducial_vector=x_obs_sel,    # <-- simulation observation
-                            backend='linearized',fiducial_offset=True,jit_compile=True,)
-
-    #validate against x_obs_sel, not the theory fiducial
-    #(mismatches vs theory fiducial are expected and not errors)
-    selected_for_validation = dict(selected)
-    selected_for_validation['data_vector'] = x_obs_sel
-    selected_for_validation['chol'] = selected['chol']   # covariance unchanged
-    validate_theory_vector(vector_fn, selected_for_validation, param_specs)
-
-    obs  = jnp.asarray(x_obs_sel,        dtype=jnp.float64)
-    chol = jnp.asarray(selected['chol'],  dtype=jnp.float64)
+    obs  = jnp.asarray(x_obs_sel,       dtype=jnp.float64)
+    chol = jnp.asarray(selected['chol'], dtype=jnp.float64)
 
     low_j  = jnp.asarray([PRIOR_LOW[0],  PRIOR_LOW[1]],  dtype=jnp.float64)
     high_j = jnp.asarray([PRIOR_HIGH[0], PRIOR_HIGH[1]], dtype=jnp.float64)
@@ -345,7 +350,6 @@ def run_hmc_probe(
     samples_chain = mcmc.get_samples(group_by_chain=True)
     extra         = mcmc.get_extra_fields(group_by_chain=True)
 
-    # Save
     payload = {
         'x_obs_sel': np.asarray(x_obs_sel),
         'cov':  np.asarray(selected['cov']),
@@ -358,17 +362,16 @@ def run_hmc_probe(
         payload[f'extra_{k}'] = np.asarray(v)
     np.savez_compressed(out_path, **payload)
 
-    # ArviZ diagnostics
     try:
         import arviz as az
-        idata = az.from_numpyro(mcmc)
+        idata   = az.from_numpyro(mcmc)
         summary = az.summary(idata, var_names=PARAM_NAMES)
         diag = {
-            'probe':          probe_name,
-            'runtime_sec':    runtime,
-            'max_rhat':       float(summary['r_hat'].max()),
-            'min_ess_bulk':   float(summary['ess_bulk'].min()),
-            'arviz_summary':  json.loads(summary.to_json()),
+            'probe':        probe_name,
+            'runtime_sec':  runtime,
+            'max_rhat':     float(summary['r_hat'].max()),
+            'min_ess_bulk': float(summary['ess_bulk'].min()),
+            'arviz_summary': json.loads(summary.to_json()),
         }
         with (output_dir / f'hmc_diagnostics_{probe_name}.json').open('w') as f:
             json.dump(diag, f, indent=2, sort_keys=True)
@@ -377,10 +380,7 @@ def run_hmc_probe(
     except Exception as exc:
         print(f'  [HMC/{probe_name}] ArviZ diagnostics failed: {exc}')
 
-    return np.column_stack([
-        np.asarray(samples_flat[n]) for n in PARAM_NAMES
-    ])
-
+    return np.column_stack([np.asarray(samples_flat[n]) for n in PARAM_NAMES])
 
 def _slice_xobs_for_probes(x_obs_full: np.ndarray,
                             probes_arg: tuple) -> np.ndarray:
@@ -466,17 +466,17 @@ def train_sbi_probe(args):
               flush=True)
 
         # Save scalers and normalised arrays
-        np.save(fpath(f'scaler_2pt_{name}_mean.npy'), x_mean)
-        np.save(fpath(f'scaler_2pt_{name}_std.npy'),  x_std)
-        np.save(fpath(f'x_2pt_{name}.npy'),           xt_norm)
-        np.save(fpath(f'xobs_2pt_{name}.npy'),        xo_norm)
-        np.save(fpath(f'theta_train_2pt_{name}.npy'), theta_train)
+        np.save(fpath(f'scaler_{name}_mean.npy'), x_mean)
+        np.save(fpath(f'scaler_{name}_std.npy'),  x_std)
+        np.save(fpath(f'x_{name}.npy'),           xt_norm)
+        np.save(fpath(f'xobs_{name}.npy'),        xo_norm)
+        np.save(fpath(f'theta_train_{name}.npy'), theta_train)
 
         loader = StaticNumpyLoader(
             in_dir=work_dir,
-            x_file=f'x_2pt_{name}.npy',
-            theta_file=f'theta_train_2pt_{name}.npy',
-            xobs_file=f'xobs_2pt_{name}.npy',
+            x_file=f'x_{name}.npy',
+            theta_file=f'theta_train_{name}.npy',
+            xobs_file=f'xobs_{name}.npy',
         )
 
         hfs        = EQUAL_ARCH['hidden_features']
@@ -509,13 +509,13 @@ def train_sbi_probe(args):
                 high=torch.tensor(PRIOR_HIGH, dtype=torch.float32, device=device),
             ),
             nets=nets,
-            out_dir=pathlib.Path(fpath(f'sbi_logs_2pt_{name}')),
+            out_dir=pathlib.Path(fpath(f'sbi_logs_{name}')),
             device=device,
             train_args=train_args,
         )
         posterior, _ = runner(loader)
 
-        with open(fpath(f'ili_posterior_2pt_{name}.pkl'), 'wb') as f:
+        with open(fpath(f'ili_posterior_{name}.pkl'), 'wb') as f:
             pk.dump(posterior, f)
 
         return name, True, (f'[{name}] DONE  n_stats={n_stats}  n_train={n_train}  '
@@ -539,7 +539,7 @@ def run_sbi_probe(
     Train (if needed) and sample one SBI posterior.
     Returns samples array of shape (SBI_N_SAMPLES, n_params) or None on failure.
     """
-    posterior_path = os.path.join(work_dir, f'ili_posterior_2pt_{probe_name}.pkl')
+    posterior_path = os.path.join(work_dir, f'ili_posterior_{probe_name}.pkl')
 
     if not os.path.exists(posterior_path) or force_retrain:
         print(f'\n[SBI/{probe_name}] Training posterior...')
@@ -553,9 +553,9 @@ def run_sbi_probe(
     else:
         # Still need to save normalised xobs if scalers already exist
         # (re-derive from saved scalers so x_obs.npy is never modified)
-        scaler_mean_path = os.path.join(work_dir, f'scaler_2pt_{probe_name}_mean.npy')
-        scaler_std_path  = os.path.join(work_dir, f'scaler_2pt_{probe_name}_std.npy')
-        xobs_norm_path   = os.path.join(work_dir, f'xobs_2pt_{probe_name}.npy')
+        scaler_mean_path = os.path.join(work_dir, f'scaler_{probe_name}_mean.npy')
+        scaler_std_path  = os.path.join(work_dir, f'scaler_{probe_name}_std.npy')
+        xobs_norm_path   = os.path.join(work_dir, f'xobs_{probe_name}.npy')
 
         if (os.path.exists(scaler_mean_path)
                 and os.path.exists(scaler_std_path)
@@ -571,9 +571,9 @@ def run_sbi_probe(
         posterior = pk.load(f)
 
     # Load normalised x_obs
-    xobs_norm_path = os.path.join(work_dir, f'xobs_2pt_{probe_name}.npy')
+    xobs_norm_path = os.path.join(work_dir, f'xobs_{probe_name}.npy')
     if not os.path.exists(xobs_norm_path):
-        print(f'  [SBI/{probe_name}] xobs_2pt_{probe_name}.npy not found — '
+        print(f'  [SBI/{probe_name}] xobs_{probe_name}.npy not found — '
               f'run training first.')
         return None
     xo_norm = np.load(xobs_norm_path)
@@ -831,9 +831,9 @@ if __name__ == '__main__':
         else:
             # Try loading cached posterior and sampling
             posterior_path = os.path.join(
-                WORK_DIR, f'ili_posterior_2pt_{probe_name}.pkl')
+                WORK_DIR, f'ili_posterior_{probe_name}.pkl')
             xobs_norm_path = os.path.join(
-                WORK_DIR, f'xobs_2pt_{probe_name}.npy')
+                WORK_DIR, f'xobs_{probe_name}.npy')
             if os.path.exists(posterior_path) and os.path.exists(xobs_norm_path):
                 with open(posterior_path, 'rb') as f:
                     posterior = pk.load(f)
