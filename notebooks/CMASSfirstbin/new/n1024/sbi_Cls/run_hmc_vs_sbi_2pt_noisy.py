@@ -282,7 +282,7 @@ def run_hmc_probe(
     vector_fn, theory_info = make_inference_theory_vector_function(
         param_specs,
         selection,
-        fiducial_vector=selected['data_vector'],   # ← HOD fiducial
+        fiducial_vector=x_obs_sel,
         backend='linearized',
         fiducial_offset=True,
         jit_compile=True,
