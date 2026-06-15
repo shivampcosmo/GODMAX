@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-run_hmc_vs_sbi_2pt.py
+run_hmc_vs_sbi_2pt_noisy.py
 
 HMC (NumPyro NUTS) vs SBI (LtU-ILI NPE+MDN) comparison on 2pt Cl statistics.
 
@@ -85,12 +85,12 @@ from numpyro.infer import MCMC, NUTS, init_to_value
 from sbi.utils import BoxUniform
 
 # =============================================================================
-# CONSTANTS  (matching your main SBI pipeline exactly)
+# CONSTANTS  (matching main SBI pipeline exactly)
 # =============================================================================
 PRIOR_LOW    = [1.0, -0.3]
 PRIOR_HIGH   = [6.0,  0.0]
 PARAM_NAMES  = ['theta_ej_0', 'nu_theta_ej_M']
-PARAM_LABELS = [r'$$\theta_{\rm ej,0}$$', r'$$\nu_{\theta_{\rm ej}}^{M}$$']
+PARAM_LABELS = [r'$\theta_{\rm ej,0}$', r'$\nu_{\theta_{\rm ej}}^{M}$']
 FIDUCIAL     = [2.0, -0.1]
 
 LMIN       = 100
@@ -129,7 +129,7 @@ HMC_SEED           = 42
 SBI_N_SAMPLES = 4000
 
 # =============================================================================
-# ELL BINNING  (matching your main pipeline exactly)
+# ELL BINNING  (matching main SBI pipeline exactly)
 # =============================================================================
 
 def make_ell_bins(lmin=LMIN, lmax=LMAX, n_bins=N_ELL_BINS):
@@ -159,7 +159,7 @@ STAT_MAP_2PT = {
 ALL_2PT_PROBES = ['gy', 'gtau', 'gkappa']
 
 # =============================================================================
-# SAMPLING UTILITY  (unchanged from your main pipeline)
+# SAMPLING UTILITY
 # =============================================================================
 
 def _sample_member_thread(member, x_t, n_samples, result, exception):
@@ -260,7 +260,7 @@ def run_hmc_probe(
     vector_fn, theory_info = make_inference_theory_vector_function(
         param_specs,
         selection,
-        fiducial_vector=x_obs_sel,   # ← must be defined before this call
+        fiducial_vector=x_obs_sel,
         backend='linearized',
         fiducial_offset=True,
         jit_compile=True,
@@ -721,11 +721,8 @@ if __name__ == '__main__':
 
     # ── 3. Fiducial theory product (for HMC covariance) ──────────────────────
     param_specs   = default_parameter_specs()
-    fiducial_path = ensure_default_fiducial_product(
-        DEFAULT_FIDUCIAL_PATH,
-        param_specs=param_specs,
-        force=args.force_fiducial,
-    )
+    fiducial_path = ensure_default_fiducial_product(DEFAULT_FIDUCIAL_PATH,
+        param_specs=param_specs, force=args.force_fiducial,)
     print(f'\nFiducial product: {fiducial_path}')
 
     # ── 4. Per-probe HMC + SBI ────────────────────────────────────────────────
