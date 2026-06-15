@@ -164,37 +164,16 @@ ALL_2PT_PROBES = ['gy', 'gtau', 'gkappa']
 
 def _sample_member_thread(member, x_t, n_samples, result, exception):
     try:
-        # ensure x_t is on the same device as this ensemble member
-        try:
-            member_device = next(member.parameters()).device
-            x_t = x_t.to(member_device)
-        except Exception:
-            pass
-    # Substitute x_obs.npy as the observation:
-    # selected['selection'].indices are ell-indices into the theory product's
-    # own ordering (gg, gy, gtau, gkappa).  We need the matching slice of
-    # x_obs.npy which uses the ordering [g2y, g2tau, g2kappa, gy, gtau, gkappa].
-    # We map probe names -> x_obs indices via STAT_MAP_2PT / _s.
         s = member.sample((n_samples,), x=x_t, show_progress_bars=False)
         result[0] = s.detach().cpu().numpy()
     except Exception as e:
         exception[0] = e
 
+
 def sample_ensemble_direct(posterior, x_obs_norm, n_samples=500,
                             timeout_per_member=120):
     x_t = torch.from_numpy(np.asarray(x_obs_norm)).float().reshape(1, -1)
-    # Move x_t to whatever device the posterior lives on
-    try:
-        post_device = next(iter(
-            posterior.posteriors[0].parameters()
-            if hasattr(posterior, 'posteriors')
-            else posterior.parameters()
-        )).device
-        x_t = x_t.to(post_device)
-    except Exception:
-        # fallback: try cuda if available
-        if torch.cuda.is_available():
-            x_t = x_t.cuda()
+
     try:
         members = posterior.posteriors
     except AttributeError:
@@ -248,11 +227,8 @@ def sample_ensemble_direct(posterior, x_obs_norm, n_samples=500,
     idx = np.random.choice(len(combined), size=n_samples, replace=True)
     return combined[idx]
 
-
 # =============================================================================
-# HMC: run per probe using run_hmc_theory_cls.run_hmc,
-#      but substitute x_obs.npy as the observation via a thin NUTS wrapper
-#      that reuses the covariance from the fiducial product.
+# HMC
 # =============================================================================
 
 def run_hmc_probe(
@@ -272,17 +248,19 @@ def run_hmc_probe(
 
     print(f'\n[HMC/{probe_name}] Setting up...')
 
-    # Load covariance + HOD fiducial data vector from product
+    # Load covariance + selection from fiducial product
     selected = selected_product_arrays(
         fiducial_path, probes=probes_arg, ell_min=None, ell_max=None,
     )
     selection = selected['selection']
 
-    # Linearize around the HOD fiducial Cls from the .npz — NOT x_obs
+    # Slice x_obs FIRST so it can be passed as fiducial_vector
+    x_obs_sel = _slice_xobs_for_probes(x_obs_full, probes_arg)
+
     vector_fn, theory_info = make_inference_theory_vector_function(
         param_specs,
         selection,
-        fiducial_vector=x_obs_sel,
+        fiducial_vector=x_obs_sel,   # ← must be defined before this call
         backend='linearized',
         fiducial_offset=True,
         jit_compile=True,
@@ -295,13 +273,15 @@ def run_hmc_probe(
               f'max={np.abs(col).max():.4e}  '
               f'mean={np.abs(col).mean():.4e}  '
               f'norm={np.linalg.norm(col):.4e}')
-    # Validate against the HOD fiducial (not x_obs)
-    diag = validate_theory_vector(vector_fn, selected, param_specs)
+
+    # Validate using x_obs_sel as the data vector
+    selected_for_validation = dict(selected)
+    selected_for_validation['data_vector'] = x_obs_sel
+    diag = validate_theory_vector(vector_fn, selected_for_validation, param_specs)
     print(f'  [HMC/{probe_name}] gradient_norm={diag["gradient_norm"]:.4e}  '
-      f'max_rel_diff={diag["max_rel_diff"]:.4e}  '
-      f'finite_gradient={diag["finite_gradient"]}')
-    # The observation is the simulation Cl slice from x_obs.npy
-    x_obs_sel = _slice_xobs_for_probes(x_obs_full, probes_arg)
+          f'max_rel_diff={diag["max_rel_diff"]:.4e}  '
+          f'finite_gradient={diag["finite_gradient"]}')
+
     obs  = jnp.asarray(x_obs_sel,       dtype=jnp.float64)
     chol = jnp.asarray(selected['chol'], dtype=jnp.float64)
 
@@ -382,6 +362,7 @@ def run_hmc_probe(
 
     return np.column_stack([np.asarray(samples_flat[n]) for n in PARAM_NAMES])
 
+
 def _slice_xobs_for_probes(x_obs_full: np.ndarray,
                             probes_arg: tuple) -> np.ndarray:
     """
@@ -437,14 +418,12 @@ def train_sbi_probe(args):
         blocks = None if is_individual else make_blocks(n_stats)
 
         if blocks is None:
-            # Per-feature z-score (single spectrum)
             x_mean = np.mean(xt_full, axis=0)
             x_std  = np.std(xt_full,  axis=0)
             x_std[x_std < 1e-10] = 1.0
             xt_norm = (xt_full - x_mean) / x_std
             xo_norm = (xo      - x_mean) / x_std
         else:
-            # Per-block z-score (composite)
             xt_norm = np.empty_like(xt_full)
             xo_norm = np.empty(n_stats, dtype=np.float32)
             x_mean  = np.empty(n_stats, dtype=np.float32)
@@ -465,7 +444,6 @@ def train_sbi_probe(args):
               f'frac_below={frac_below:.2f}  frac_above={frac_above:.2f}',
               flush=True)
 
-        # Save scalers and normalised arrays
         np.save(fpath(f'scaler_{name}_mean.npy'), x_mean)
         np.save(fpath(f'scaler_{name}_std.npy'),  x_std)
         np.save(fpath(f'x_{name}.npy'),           xt_norm)
@@ -535,10 +513,6 @@ def run_sbi_probe(
     device: str,
     force_retrain: bool = False,
 ) -> np.ndarray | None:
-    """
-    Train (if needed) and sample one SBI posterior.
-    Returns samples array of shape (SBI_N_SAMPLES, n_params) or None on failure.
-    """
     posterior_path = os.path.join(work_dir, f'ili_posterior_{probe_name}.pkl')
 
     if not os.path.exists(posterior_path) or force_retrain:
@@ -551,8 +525,6 @@ def run_sbi_probe(
         if not success:
             return None
     else:
-        # Still need to save normalised xobs if scalers already exist
-        # (re-derive from saved scalers so x_obs.npy is never modified)
         scaler_mean_path = os.path.join(work_dir, f'scaler_{probe_name}_mean.npy')
         scaler_std_path  = os.path.join(work_dir, f'scaler_{probe_name}_std.npy')
         xobs_norm_path   = os.path.join(work_dir, f'xobs_{probe_name}.npy')
@@ -570,7 +542,6 @@ def run_sbi_probe(
     with open(posterior_path, 'rb') as f:
         posterior = pk.load(f)
 
-    # Load normalised x_obs
     xobs_norm_path = os.path.join(work_dir, f'xobs_{probe_name}.npy')
     if not os.path.exists(xobs_norm_path):
         print(f'  [SBI/{probe_name}] xobs_{probe_name}.npy not found — '
@@ -584,7 +555,6 @@ def run_sbi_probe(
         print(f'  [SBI/{probe_name}] Sampling failed.')
         return None
 
-    # Clip to prior
     samples = np.clip(
         samples,
         a_min=np.array(PRIOR_LOW,  dtype=np.float32),
@@ -598,7 +568,7 @@ def run_sbi_probe(
 
 
 # =============================================================================
-# PLOTTING  (GetDist triangle plot, one per probe)
+# PLOTTING
 # =============================================================================
 
 def make_triangle_plot(
@@ -607,7 +577,6 @@ def make_triangle_plot(
     sbi_samples: np.ndarray,
     output_dir: str,
 ):
-    """One GetDist triangle plot overlaying HMC and SBI for a single probe."""
     try:
         from getdist import MCSamples, plots
     except ImportError:
@@ -617,20 +586,15 @@ def make_triangle_plot(
 
     names  = PARAM_NAMES
     labels = [r'\theta_{\rm ej,0}', r'\nu_{\theta_{\rm ej}}^{M}']
-
     gd_settings = {'smooth_scale_1D': 0.35, 'smooth_scale_2D': 0.35}
 
     hmc_gd = MCSamples(
-        samples=hmc_samples,
-        names=names, labels=labels,
-        label='HMC / NUTS',
-        settings=gd_settings,
+        samples=hmc_samples, names=names, labels=labels,
+        label='HMC / NUTS', settings=gd_settings,
     )
     sbi_gd = MCSamples(
-        samples=sbi_samples,
-        names=names, labels=labels,
-        label='SBI / NPE+MDN',
-        settings=gd_settings,
+        samples=sbi_samples, names=names, labels=labels,
+        label='SBI / NPE+MDN', settings=gd_settings,
     )
 
     g = plots.get_subplot_plotter(width_inch=6.2)
@@ -656,7 +620,6 @@ def _make_fallback_plot(
     sbi_samples: np.ndarray,
     output_dir: str,
 ):
-    """Simple 1D marginal overlay as fallback when getdist is unavailable."""
     from scipy.stats import gaussian_kde
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -745,7 +708,7 @@ if __name__ == '__main__':
               f'range=[{x_obs_full[sl].min():.4e}, {x_obs_full[sl].max():.4e}]')
 
     # ── 2. Load training data ─────────────────────────────────────────────────
-    x_train_path = os.path.join(WORK_DIR, f'x_train_full_noisy.npy')
+    x_train_path     = os.path.join(WORK_DIR, 'x_train_full_noisy.npy')
     theta_train_path = os.path.join(WORK_DIR, 'theta_train_full.npy')
     if not os.path.exists(x_train_path) or not os.path.exists(theta_train_path):
         raise FileNotFoundError(
@@ -769,8 +732,6 @@ if __name__ == '__main__':
     hmc_samples_dict = {}
     sbi_samples_dict = {}
 
-    # Map probe name -> tuple of probe names recognised by theory_sbi_utils
-    # (these must be in TARGET_SPECTRA from gaussian_covariance.py)
     PROBE_TO_THEORY = {
         'gy':      ('gy',),
         'gtau':    ('gtau',),
@@ -789,12 +750,12 @@ if __name__ == '__main__':
             hmc_out_dir = pathlib.Path(output_dir) / f'hmc_{probe_name}'
             hmc_out_dir.mkdir(parents=True, exist_ok=True)
             hmc_samples = run_hmc_probe(
-                probe_name   = probe_name,
-                x_obs_full   = x_obs_full,
-                fiducial_path= fiducial_path,
-                param_specs  = param_specs,
-                output_dir   = hmc_out_dir,
-                probes_arg   = PROBE_TO_THEORY[probe_name],
+                probe_name    = probe_name,
+                x_obs_full    = x_obs_full,
+                fiducial_path = fiducial_path,
+                param_specs   = param_specs,
+                output_dir    = hmc_out_dir,
+                probes_arg    = PROBE_TO_THEORY[probe_name],
             )
             hmc_samples_dict[probe_name] = hmc_samples
             print(f'  [HMC/{probe_name}] {len(hmc_samples)} samples  '
@@ -803,7 +764,6 @@ if __name__ == '__main__':
                   f'nu={hmc_samples[:,1].mean():.3f}'
                   f'+/-{hmc_samples[:,1].std():.3f}')
         else:
-            # Try loading cached
             cached = pathlib.Path(output_dir) / f'hmc_{probe_name}' \
                      / f'hmc_samples_{probe_name}.npz'
             if cached.exists():
@@ -818,22 +778,19 @@ if __name__ == '__main__':
         # ── SBI ──────────────────────────────────────────────────────────────
         if not args.skip_sbi:
             sbi_samples = run_sbi_probe(
-                probe_name   = probe_name,
-                x_obs_full   = x_obs_full,
-                x_train      = x_train,
-                theta_train  = theta_train,
-                work_dir     = WORK_DIR,
-                device       = device,
-                force_retrain= args.force_retrain,
+                probe_name    = probe_name,
+                x_obs_full    = x_obs_full,
+                x_train       = x_train,
+                theta_train   = theta_train,
+                work_dir      = WORK_DIR,
+                device        = device,
+                force_retrain = args.force_retrain,
             )
             if sbi_samples is not None:
                 sbi_samples_dict[probe_name] = sbi_samples
         else:
-            # Try loading cached posterior and sampling
-            posterior_path = os.path.join(
-                WORK_DIR, f'ili_posterior_{probe_name}.pkl')
-            xobs_norm_path = os.path.join(
-                WORK_DIR, f'xobs_{probe_name}.npy')
+            posterior_path = os.path.join(WORK_DIR, f'ili_posterior_{probe_name}.pkl')
+            xobs_norm_path = os.path.join(WORK_DIR, f'xobs_{probe_name}.npy')
             if os.path.exists(posterior_path) and os.path.exists(xobs_norm_path):
                 with open(posterior_path, 'rb') as f:
                     posterior = pk.load(f)
@@ -852,18 +809,20 @@ if __name__ == '__main__':
             else:
                 print(f'  [SBI/{probe_name}] --skip-sbi set and no cache found.')
 
-        # ── Save flat samples for standalone plotting script ──────────────
+        # ── Save ─────────────────────────────────────────────────────────────
         if probe_name in hmc_samples_dict:
             save_path = os.path.join(output_dir, f'hmc_samples_{probe_name}.npz')
             np.savez_compressed(save_path,
-                    theta_ej_0    = hmc_samples_dict[probe_name][:, 0],
-                    nu_theta_ej_M = hmc_samples_dict[probe_name][:, 1],)
-        print(f'  [save/{probe_name}] Written: {save_path}')            
+                theta_ej_0    = hmc_samples_dict[probe_name][:, 0],
+                nu_theta_ej_M = hmc_samples_dict[probe_name][:, 1],
+            )
+            print(f'  [save/{probe_name}] Written: {save_path}')
 
         if probe_name in sbi_samples_dict:
             save_path = os.path.join(output_dir, f'sbi_samples_{probe_name}.npy')
-            np.save(save_path, sbi_samples_dict[probe_name])   # shape (N, 2)
+            np.save(save_path, sbi_samples_dict[probe_name])
             print(f'  [save/{probe_name}] Written: {save_path}')
+
         # ── Plot ─────────────────────────────────────────────────────────────
         if probe_name in hmc_samples_dict and probe_name in sbi_samples_dict:
             make_triangle_plot(
