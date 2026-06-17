@@ -9,6 +9,10 @@ LOG_DIR="${REPO_ROOT}/notebooks/xDESI/survey_measure/logs"
 OUTPUT_DIR="${OUTPUT_DIR:-data/xDESI/processed/multiprobe_namaster}"
 STAGES="${STAGES:-fast1024}"
 GATE_MIDRES_ON_FAST="${GATE_MIDRES_ON_FAST:-0}"
+# When 1, the spectra phase recomputes ONLY the 4 shear autos and patches them into an
+# existing compatible spectra product (~25 min) instead of regenerating all 46 (~2.9 h).
+# Requires a prior compatible spectra product to patch; falls back to full if absent.
+PATCH_SHEAR_SPECTRA="${PATCH_SHEAR_SPECTRA:-0}"
 FORCE_FLAG=""
 FAST_COV_SCALAR_ARRAY_CONCURRENCY="${FAST_COV_SCALAR_ARRAY_CONCURRENCY:-1}"
 FAST_COV_SPIN2_ARRAY_CONCURRENCY="${FAST_COV_SPIN2_ARRAY_CONCURRENCY:-4}"
@@ -19,15 +23,18 @@ FAST_COV_SCALAR_PARALLEL_GROUPS="${FAST_COV_SCALAR_PARALLEL_GROUPS:-4}"
 FAST_COV_SPIN2_PARALLEL_GROUPS="${FAST_COV_SPIN2_PARALLEL_GROUPS:-8}"
 FAST_COV_SCALAR_OMP_THREADS="${FAST_COV_SCALAR_OMP_THREADS:-32}"
 FAST_COV_SPIN2_OMP_THREADS="${FAST_COV_SPIN2_OMP_THREADS:-16}"
-MIDRES_COV_SCALAR_ARRAY_CONCURRENCY="${MIDRES_COV_SCALAR_ARRAY_CONCURRENCY:-1}"
-MIDRES_COV_SPIN2_ARRAY_CONCURRENCY="${MIDRES_COV_SPIN2_ARRAY_CONCURRENCY:-1}"
+MIDRES_COV_SCALAR_ARRAY_CONCURRENCY="${MIDRES_COV_SCALAR_ARRAY_CONCURRENCY:-10}"
+MIDRES_COV_SPIN2_ARRAY_CONCURRENCY="${MIDRES_COV_SPIN2_ARRAY_CONCURRENCY:-16}"
 MIDRES_COV_SERIALIZE_CLASSES="${MIDRES_COV_SERIALIZE_CLASSES:-0}"
-MIDRES_COV_SCALAR_BATCH_SIZE="${MIDRES_COV_SCALAR_BATCH_SIZE:-5}"
+MIDRES_COV_SCALAR_BATCH_SIZE="${MIDRES_COV_SCALAR_BATCH_SIZE:-1}"
 MIDRES_COV_SPIN2_BATCH_SIZE="${MIDRES_COV_SPIN2_BATCH_SIZE:-4}"
 MIDRES_COV_SCALAR_PARALLEL_GROUPS="${MIDRES_COV_SCALAR_PARALLEL_GROUPS:-1}"
-MIDRES_COV_SPIN2_PARALLEL_GROUPS="${MIDRES_COV_SPIN2_PARALLEL_GROUPS:-1}"
-MIDRES_COV_SCALAR_OMP_THREADS="${MIDRES_COV_SCALAR_OMP_THREADS:-128}"
-MIDRES_COV_SPIN2_OMP_THREADS="${MIDRES_COV_SPIN2_OMP_THREADS:-128}"
+MIDRES_COV_SPIN2_PARALLEL_GROUPS="${MIDRES_COV_SPIN2_PARALLEL_GROUPS:-2}"
+MIDRES_COV_SCALAR_OMP_THREADS="${MIDRES_COV_SCALAR_OMP_THREADS:-1}"
+MIDRES_COV_SPIN2_OMP_THREADS="${MIDRES_COV_SPIN2_OMP_THREADS:-1}"
+PLOT_ELL_MAX="${PLOT_ELL_MAX:-2800}"
+KSZ_YLIM_MIN="${KSZ_YLIM_MIN:--5e-5}"
+KSZ_YLIM_MAX="${KSZ_YLIM_MAX:-5e-5}"
 
 usage() {
   cat <<'EOF'
@@ -36,7 +43,7 @@ Usage:
 
 Stages:
   fast1024    nside=1024, lmax=1024, 10 linear bins
-  midres2048  nside=2048, lmax=4096, 10 linear bins
+  midres2048  nside=2048, ell=128..3000, 13 hybrid-log bins, 1 deg C2 apodization, pair-overlap mean subtraction
 
 Default:
   fast1024 only
@@ -104,19 +111,23 @@ stage_resources() {
     fast1024:cov-spin2)
       echo "128 128G 04:00:00"
       ;;
-    fast1024:assemble|fast1024:validate)
+    fast1024:assemble|fast1024:validate|fast1024:plot-dell)
       echo "4 32G 02:00:00"
       ;;
     midres2048:prepare|midres2048:spectra)
-      echo "32 256G 24:00:00"
+      # Exclusive nodes: take the whole node so the spectra SHTs use all 128 cores.
+      # prepare just reuses the existing compatible map product and exits immediately.
+      echo "128 990G 12:00:00"
       ;;
     midres2048:cov-scalar)
-      echo "128 256G 24:00:00"
+      # Full rome node (128 cores, ~1TB). cmbas is OverSubscribe=EXCLUSIVE, so a task
+      # always gets the whole node; request all of it and fill it via PARALLEL_GROUPS.
+      echo "128 990G 12:00:00"
       ;;
     midres2048:cov-spin2)
-      echo "128 256G 36:00:00"
+      echo "128 990G 12:00:00"
       ;;
-    midres2048:assemble|midres2048:validate)
+    midres2048:assemble|midres2048:validate|midres2048:plot-dell)
       echo "8 64G 06:00:00"
       ;;
     *)
@@ -152,7 +163,7 @@ manifest_file_for_stage() {
       echo "${REPO_ROOT}/${OUTPUT_DIR}/fast1024/covariance_manifest_nside1024_lmax1024_nbin10_linear.json"
       ;;
     midres2048)
-      echo "${REPO_ROOT}/${OUTPUT_DIR}/midres2048/covariance_manifest_nside2048_lmax4096_nbin10_linear.json"
+      echo "${REPO_ROOT}/${OUTPUT_DIR}/midres2048/covariance_manifest_nside2048_ell128_lmax3000_nbin13_log_apo1deg_C2_pairmean.json"
       ;;
     *)
       echo "Unsupported stage ${stage}" >&2
@@ -245,15 +256,23 @@ submit_stage() {
     prepare_dep="afterok:${stage_dependency}"
   fi
 
-  local prepare_job spectra_job scalar_job spin2_job assemble_job validate_job
+  local prepare_job spectra_job scalar_job spin2_job assemble_job validate_job plot_job
   prepare_job="$(sbatch_phase "${stage}" prepare "${prepare_dep}" prepare "${common[@]}")"
-  spectra_job="$(sbatch_phase "${stage}" spectra "afterok:${prepare_job}" spectra "${common[@]}")"
+  local spectra_flag=""
+  if [[ "${PATCH_SHEAR_SPECTRA}" -eq 1 ]]; then
+    spectra_flag="--patch-shear-only"
+    echo "[submit] ${stage}: spectra phase = patch-shear-only (recompute 4 shear autos in place)" >&2
+  fi
+  spectra_job="$(sbatch_phase "${stage}" spectra "afterok:${prepare_job}" spectra "${common[@]}" ${spectra_flag})"
 
   local scalar_count spin2_count
   scalar_count="$(manifest_count "${manifest}" scalar)"
   spin2_count="$(manifest_count "${manifest}" spin2)"
 
-  local cov_dependencies="afterok:${spectra_job}"
+  # Covariance reads only the map product (never the spectra product), so it can run in
+  # PARALLEL with the spectra phase -- depend on prepare, not spectra. assemble still waits
+  # for spectra (below), so the data vector and covariance are joined correctly.
+  local cov_dependencies="afterok:${prepare_job}"
   local serialize_cov_classes
   serialize_cov_classes="$(serialize_cov_classes_for_stage "${stage}")"
   echo "[submit] ${stage}: covariance scalar_groups=${scalar_count} spin2_groups=${spin2_count} serialize_classes=${serialize_cov_classes}" >&2
@@ -311,9 +330,12 @@ submit_stage() {
   fi
   assemble_job="$(sbatch_phase "${stage}" assemble "${assemble_dep}" assemble "${common[@]}")"
   validate_job="$(sbatch_phase "${stage}" validate "afterok:${assemble_job}" validate "${common[@]}")"
+  plot_job="$(sbatch_phase "${stage}" plot-dell "afterok:${validate_job}" plot-measurement-dell "${common[@]}" \
+    --plot-ell-max "${PLOT_ELL_MAX}" \
+    --plot-ksz-ylim="${KSZ_YLIM_MIN},${KSZ_YLIM_MAX}")"
 
-  echo "[submit] ${stage}: prepare=${prepare_job} spectra=${spectra_job} scalar=${scalar_job:-none} spin2=${spin2_job:-none} assemble=${assemble_job} validate=${validate_job}" >&2
-  echo "${validate_job}"
+  echo "[submit] ${stage}: prepare=${prepare_job} spectra=${spectra_job} scalar=${scalar_job:-none} spin2=${spin2_job:-none} assemble=${assemble_job} validate=${validate_job} plot=${plot_job}" >&2
+  echo "${plot_job}"
 }
 
 fast_validate_job=""

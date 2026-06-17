@@ -4,7 +4,8 @@ set -euo pipefail
 REPO=/mnt/ceph/users/spandey/ltu-godmax/GODMAX
 SCRIPT_DIR=${REPO}/notebooks/xDESI/abacus_paste
 
-CONFIG=${CONFIG:-${SCRIPT_DIR}/stage31_pz3_cap2400_hmcbestfit_mmin11p147538_nside2048_lmax4096.selected.yaml}
+DEFAULT_CONFIG=${SCRIPT_DIR}/stage31_pz3_cap2400_hmcbestfit_mmin11p147538_nside2048_lmax4096.selected.yaml
+CONFIG=${CONFIG:-${DEFAULT_CONFIG}}
 RUN_ROOT=${RUN_ROOT:-${REPO}/data/xDESI/processed/abacus_backlight/stage31_pz3_cap2400_hmcbestfit_mmin11p147538}
 HMC_COMBINED=${HMC_COMBINED:-${REPO}/notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_midres2048_true_nz_hmc_stage31_multigpu/stage31_hmc_abacus_cosmo_midres2048_simple1h2h_lmax4096_gk1024_mmin11p147538_depth6_acc095_2000x16_v1/combined}
 COMBINED_SUFFIX=${COMBINED_SUFFIX:-stage31_multigpu_abacus_cosmo_midres2048_simple1h2h_lmax4096_gk1024_mmin11p147538_depth6_acc095_2000x16_v1}
@@ -40,6 +41,7 @@ KSZ_VELOCITY_MODE=${KSZ_VELOCITY_MODE:-photoz_reconstruction_emulation}
 KSZ_RECONSTRUCTION_NOISE_SEED=${KSZ_RECONSTRUCTION_NOISE_SEED:-12345}
 KSZ_YLIM_MIN=${KSZ_YLIM_MIN:--5e-5}
 KSZ_YLIM_MAX=${KSZ_YLIM_MAX:-5e-5}
+PLOT_ELL_MAX=${PLOT_ELL_MAX:-2800}
 DIRECT_FIELD_PYTHON=${DIRECT_FIELD_PYTHON:-/mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python}
 DIRECT_FIELD_CONDA_ENV_HOOK=${DIRECT_FIELD_CONDA_ENV_HOOK:-/tmp/nonexistent_godmax_hook}
 
@@ -59,6 +61,11 @@ PLUS_VARIANT_PLOT=${PLUS_VARIANT_PLOT:-${RUN_ROOT}/plots/stage31_pz3_cap2400_hmc
 RUNTIME_CONFIG=${RUNTIME_CONFIG:-${RUN_ROOT}/configs/stage31_pz3_cap2400_hmcbestfit_mmin11p147538_nside${NSIDE}_lmax${LMAX}_${COMBINED_SUFFIX}.selected.yaml}
 
 mkdir -p "${SCRIPT_DIR}/slurm_logs" "${RUN_ROOT}/measurements" "${RUN_ROOT}/theory" "${RUN_ROOT}/plots" "${RUN_ROOT}/configs"
+
+if [ ! -f "${CONFIG}" ] || ! grep -q '^catalogs:' "${CONFIG}" || ! grep -q '^pasting:' "${CONFIG}"; then
+  echo "CONFIG=${CONFIG} is not a pz3 cap2400 paste template; using ${DEFAULT_CONFIG}" >&2
+  CONFIG="${DEFAULT_CONFIG}"
+fi
 
 if [ "${REQUIRE_BESTFIT}" -gt 0 ]; then
   if [ ! -f "${BESTFIT_PARAMS}" ]; then
@@ -121,6 +128,17 @@ godmax["hmc_combined_suffix"] = os.environ["COMBINED_SUFFIX"]
 pasting = cfg.setdefault("pasting", {})
 pasting["ksz_velocity_mode"] = os.environ["KSZ_VELOCITY_MODE"]
 pasting["ksz_reconstruction_noise_seed"] = int(os.environ["KSZ_RECONSTRUCTION_NOISE_SEED"])
+checkpoint_tag = os.environ.get("CHECKPOINT_TAG", "").strip()
+checkpoint_run_name = os.environ.get("CHECKPOINT_RUN_NAME", "").strip()
+checkpoint_measurement_tag = os.environ.get("CHECKPOINT_MEASUREMENT_TAG_BASE", "").strip()
+if checkpoint_tag:
+    cfg.setdefault("project", {})["checkpoint_tag"] = checkpoint_tag
+    godmax["hmc_checkpoint_tag"] = checkpoint_tag
+if checkpoint_run_name:
+    cfg.setdefault("project", {})["name"] = checkpoint_run_name
+    pasting["run_name"] = checkpoint_run_name
+if checkpoint_measurement_tag:
+    pasting["measurement_tag_base"] = checkpoint_measurement_tag
 
 runtime.parent.mkdir(parents=True, exist_ok=True)
 with open(runtime, "w", encoding="utf-8") as handle:
@@ -164,7 +182,7 @@ combine_job=""
 if [ "${DO_COMBINE}" -gt 0 ]; then
   combine_job=$(sbatch --parsable \
     "${dependency[@]}" \
-    --export=ALL,CONFIG="${CONFIG}",NSIDE="${NSIDE}",NUM_SPLITS="${NUM_SPLITS}",LMAX="${LMAX}",MONITOR_INTERVAL="${MONITOR_INTERVAL}",GPU_SAMPLE_INTERVAL="${GPU_SAMPLE_INTERVAL}",SIM_MEAS="${SIM_MEAS}",FULL_AREA_PLOT="${FULL_AREA_PLOT}",BESTFIT_VECTOR="${BESTFIT_VECTOR}",FIDUCIAL_VECTOR="${BESTFIT_VECTOR}",DO_FULL_DATA_PLOT=1,KSZ_YLIM_MIN="${KSZ_YLIM_MIN}",KSZ_YLIM_MAX="${KSZ_YLIM_MAX}" \
+    --export=ALL,CONFIG="${CONFIG}",NSIDE="${NSIDE}",NUM_SPLITS="${NUM_SPLITS}",LMAX="${LMAX}",MONITOR_INTERVAL="${MONITOR_INTERVAL}",GPU_SAMPLE_INTERVAL="${GPU_SAMPLE_INTERVAL}",SIM_MEAS="${SIM_MEAS}",FULL_AREA_PLOT="${FULL_AREA_PLOT}",BESTFIT_VECTOR="${BESTFIT_VECTOR}",FIDUCIAL_VECTOR="${BESTFIT_VECTOR}",DO_FULL_DATA_PLOT=1,KSZ_YLIM_MIN="${KSZ_YLIM_MIN}",KSZ_YLIM_MAX="${KSZ_YLIM_MAX}",PLOT_ELL_MAX="${PLOT_ELL_MAX}" \
     "${SCRIPT_DIR}/submit_stage31_pz3_cap600_combine.sbatch")
   dependency=(--dependency=afterok:"${combine_job}")
   echo "Submitted combine/measure/pasted-only data plot job: ${combine_job}"
@@ -174,7 +192,7 @@ pasted_theory_job=""
 if [ "${DO_PASTED_THEORY}" -gt 0 ]; then
   pasted_theory_job=$(sbatch --parsable \
     "${dependency[@]}" \
-    --export=ALL,CONFIG="${CONFIG}",RUN_ROOT="${RUN_ROOT}",NSIDE="${NSIDE}",LMAX="${LMAX}",SIM_MEAS="${SIM_MEAS}",SUM_THEORY="${SUM_THEORY}",RESPONSE_THEORY="${RESPONSE_THEORY}",VARIANT_PLOT="${VARIANT_PLOT}",SIM_MATCHED_TRANSFERS="${SIM_MATCHED_TRANSFERS}",KSZ_YLIM_MIN="${KSZ_YLIM_MIN}",KSZ_YLIM_MAX="${KSZ_YLIM_MAX}" \
+    --export=ALL,CONFIG="${CONFIG}",RUN_ROOT="${RUN_ROOT}",NSIDE="${NSIDE}",LMAX="${LMAX}",SIM_MEAS="${SIM_MEAS}",SUM_THEORY="${SUM_THEORY}",RESPONSE_THEORY="${RESPONSE_THEORY}",VARIANT_PLOT="${VARIANT_PLOT}",SIM_MATCHED_TRANSFERS="${SIM_MATCHED_TRANSFERS}",KSZ_YLIM_MIN="${KSZ_YLIM_MIN}",KSZ_YLIM_MAX="${KSZ_YLIM_MAX}",PLOT_ELL_MAX="${PLOT_ELL_MAX}" \
     "${SCRIPT_DIR}/submit_stage31_pz3_cap600_theory_variants.sbatch")
   echo "Submitted pasted-only matched-transfer theory plot job: ${pasted_theory_job}"
 fi
@@ -203,7 +221,7 @@ if [ "${DO_PLUS_DIRECT}" -gt 0 ]; then
   fi
   plus_direct_job=$(sbatch --parsable \
     "${plus_dependency[@]}" \
-    --export=ALL,CONFIG="${CONFIG}",MAPS="${PLUS_MAPS}",SIM_MEAS="${PLUS_SIM_MEAS}",SUM_THEORY="${PLUS_SUM_THEORY}",RESPONSE_THEORY="${PLUS_RESPONSE_THEORY}",VARIANT_PLOT="${PLUS_VARIANT_PLOT}",NSIDE="${NSIDE}",SIM_MATCHED_TRANSFERS="${SIM_MATCHED_TRANSFERS}",KSZ_YLIM_MIN="${KSZ_YLIM_MIN}",KSZ_YLIM_MAX="${KSZ_YLIM_MAX}" \
+    --export=ALL,CONFIG="${CONFIG}",MAPS="${PLUS_MAPS}",SIM_MEAS="${PLUS_SIM_MEAS}",SUM_THEORY="${PLUS_SUM_THEORY}",RESPONSE_THEORY="${PLUS_RESPONSE_THEORY}",VARIANT_PLOT="${PLUS_VARIANT_PLOT}",NSIDE="${NSIDE}",SIM_MATCHED_TRANSFERS="${SIM_MATCHED_TRANSFERS}",KSZ_YLIM_MIN="${KSZ_YLIM_MIN}",KSZ_YLIM_MAX="${KSZ_YLIM_MAX}",PLOT_ELL_MAX="${PLOT_ELL_MAX}" \
     "${SCRIPT_DIR}/submit_stage31_pz3_plus_direct_measure_theory.sbatch")
   echo "Submitted plus-direct matched-transfer measure/theory/plot job: ${plus_direct_job}"
 fi
@@ -214,6 +232,7 @@ echo "Bestfit vector: ${BESTFIT_VECTOR}"
 echo "Fit summary: ${FIT_SUMMARY}"
 echo "kSZ velocity mode: ${KSZ_VELOCITY_MODE}"
 echo "kSZ y-limit: ${KSZ_YLIM_MIN} ${KSZ_YLIM_MAX}"
+echo "Plot ell max: ${PLOT_ELL_MAX}"
 echo "Pasted-only plot: ${FULL_AREA_PLOT}"
 echo "Pasted-only matched-transfer plot: ${VARIANT_PLOT}"
 echo "Plus-direct matched-transfer plot: ${PLUS_VARIANT_PLOT}"

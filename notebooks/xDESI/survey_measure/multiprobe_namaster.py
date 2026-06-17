@@ -12,7 +12,7 @@ import argparse
 import json
 import math
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
@@ -62,6 +62,12 @@ DES_Y3_SOURCE_NZ_FITS_DEFAULT = (
     "2pt_NG_final_2ptunblind_02_26_21_wnz_maglim_covupdate.fits"
 )
 DES_Y3_SOURCE_NZ_HDU = "nz_source"
+
+
+def _trapz(y: np.ndarray, x: Optional[np.ndarray] = None, axis: int = -1) -> np.ndarray:
+    if hasattr(np, "trapezoid"):
+        return np.trapezoid(y, x=x, axis=axis)
+    return np.trapz(y, x=x, axis=axis)
 DES_Y3_GAUSSIAN_PRIORS = {
     "Delta_z_bias_bin1": (0.0, 1.8e-2),
     "Delta_z_bias_bin2": (0.0, 1.5e-2),
@@ -218,6 +224,9 @@ class MeasurementConfig:
     shear_noise_attr: str = "shape_noise_pseudo_cl_normalized_weight_mask"
     shear_e_to_kappa_sign: float = -1.0
     subtract_masked_mean: bool = True
+    mask_apodization_deg: float = 0.0
+    mask_apodization_type: str = "C1"
+    pair_overlap_mean_subtract: bool = False
     n_iter: int = 0
     n_iter_mask: int = 0
     covariance_l_toeplitz: int = -1
@@ -254,10 +263,14 @@ class MeasurementConfig:
             return cls(
                 stage="midres2048",
                 nside=2048,
-                lmax=4096,
-                n_bins=10,
-                binning="linear",
+                lmax=3000,
+                ell_min=128,
+                n_bins=13,
+                binning="log",
                 act_downgrade=1,
+                mask_apodization_deg=1.0,
+                mask_apodization_type="C2",
+                pair_overlap_mean_subtract=True,
                 include_ksz_velocity_shuffle=False,
             )
         if stage == "full":
@@ -280,8 +293,12 @@ class MeasurementConfig:
             raise ValueError("n_bins must be positive.")
         if int(self.lmax) > 3 * int(self.nside) - 1:
             raise ValueError(f"lmax={self.lmax} exceeds the HEALPix limit 3*nside-1={3 * int(self.nside) - 1}.")
-        if str(self.binning).lower() not in {"sqrt", "linear"}:
-            raise ValueError(f"Unsupported binning={self.binning!r}; expected 'sqrt' or 'linear'.")
+        if str(self.binning).lower() not in {"sqrt", "linear", "log"}:
+            raise ValueError(f"Unsupported binning={self.binning!r}; expected 'sqrt', 'linear', or 'log'.")
+        if float(self.mask_apodization_deg) < 0.0:
+            raise ValueError("mask_apodization_deg must be non-negative.")
+        if str(self.mask_apodization_type) not in {"C1", "C2", "Smooth"}:
+            raise ValueError("mask_apodization_type must be one of 'C1', 'C2', or 'Smooth'.")
 
     @property
     def output_root(self) -> Path:
@@ -289,9 +306,21 @@ class MeasurementConfig:
 
     @property
     def product_tag(self) -> str:
-        if self.stage in {"lowres", "full"} and str(self.binning).lower() == "sqrt":
-            return f"nside{self.nside}_lmax{self.lmax}"
-        return f"nside{self.nside}_lmax{self.lmax}_nbin{self.n_bins}_{str(self.binning).lower()}"
+        parts = [f"nside{self.nside}"]
+        if int(self.ell_min) != 8:
+            parts.append(f"ell{int(self.ell_min)}")
+        parts.append(f"lmax{self.lmax}")
+        if not (self.stage in {"lowres", "full"} and str(self.binning).lower() == "sqrt"):
+            parts.append(f"nbin{self.n_bins}")
+            parts.append(str(self.binning).lower())
+        apo = float(self.mask_apodization_deg)
+        if apo > 0.0:
+            apo_tag = ("%g" % apo).replace(".", "p")
+            parts.append(f"apo{apo_tag}deg")
+            parts.append(str(self.mask_apodization_type))
+        if bool(self.pair_overlap_mean_subtract):
+            parts.append("pairmean")
+        return "_".join(parts)
 
     @property
     def default_maps_path(self) -> Path:
@@ -509,12 +538,12 @@ def load_des_y3_source_nz(path: str | Path, hdu_name: str = DES_Y3_SOURCE_NZ_HDU
         z_mid = np.asarray(data["Z_MID"], dtype=np.float64)
         z_high = np.asarray(data["Z_HIGH"], dtype=np.float64)
         raw = np.vstack([np.asarray(data[f"BIN{i}"], dtype=np.float64) for i in range(1, 5)])
-        trapz_norm = np.trapezoid(raw, x=z_mid, axis=1)
+        trapz_norm = _trapz(raw, x=z_mid, axis=1)
         width_norm = np.sum(raw * (z_high - z_low)[None, :], axis=1)
         if np.any(~np.isfinite(trapz_norm)) or np.any(trapz_norm <= 0):
             raise ValueError(f"Invalid DES Y3 source n(z) normalization in {path}.")
         dndz = raw / trapz_norm[:, None]
-        mean_z = np.asarray([np.trapezoid(z_mid * dndz_i, x=z_mid) for dndz_i in dndz], dtype=np.float64)
+        mean_z = np.asarray([_trapz(z_mid * dndz_i, x=z_mid) for dndz_i in dndz], dtype=np.float64)
         sigma_e = np.asarray([float(hdu.header.get(f"SIG_E_{i}", np.nan)) for i in range(1, 5)], dtype=np.float64)
         ngal_arcmin2 = np.asarray([float(hdu.header.get(f"NGAL_{i}", np.nan)) for i in range(1, 5)], dtype=np.float64)
     return {
@@ -532,7 +561,7 @@ def load_des_y3_source_nz(path: str | Path, hdu_name: str = DES_Y3_SOURCE_NZ_HDU
         "ngal_arcmin2_by_bin": ngal_arcmin2,
         "raw_column_note": (
             "FITS BIN columns are stored separately from normalized theory dN/dz. "
-            "Use dndz_by_bin for theory; it is normalized with np.trapezoid over Z_MID."
+            "Use dndz_by_bin for theory; it is normalized by trapezoidal integration over Z_MID."
         ),
         "priors": des_y3_gaussian_priors(),
     }
@@ -631,6 +660,55 @@ def _subtract_masked_mean(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return out
 
 
+def _weighted_mean_on_mask(values: np.ndarray, mask: np.ndarray) -> float:
+    good = np.asarray(mask) > 0
+    if not np.any(good):
+        raise ValueError("Cannot compute a weighted mean on a zero-overlap mask.")
+    arr = np.asarray(values, dtype=np.float64)
+    w = np.asarray(mask, dtype=np.float64)
+    return float(np.sum(arr[good] * w[good]) / np.sum(w[good]))
+
+
+def apply_mask_apodization(
+    fields: Mapping[str, FieldMap],
+    config: MeasurementConfig,
+) -> Dict[str, FieldMap]:
+    """Return fields with NaMaster-apodized masks, preserving shared-mask refs."""
+
+    apo_deg = float(config.mask_apodization_deg)
+    if apo_deg <= 0.0:
+        return dict(fields)
+
+    apotype = str(config.mask_apodization_type)
+    apodized_masks: Dict[str, np.ndarray] = {}
+    out: Dict[str, FieldMap] = {}
+    for name, field_map in fields.items():
+        if field_map.mask_name not in apodized_masks:
+            mask = np.asarray(field_map.mask, dtype=np.float64)
+            print(
+                f"[{utc_now()}] Apodizing mask {field_map.mask_name} "
+                f"({apo_deg:g} deg, {apotype})",
+                flush=True,
+            )
+            apo_mask = nmt.mask_apodization(mask, apo_deg, apotype=apotype)
+            apodized_masks[field_map.mask_name] = _clean_mask(apo_mask).astype(np.float32, copy=False)
+            print(f"[{utc_now()}] Finished apodizing mask {field_map.mask_name}", flush=True)
+        metadata = dict(field_map.metadata)
+        metadata.update(
+            {
+                "mask_apodization_applied": True,
+                "mask_apodization_deg": apo_deg,
+                "mask_apodization_type": apotype,
+                "mask_apodization_note": (
+                    "Mask was apodized with pymaster.mask_apodization before "
+                    "constructing NaMaster fields."
+                ),
+            }
+        )
+        out[name] = replace(field_map, mask=apodized_masks[field_map.mask_name], metadata=metadata)
+    return out
+
+
 def _accumulate_pixels(
     out: np.ndarray,
     pix: np.ndarray,
@@ -688,13 +766,38 @@ def make_linear_bandpower_edges(ell_min: int, ell_max: int, n_bins: int) -> Tupl
     return edges[:-1].astype(np.int32), edges[1:].astype(np.int32)
 
 
+MIDRES2048_LOG_ELL_LEFT = np.asarray(
+    [128, 160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280],
+    dtype=np.int32,
+)
+MIDRES2048_LOG_ELL_RIGHT = np.asarray(
+    [160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280, 3001],
+    dtype=np.int32,
+)
+
+
+def make_log_bandpower_edges(ell_min: int, ell_max: int, n_bins: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Return the Stage-31 midres2048 hybrid-log NaMaster bandpower edges."""
+
+    expected = (128, 3000, 13)
+    requested = (int(ell_min), int(ell_max), int(n_bins))
+    if requested != expected:
+        raise ValueError(
+            "binning='log' is currently the explicit Stage-31 midres2048 edge table; "
+            f"expected ell_min/lmax/n_bins={expected}, got {requested}."
+        )
+    return MIDRES2048_LOG_ELL_LEFT.copy(), MIDRES2048_LOG_ELL_RIGHT.copy()
+
+
 def make_bandpower_edges(config: MeasurementConfig) -> Tuple[np.ndarray, np.ndarray]:
     binning = str(config.binning).lower()
     if binning == "sqrt":
         return make_sqrt_bandpower_edges(config.ell_min, config.lmax, config.n_bins)
     if binning == "linear":
         return make_linear_bandpower_edges(config.ell_min, config.lmax, config.n_bins)
-    raise ValueError(f"Unsupported binning={config.binning!r}; expected 'sqrt' or 'linear'.")
+    if binning == "log":
+        return make_log_bandpower_edges(config.ell_min, config.lmax, config.n_bins)
+    raise ValueError(f"Unsupported binning={config.binning!r}; expected 'sqrt', 'linear', or 'log'.")
 
 
 def make_bins(config: MeasurementConfig) -> nmt.NmtBin:
@@ -1052,7 +1155,7 @@ def _hist_density(
         hist_weights = None
     counts, _ = np.histogram(values[finite], bins=edges, weights=hist_weights)
     mid = 0.5 * (edges[1:] + edges[:-1])
-    norm = np.trapezoid(counts.astype(np.float64), x=mid)
+    norm = _trapz(counts.astype(np.float64), x=mid)
     if norm > 0:
         dndz = counts.astype(np.float64) / norm
     else:
@@ -1550,6 +1653,7 @@ def build_probe_maps(bundle: SurveyBundle, config: MeasurementConfig) -> Tuple[D
     desi_fields, desi_summary = build_desi_fields(bundle, config, random_counts, random_count_metadata)
     fields.update(desi_fields)
     fields.update(build_act_fields(bundle, config))
+    fields = apply_mask_apodization(fields, config)
 
     metadata = {
         "schema": SCHEMA_MAPS,
@@ -1814,15 +1918,30 @@ def save_map_product(
     return path
 
 
-def load_map_product(path: str | Path) -> Tuple[Dict[str, FieldMap], Dict[str, object]]:
+def load_map_product(
+    path: str | Path,
+    field_names: Optional[Iterable[str]] = None,
+) -> Tuple[Dict[str, FieldMap], Dict[str, object]]:
+    """Load cached probe maps. If ``field_names`` is given, only those fields (and the
+    masks they reference) are read from disk -- this keeps covariance workers from holding
+    all ~15 probe maps in memory when a group only needs a few, so many more single-threaded
+    groups can be packed onto one node."""
+
     path = Path(path)
+    want = None if field_names is None else {str(n) for n in field_names}
     with h5py.File(path, "r") as h5:
         if h5.attrs.get("schema") != SCHEMA_MAPS:
             raise ValueError(f"{path} is not a {SCHEMA_MAPS} product.")
         metadata = json.loads(h5.attrs["metadata_json"])
-        masks = {name: h5[f"masks/{name}"][:] for name in h5["masks"]}
+        selected = [name for name in h5["fields"] if want is None or name in want]
+        if want is not None:
+            missing = sorted(want - set(selected))
+            if missing:
+                raise KeyError(f"{path} is missing requested field(s): {missing}")
+        needed_masks = {str(h5[f"fields/{name}"].attrs["mask_ref"]) for name in selected}
+        masks = {name: h5[f"masks/{name}"][:] for name in h5["masks"] if want is None or name in needed_masks}
         fields: Dict[str, FieldMap] = {}
-        for name in h5["fields"]:
+        for name in selected:
             g = h5[f"fields/{name}"]
             maps = [g[f"map{i}"][:] for i in range(len([k for k in g if k.startswith("map")]))]
             mask_name = str(g.attrs["mask_ref"])
@@ -1894,6 +2013,85 @@ def build_nmt_fields(fields: Mapping[str, FieldMap], config: MeasurementConfig) 
     return out
 
 
+def _new_map_nmt_field(info: FieldMap, maps: Sequence[np.ndarray], config: MeasurementConfig) -> nmt.NmtField:
+    return nmt.NmtField(
+        info.mask,
+        list(maps),
+        spin=info.spin,
+        purify_e=False,
+        purify_b=False,
+        n_iter=config.n_iter,
+        n_iter_mask=config.n_iter_mask,
+        lmax=config.lmax,
+        lmax_mask=config.lmax,
+        lite=True,
+    )
+
+
+def _pair_overlap_mean_subtract_enabled(
+    a: str,
+    b: str,
+    fields: Mapping[str, NmtProbeField],
+    config: MeasurementConfig,
+) -> bool:
+    if not bool(config.pair_overlap_mean_subtract):
+        return False
+    return not (fields[a].is_catalog_momentum or fields[b].is_catalog_momentum)
+
+
+def _pair_overlap_demeaned_probe_field(
+    name: str,
+    partner: str,
+    fields: Mapping[str, NmtProbeField],
+    config: MeasurementConfig,
+) -> Tuple[NmtProbeField, Dict[str, object]]:
+    base = fields[name]
+    partner_field = fields[partner]
+    overlap_mask = np.asarray(base.mask, dtype=np.float64) * np.asarray(partner_field.mask, dtype=np.float64)
+    overlap_sum = float(np.sum(overlap_mask, dtype=np.float64))
+    if not np.isfinite(overlap_sum) or overlap_sum <= 0.0:
+        raise ValueError(f"Fields {name!r} and {partner!r} have zero overlap for pair-overlap mean subtraction.")
+
+    positive_self = np.asarray(base.mask) > 0
+    maps = []
+    means = []
+    for values in base.info.maps:
+        out = np.asarray(values, dtype=np.float32).copy()
+        mean = _weighted_mean_on_mask(out, overlap_mask)
+        out[positive_self] -= mean
+        out[~positive_self] = 0.0
+        maps.append(out)
+        means.append(mean)
+    meta = {
+        "field": name,
+        "partner": partner,
+        "overlap_mask_sum": overlap_sum,
+        "overlap_fsky_weighted": float(np.mean(overlap_mask)),
+        "component_means_subtracted": means,
+    }
+    return NmtProbeField(info=base.info, field=_new_map_nmt_field(base.info, maps, config)), meta
+
+
+def get_pair_probe_fields(
+    a: str,
+    b: str,
+    fields: Mapping[str, NmtProbeField],
+    config: MeasurementConfig,
+) -> Tuple[NmtProbeField, NmtProbeField, Dict[str, object]]:
+    if not _pair_overlap_mean_subtract_enabled(a, b, fields, config):
+        return fields[a], fields[b], {
+            "enabled": False,
+            "reason": (
+                "disabled"
+                if not bool(config.pair_overlap_mean_subtract)
+                else "catalog_momentum_pair"
+            ),
+        }
+    fa, meta_a = _pair_overlap_demeaned_probe_field(a, b, fields, config)
+    fb, meta_b = _pair_overlap_demeaned_probe_field(b, a, fields, config)
+    return fa, fb, {"enabled": True, "fields": [meta_a, meta_b]}
+
+
 def _mean_mask_product(a: NmtProbeField, b: NmtProbeField) -> float:
     mean = float(np.mean(a.mask * b.mask))
     if mean <= 0:
@@ -1901,8 +2099,23 @@ def _mean_mask_product(a: NmtProbeField, b: NmtProbeField) -> float:
     return mean
 
 
-def _workspace_key(a: str, b: str) -> Tuple[str, str]:
-    return (a, b)
+def _workspace_key(a: str, b: str, fields: Mapping[str, NmtProbeField]) -> Tuple:
+    """Cache key for a power-spectrum workspace.
+
+    The NaMaster mode-coupling matrix and bandpower windows depend only on the two masks,
+    the two spins, and the binning -- NOT on the field values (verified: identical coupling
+    matrices/windows for two fields sharing a mask). Keying by (mask_name, spin) therefore
+    lets field pairs that share masks reuse one workspace -- e.g. all g_i x y, all g_i x s_j,
+    the galaxy autos -- collapsing ~46 single-threaded builds to ~22 unique mask/spin pairs.
+    Catalog-momentum (kSZ pi) fields are keyed per field pair (conservative: their catalog
+    mask handling is not deduplicated here).
+    """
+
+    fa = fields[a]
+    fb = fields[b]
+    if fa.is_catalog_momentum or fb.is_catalog_momentum:
+        return ("byfield", a, b)
+    return ("bymask", fa.info.mask_name, int(fa.spin), fb.info.mask_name, int(fb.spin))
 
 
 def get_workspace(
@@ -1910,14 +2123,15 @@ def get_workspace(
     b: str,
     fields: Mapping[str, NmtProbeField],
     bins: nmt.NmtBin,
-    cache: MutableMapping[Tuple[str, str], nmt.NmtWorkspace],
+    cache: MutableMapping[Tuple, nmt.NmtWorkspace],
     config: MeasurementConfig,
 ) -> nmt.NmtWorkspace:
-    key = _workspace_key(a, b)
+    key = _workspace_key(a, b, fields)
     if key not in cache:
+        fa, fb, _ = get_pair_probe_fields(a, b, fields, config)
         cache[key] = nmt.NmtWorkspace.from_fields(
-            fields[a].field,
-            fields[b].field,
+            fa.field,
+            fb.field,
             bins,
             l_toeplitz=config.covariance_l_toeplitz,
             l_exact=config.covariance_l_exact,
@@ -1975,21 +2189,23 @@ def get_covariance_workspace(
     key = _cov_workspace_key(spec_a, spec_b)
     a1, a2 = spec_a.fields
     b1, b2 = spec_b.fields
+    fa1, fa2, _ = get_pair_probe_fields(a1, a2, fields, config)
+    fb1, fb2, _ = get_pair_probe_fields(b1, b2, fields, config)
     max_cache = int(config.covariance_workspace_cache_size)
     if max_cache == 0:
         return _covariance_workspace_from_fields(
-            fields[a1].cov_field,
-            fields[a2].cov_field,
-            fields[b1].cov_field,
-            fields[b2].cov_field,
+            fa1.cov_field,
+            fa2.cov_field,
+            fb1.cov_field,
+            fb2.cov_field,
             config,
         )
     if key not in cache:
         cache[key] = _covariance_workspace_from_fields(
-            fields[a1].cov_field,
-            fields[a2].cov_field,
-            fields[b1].cov_field,
-            fields[b2].cov_field,
+            fa1.cov_field,
+            fa2.cov_field,
+            fb1.cov_field,
+            fb2.cov_field,
             config,
         )
         if max_cache > 0:
@@ -2047,9 +2263,10 @@ def compute_input_cl_for_covariance(
         if use_pseudo_over_fsky:
             cache[key] = compute_pseudo_over_fsky_input_cl_for_covariance(a, b, fields, config)
             return cache[key]
+        fa, fb, _ = get_pair_probe_fields(a, b, fields, config)
         workspace = get_workspace(a, b, fields, bins, workspace_cache, config)
-        pcl = nmt.compute_coupled_cell(fields[a].field, fields[b].field)
-        noise_coupled, noise_decoupled = coupled_noise_for_field_pair(a, b, fields, workspace, config)
+        pcl = nmt.compute_coupled_cell(fa.field, fb.field)
+        noise_coupled, noise_decoupled = coupled_noise_for_field_pair(a, b, fields, workspace, config, pcl=pcl)
         signal_bpw = workspace.decouple_cell(pcl, cl_noise=noise_coupled)
         total_bpw = np.asarray(signal_bpw, dtype=np.float64)
         if noise_decoupled is not None:
@@ -2094,8 +2311,7 @@ def compute_pseudo_over_fsky_input_cl_for_covariance(
 ) -> np.ndarray:
     """Return kSZ-tutorial-style pseudo-Cl/fsky covariance input spectra."""
 
-    fa = fields[a]
-    fb = fields[b]
+    fa, fb, _ = get_pair_probe_fields(a, b, fields, config)
     pcl = nmt.compute_coupled_cell(fa.field, fb.field)
     if a == b and fa.is_catalog_momentum:
         pcl = _add_catalog_auto_zero_lag_noise(pcl, fa)
@@ -2116,12 +2332,56 @@ def compute_catalog_momentum_input_cl_for_covariance(
     return compute_pseudo_over_fsky_input_cl_for_covariance(a, b, fields, config)
 
 
+SHEAR_NOISE_PLATEAU_ELL_FRAC = 0.8
+
+
+def estimate_shear_white_noise_from_pcl(
+    pcl: np.ndarray,
+    config: MeasurementConfig,
+    ell_frac: float = SHEAR_NOISE_PLATEAU_ELL_FRAC,
+    min_modes: int = 50,
+) -> float:
+    """Estimate the white shear shape-noise *coupled* pseudo-Cl from the high-ell plateau.
+
+    For a spin-2 shear auto, the coupled pseudo-Cl is signal + a flat (white) shape-noise
+    bias.  At ell > ``ell_frac * lmax`` the shear signal is negligible compared with the
+    shape noise, so the median of the EE and BB pseudo-Cl over that range is the coupled
+    white-noise bias to subtract directly.
+
+    This replaces using the stored ``shape_noise_pseudo_cl`` attribute: that value is a
+    coupled pseudo-Cl computed for the *un-apodized* ``mask_weight`` (mean(w^2)=0.147),
+    but ``nmt.mask_apodization`` applied to the weighted mask collapses mean(w^2) by ~10^3,
+    so the stored value no longer matches the mask actually used.  The plateau estimate is
+    agnostic to mask normalization and apodization.
+    """
+
+    arr = np.asarray(pcl, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[0] != 4:
+        raise ValueError(
+            f"Shear shape-noise estimate expects a spin-2 pseudo-Cl of shape (4, lmax+1), got {arr.shape}."
+        )
+    lmax = arr.shape[1] - 1
+    ell_lo = int(np.clip(round(float(ell_frac) * lmax), 0, lmax))
+    if lmax - ell_lo < int(min_modes):
+        ell_lo = max(0, lmax - int(min_modes))
+    ee = arr[0, ell_lo:]
+    bb = arr[3, ell_lo:]
+    vals = np.concatenate([ee[np.isfinite(ee)], bb[np.isfinite(bb)]])
+    if vals.size == 0:
+        raise ValueError("No finite high-ell shear pseudo-Cl values available to estimate shape noise.")
+    n_white = float(np.median(vals))
+    if not np.isfinite(n_white) or n_white < 0.0:
+        n_white = 0.0
+    return n_white
+
+
 def coupled_noise_for_field_pair(
     a: str,
     b: str,
     fields: Mapping[str, NmtProbeField],
     workspace: nmt.NmtWorkspace,
     config: MeasurementConfig,
+    pcl: Optional[np.ndarray] = None,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     fa = fields[a].info
     fb = fields[b].info
@@ -2131,14 +2391,22 @@ def coupled_noise_for_field_pair(
     labels = component_labels(fa.spin, fb.spin)
     ncls = len(labels)
     if fa.kind == "des_shear":
-        noise_level = float(fa.metadata["shape_noise_pseudo_cl"])
-        if not np.isfinite(noise_level) or noise_level < 0.0:
-            raise ValueError(f"Invalid DES shear shape-noise level for field {a!r}: {noise_level}")
-        noise = np.zeros((ncls, config.lmax + 1), dtype=np.float64)
-        noise[0, :] = noise_level
+        # The coupled white shape-noise bias is estimated from the high-ell pseudo-Cl
+        # plateau and subtracted DIRECTLY (it is already a coupled pseudo-Cl).  Do NOT
+        # couple_cell it, and do NOT use the stored shape_noise_pseudo_cl attribute: that
+        # attribute is the coupled pseudo-Cl for the un-apodized mask_weight, which does
+        # not match the apodized weighted mask actually used by the NaMaster field.
+        if pcl is None:
+            raise ValueError(
+                f"Shear shape-noise estimation for field {a!r} requires the coupled pseudo-Cl; "
+                "pass pcl=compute_coupled_cell(field, field)."
+            )
+        n_white = estimate_shear_white_noise_from_pcl(pcl, config)
+        full = np.zeros((ncls, config.lmax + 1), dtype=np.float64)
+        full[0, :] = n_white
         if ncls == 4:
-            noise[3, :] = noise_level
-        return noise, workspace.decouple_cell(noise)
+            full[3, :] = n_white
+        return full, workspace.decouple_cell(full)
 
     if fa.kind == "desi_galaxy":
         shot = float(fa.metadata["shot_noise"])
@@ -2156,8 +2424,11 @@ def coupled_noise_for_spectrum(
     fields: Mapping[str, NmtProbeField],
     workspace: nmt.NmtWorkspace,
     config: MeasurementConfig,
+    pcl: Optional[np.ndarray] = None,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    return coupled_noise_for_field_pair(spec.fields[0], spec.fields[1], fields, workspace, config)
+    return coupled_noise_for_field_pair(
+        spec.fields[0], spec.fields[1], fields, workspace, config, pcl=pcl
+    )
 
 
 def _fill_nonfinite_bandpowers(values: np.ndarray) -> np.ndarray:
@@ -2273,7 +2544,8 @@ def covariance_input_noise_policy(
     if a == b and kind_a == "des_shear":
         return (
             "DES shear auto: measured decoupled signal bandpowers plus the same-field "
-            "shape-noise pseudo-Cl template decoupled into EE and BB total bandpowers."
+            "shape-noise template coupled through the NaMaster workspace and then "
+            "decoupled into EE and BB total bandpowers."
             + suffix
         )
     if a == b and kind_a == "desi_galaxy":
@@ -2343,9 +2615,10 @@ def measure_spectrum(
     labels = component_labels(fa.spin, fb.spin)
     if spec.component >= len(labels):
         raise ValueError(f"{spec.name} asks for component {spec.component}, but {labels} are available.")
+    pair_fa, pair_fb, pair_mean_meta = get_pair_probe_fields(a, b, fields, config)
     workspace = get_workspace(a, b, fields, bins, workspace_cache, config)
-    pcl = nmt.compute_coupled_cell(fa.field, fb.field)
-    noise_coupled, noise_decoupled = coupled_noise_for_spectrum(spec, fields, workspace, config)
+    pcl = nmt.compute_coupled_cell(pair_fa.field, pair_fb.field)
+    noise_coupled, noise_decoupled = coupled_noise_for_spectrum(spec, fields, workspace, config, pcl=pcl)
     cl_all = workspace.decouple_cell(pcl, cl_noise=noise_coupled)
     windows = workspace.get_bandpower_windows()
     selected_window = windows[spec.component, :, spec.component, :]
@@ -2365,6 +2638,7 @@ def measure_spectrum(
         "pcl_all_components": np.asarray(pcl, dtype=np.float64),
         "noise_decoupled_all_components": None if noise_decoupled is None else np.asarray(noise_decoupled, dtype=np.float64),
         "bandpower_window_selected": np.asarray(selected_window, dtype=np.float64),
+        "pair_overlap_mean_subtraction": pair_mean_meta,
     }
     return result
 
@@ -2802,6 +3076,8 @@ def save_measurement_product(
             g.attrs["component"] = int(spec["component"])
             g.attrs["component_labels"] = _json_dumps(spec["component_labels"])
             g.attrs["metadata_json"] = _json_dumps(spec["metadata"])
+            if "pair_overlap_mean_subtraction" in spec:
+                g.attrs["pair_overlap_mean_subtraction_json"] = _json_dumps(spec["pair_overlap_mean_subtraction"])
             if str(spec.get("family", "")) == "desi_g_auto":
                 g.attrs["cl_convention"] = "shot_noise_subtracted_signal"
                 g.attrs["shot_noise_plotting_note"] = (
@@ -3315,11 +3591,24 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lmax", type=int, default=None)
     parser.add_argument("--ell-min", type=int, default=None)
     parser.add_argument("--n-bins", type=int, default=None)
-    parser.add_argument("--binning", choices=["sqrt", "linear"], default=None)
+    parser.add_argument("--binning", choices=["sqrt", "linear", "log"], default=None)
     parser.add_argument("--act-downgrade", type=int, default=None)
     parser.add_argument("--catalog-chunk", type=int, default=2_000_000)
     parser.add_argument("--shear-e-to-kappa-sign", type=float, choices=[-1.0, 1.0], default=None)
     parser.add_argument("--des-y3-source-nz-fits", default=None)
+    parser.add_argument("--mask-apodization-deg", type=float, default=None)
+    parser.add_argument("--mask-apodization-type", choices=["C1", "C2", "Smooth"], default=None)
+    parser.add_argument(
+        "--pair-overlap-mean-subtraction",
+        dest="pair_overlap_mean_subtract",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-pair-overlap-mean-subtraction",
+        dest="pair_overlap_mean_subtract",
+        action="store_false",
+    )
     parser.add_argument("--covariance-l-toeplitz", type=int, default=None)
     parser.add_argument("--covariance-l-exact", type=int, default=None)
     parser.add_argument("--covariance-dl-band", type=int, default=None)
@@ -3350,6 +3639,12 @@ def config_from_args(args: argparse.Namespace) -> MeasurementConfig:
         config.shear_e_to_kappa_sign = float(args.shear_e_to_kappa_sign)
     if args.des_y3_source_nz_fits is not None:
         config.des_y3_source_nz_fits = str(args.des_y3_source_nz_fits)
+    if args.mask_apodization_deg is not None:
+        config.mask_apodization_deg = float(args.mask_apodization_deg)
+    if args.mask_apodization_type is not None:
+        config.mask_apodization_type = str(args.mask_apodization_type)
+    if args.pair_overlap_mean_subtract is not None:
+        config.pair_overlap_mean_subtract = bool(args.pair_overlap_mean_subtract)
     if args.covariance_l_toeplitz is not None:
         config.covariance_l_toeplitz = int(args.covariance_l_toeplitz)
     if args.covariance_l_exact is not None:

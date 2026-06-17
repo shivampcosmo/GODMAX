@@ -36,7 +36,7 @@ notebooks/xDESI/survey_measure/submit_multiprobe_cpu.sh --stages fast1024,midres
 The CPU production stages are:
 
 - `fast1024`: `nside=1024`, `lmax=1024`, 10 linear NaMaster bins with edges `[8, 110, 212, 314, 415, 517, 619, 720, 822, 924, 1025]`.
-- `midres2048`: `nside=2048`, `lmax=4096`, 10 linear NaMaster bins with edges `[8, 417, 826, 1235, 1644, 2053, 2462, 2871, 3280, 3689, 4097]`.
+- `midres2048`: `nside=2048`, `ell=128..3000`, 13 hybrid-log NaMaster bins with left edges `[128, 160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280]` and right-exclusive edges `[160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280, 3001]`, with 1 deg C2 mask apodization and pair-overlap mean subtraction.
 
 These stages use native DES shear maps at the requested `nside`, including
 `data/des_y3_shear_maps/des_y3_metacal_shear_maps_nside2048.h5` for
@@ -78,4 +78,4 @@ Inputs and nuisance metadata now saved with the products:
 
 Known staged inputs before final production MCMC:
 
-- More DR9 random realizations, or an explicit smoothing/apodization choice, for a less sparse raw `nside=4096` DESI high-ell mask. The current transferred product uses one random realization and is recorded as provisional in output metadata.
+- More DR9 random realizations remain useful for a less sparse raw `nside=4096` DESI high-ell mask. The current midres2048 default applies a 1 deg C2 apodization, but the transferred product still uses one random realization and is recorded as provisional in output metadata.

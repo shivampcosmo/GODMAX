@@ -4128,6 +4128,33 @@ def full_data_panel_title(name: str, pz_bin: int) -> str:
     return name.replace("_", r"\_")
 
 
+def _plot_ell_max_from_args(args: argparse.Namespace) -> Optional[float]:
+    raw = getattr(args, "plot_ell_max", None)
+    if raw is None:
+        return None
+    ell_max = float(raw)
+    if ell_max <= 0.0:
+        return None
+    if not np.isfinite(ell_max):
+        raise ValueError(f"--plot-ell-max must be finite, got {raw!r}.")
+    return ell_max
+
+
+def _clip_plot_ell(
+    ell: np.ndarray,
+    *arrays: Optional[np.ndarray],
+    ell_max: Optional[float],
+) -> Tuple[np.ndarray, ...]:
+    ell = np.asarray(ell, dtype=np.float64)
+    if ell_max is None:
+        return (ell, *arrays)
+    keep = ell <= float(ell_max)
+    clipped = [ell[keep]]
+    for arr in arrays:
+        clipped.append(None if arr is None else np.asarray(arr)[keep])
+    return tuple(clipped)
+
+
 def plot_full_data(args: argparse.Namespace) -> None:
     import shutil
     import matplotlib as mpl
@@ -4161,6 +4188,7 @@ def plot_full_data(args: argparse.Namespace) -> None:
     nside = int(config.get("pasting", {}).get("nside", 1024))
     cap_area_latex = cap_area_latex_from_config(config)
     names = [name for name in core_spectra_for_pz(pz_bin) if name in measurement.names]
+    plot_ell_max = _plot_ell_max_from_args(args)
 
     def transform(name: str, ell: np.ndarray, cl: np.ndarray, err: Optional[np.ndarray] = None):
         if bool(args.raw_cl):
@@ -4226,12 +4254,20 @@ def plot_full_data(args: argparse.Namespace) -> None:
             stop = int(measurement.stops[idx])
             data_cl = measurement.data_vector[start:stop]
             err = np.sqrt(np.clip(np.diag(measurement.covariance[start:stop, start:stop]), 0.0, np.inf))
-            y_data, y_err, ylabel = transform(name, ell, data_cl, err)
-            y_fid, _, _ = transform(name, ell, fiducial[start:stop])
-            y_best, _, _ = transform(name, ell, bestfit[start:stop])
+            ell_panel, data_cl, err, fid_cl, best_cl = _clip_plot_ell(
+                ell,
+                data_cl,
+                err,
+                fiducial[start:stop],
+                bestfit[start:stop],
+                ell_max=plot_ell_max,
+            )
+            y_data, y_err, ylabel = transform(name, ell_panel, data_cl, err)
+            y_fid, _, _ = transform(name, ell_panel, fid_cl)
+            y_best, _, _ = transform(name, ell_panel, best_cl)
 
             ax.errorbar(
-                ell,
+                ell_panel,
                 y_data,
                 yerr=y_err,
                 fmt="o",
@@ -4247,11 +4283,12 @@ def plot_full_data(args: argparse.Namespace) -> None:
                 zorder=4,
             )
             if bool(args.include_fiducial):
-                ax.plot(ell, y_fid, "-", lw=1.45, color=colors["fiducial"], label=labels["fiducial"], zorder=2)
-            ax.plot(ell, y_best, "-", lw=2.0, color=colors["bestfit"], label=labels["bestfit"], zorder=3)
+                ax.plot(ell_panel, y_fid, "-", lw=1.45, color=colors["fiducial"], label=labels["fiducial"], zorder=2)
+            ax.plot(ell_panel, y_best, "-", lw=2.0, color=colors["bestfit"], label=labels["bestfit"], zorder=3)
             if name in sim:
                 sim_ell = np.asarray(sim[name]["ell"], dtype=np.float64)
-                y_sim, _, _ = transform(name, sim_ell, sim[name]["cl"])
+                sim_ell, sim_cl = _clip_plot_ell(sim_ell, sim[name]["cl"], ell_max=plot_ell_max)
+                y_sim, _, _ = transform(name, sim_ell, sim_cl)
                 ax.plot(
                     sim_ell,
                     y_sim,
@@ -4269,6 +4306,8 @@ def plot_full_data(args: argparse.Namespace) -> None:
                 ax.set_ylim(float(ksz_ylim[0]), float(ksz_ylim[1]))
             elif name.startswith("desi_g_auto") and np.all(y_data > 0.0) and np.all(y_best > 0.0):
                 ax.set_yscale("log")
+            if plot_ell_max is not None:
+                ax.set_xlim(right=float(plot_ell_max))
             ax.grid(True, color=colors["grid"], lw=0.75, alpha=0.72)
             ax.tick_params(direction="out", length=3.2, width=0.8)
             for spine in ("top", "right"):
@@ -4315,6 +4354,7 @@ def plot_full_data(args: argparse.Namespace) -> None:
                 "data_layer": "full-footprint Stage-31 measurement/covariance",
                 "raw_cl": bool(args.raw_cl),
                 "dell": bool(args.dell),
+                "plot_ell_max": plot_ell_max,
             },
             indent=2,
             sort_keys=True,
@@ -4347,6 +4387,7 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
     theory_component = str(args.theory_component)
     if theory_component not in {"full", "resolved"}:
         raise ValueError("--theory-component must be 'full' or 'resolved'.")
+    plot_ell_max = _plot_ell_max_from_args(args)
     extra_sims = []
     for idx, path in enumerate(extra_sim_paths):
         if not path.exists():
@@ -4449,9 +4490,10 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
             stop = int(measurement.stops[idx])
             data_cl = measurement.data_vector[start:stop]
             err = np.sqrt(np.clip(np.diag(measurement.covariance[start:stop, start:stop]), 0.0, np.inf))
-            y_data, y_err, ylabel = transform(name, ell, data_cl, err)
+            ell_panel, data_cl, err = _clip_plot_ell(ell, data_cl, err, ell_max=plot_ell_max)
+            y_data, y_err, ylabel = transform(name, ell_panel, data_cl, err)
             ax.errorbar(
-                ell,
+                ell_panel,
                 y_data,
                 yerr=y_err,
                 fmt="o",
@@ -4469,10 +4511,20 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
 
             th_sum = sum_theory[name]
             th_response = response_theory[name]
-            y_sum, _, _ = transform(name, th_sum["ell"], th_sum[theory_component])
-            y_response, _, _ = transform(name, th_response["ell"], th_response[theory_component])
-            ax.plot(
+            ell_sum, cl_sum = _clip_plot_ell(
                 th_sum["ell"],
+                th_sum[theory_component],
+                ell_max=plot_ell_max,
+            )
+            ell_response, cl_response = _clip_plot_ell(
+                th_response["ell"],
+                th_response[theory_component],
+                ell_max=plot_ell_max,
+            )
+            y_sum, _, _ = transform(name, ell_sum, cl_sum)
+            y_response, _, _ = transform(name, ell_response, cl_response)
+            ax.plot(
+                ell_sum,
                 y_sum,
                 "-",
                 lw=2.0,
@@ -4481,7 +4533,7 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
                 zorder=3,
             )
             ax.plot(
-                th_response["ell"],
+                ell_response,
                 y_response,
                 "--",
                 lw=1.8,
@@ -4494,9 +4546,10 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
                 if name not in spectra:
                     continue
                 s = spectra[name]
-                y_sim, _, _ = transform(name, s["ell"], s["cl"])
+                sim_ell, sim_cl = _clip_plot_ell(s["ell"], s["cl"], ell_max=plot_ell_max)
+                y_sim, _, _ = transform(name, sim_ell, sim_cl)
                 ax.plot(
-                    s["ell"],
+                    sim_ell,
                     y_sim,
                     linestyle="None",
                     marker=series["marker"],
@@ -4513,6 +4566,8 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
                 ax.set_ylim(float(ksz_ylim[0]), float(ksz_ylim[1]))
             elif name.startswith("desi_g_auto") and np.all(y_data > 0.0) and np.all(y_sum > 0.0):
                 ax.set_yscale("log")
+            if plot_ell_max is not None:
+                ax.set_xlim(right=float(plot_ell_max))
             ax.grid(True, color=colors["grid"], lw=0.75, alpha=0.72)
             ax.tick_params(direction="out", length=3.2, width=0.8)
             for spine in ("top", "right"):
@@ -4557,6 +4612,7 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
                 "spectra": names,
                 "raw_cl": bool(args.raw_cl),
                 "theory_component": theory_component,
+                "plot_ell_max": plot_ell_max,
             },
             indent=2,
             sort_keys=True,
@@ -5274,12 +5330,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--raw-cl", action="store_true", help="Plot raw C_ell for every panel instead of the Stage-31 D_ell convention.")
     p.add_argument("--dell", action="store_true", help="Plot D_ell = ell(ell+1) C_ell / 2pi for every panel.")
     p.add_argument(
-        "--ksz-ylim",
-        nargs=2,
+        "--plot-ell-max",
         type=float,
         default=None,
-        metavar=("YMIN", "YMAX"),
-        help="y-axis limits for the kSZ pi x T panel. Defaults to -5e-5 5e-5.",
+        help="Maximum ell to show in the plot. Use <=0 to show all available bandpowers.",
+    )
+    p.add_argument(
+        "--ksz-ylim",
+        type=_parse_ksz_ylim,
+        default=None,
+        metavar="YMIN,YMAX",
+        help="y-axis limits for the kSZ pi x T panel. Accepts YMIN,YMAX or YMIN YMAX. Defaults to -5e-5 5e-5.",
     )
     p.set_defaults(func=plot_full_data)
 
@@ -5305,20 +5366,53 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--theory-component", default="resolved", choices=("full", "resolved"))
     p.add_argument("--raw-cl", action="store_true", help="Plot raw C_ell instead of D_ell.")
     p.add_argument(
-        "--ksz-ylim",
-        nargs=2,
+        "--plot-ell-max",
         type=float,
         default=None,
-        metavar=("YMIN", "YMAX"),
-        help="y-axis limits for the kSZ pi x T panel. Defaults to -5e-5 5e-5.",
+        help="Maximum ell to show in the plot. Use <=0 to show all available bandpowers.",
+    )
+    p.add_argument(
+        "--ksz-ylim",
+        type=_parse_ksz_ylim,
+        default=None,
+        metavar="YMIN,YMAX",
+        help="y-axis limits for the kSZ pi x T panel. Accepts YMIN,YMAX or YMIN YMAX. Defaults to -5e-5 5e-5.",
     )
     p.set_defaults(func=plot_full_data_theory_variants)
     return parser
 
 
+def _parse_ksz_ylim(value: str) -> Tuple[float, float]:
+    parts = [part for part in str(value).replace(",", " ").split() if part]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("--ksz-ylim expects two values: YMIN,YMAX.")
+    return (float(parts[0]), float(parts[1]))
+
+
+def _normalize_ksz_ylim_argv(argv: Optional[Sequence[str]]) -> Sequence[str]:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    out = []
+    i = 0
+    while i < len(raw):
+        token = raw[i]
+        if token == "--ksz-ylim" and i + 2 < len(raw):
+            out.append(f"--ksz-ylim={raw[i + 1]},{raw[i + 2]}")
+            i += 3
+            continue
+        if token.startswith("--ksz-ylim="):
+            value = token.split("=", 1)[1]
+            if "," not in value and i + 1 < len(raw) and not raw[i + 1].startswith("--"):
+                out.append(f"--ksz-ylim={value},{raw[i + 1]}")
+                i += 2
+                continue
+        out.append(token)
+        i += 1
+    return out
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_normalize_ksz_ylim_argv(argv))
     args.func(args)
 
 

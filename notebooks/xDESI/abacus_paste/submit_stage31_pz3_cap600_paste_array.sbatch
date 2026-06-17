@@ -46,6 +46,7 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=true
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 export PASTE_JAX_PLATFORMS="${JAX_BACKEND}"
 export JAX_PLATFORMS="${JAX_BACKEND}"
+export JAX_PLATFORM_NAME="${JAX_BACKEND}"
 
 # Keep CPU libraries from oversubscribing the query_disc multiprocessing pool.
 export OMP_NUM_THREADS=1
@@ -65,6 +66,7 @@ echo "[submit] SLURM_CPUS_ON_NODE=${SLURM_CPUS_ON_NODE:-unset} PIXEL_WORKERS=${P
 echo "[submit] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "[submit] XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION}"
 echo "[submit] JAX_PLATFORMS=${JAX_PLATFORMS}"
+echo "[submit] JAX_PLATFORM_NAME=${JAX_PLATFORM_NAME}"
 echo "[submit] monitor_interval=${MONITOR_INTERVAL}s gpu_sample_interval=${GPU_SAMPLE_INTERVAL}s"
 
 MONITOR_PID=""

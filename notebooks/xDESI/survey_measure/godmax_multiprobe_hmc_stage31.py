@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,9 +52,12 @@ class ParameterSpec:
     name: str
     base_name: str
     target: str
-    prior_min: float
-    prior_max: float
     fiducial: float
+    prior_kind: str = "uniform"
+    prior_min: float = -math.inf
+    prior_max: float = math.inf
+    prior_mean: Optional[float] = None
+    prior_sigma: Optional[float] = None
     array_key: Optional[str] = None
     array_index: Optional[int] = None
 
@@ -122,6 +127,29 @@ def parse_prior_range(value: object, name: str) -> Tuple[float, float]:
     return lo, hi
 
 
+def parse_prior_gaussian(value: object, name: str) -> Tuple[float, float]:
+    if isinstance(value, Mapping):
+        if "mu" in value and "sigma" in value:
+            mu, sigma = float(value["mu"]), float(value["sigma"])
+        elif "mean" in value and "sigma" in value:
+            mu, sigma = float(value["mean"]), float(value["sigma"])
+        else:
+            raise ValueError(f"Gaussian prior for {name!r} must contain mu/sigma.")
+    elif isinstance(value, str):
+        parts = value.split()
+        if len(parts) != 2:
+            raise ValueError(f"Gaussian prior for {name!r} must contain exactly two numbers.")
+        mu, sigma = float(parts[0]), float(parts[1])
+    else:
+        parts = list(value) if isinstance(value, Sequence) else []
+        if len(parts) != 2:
+            raise ValueError(f"Gaussian prior for {name!r} must contain exactly two numbers.")
+        mu, sigma = float(parts[0]), float(parts[1])
+    if not np.isfinite(mu) or not np.isfinite(sigma) or sigma <= 0.0:
+        raise ValueError(f"Invalid Gaussian prior for {name!r}: {value!r}.")
+    return mu, sigma
+
+
 def load_stage31_config(config_path: str | Path = DEFAULT_STAGE31_CONFIG) -> dict:
     root = gmt.repo_root()
     path = gmt.resolve_repo_path(config_path, root)
@@ -173,7 +201,9 @@ def enforce_simple_1h2h_transitions(config: Mapping[str, object]) -> dict:
 
 def build_parameter_specs(config: Mapping[str, object], prior_config: Mapping[str, object]) -> Tuple[ParameterSpec, ...]:
     sim_params = config["params"]["sim_params"]
-    prior_uniform = prior_config["prior_uniform"]
+    other_params = config["params"].setdefault("other_params", {})
+    prior_uniform = prior_config.get("prior_uniform", {})
+    prior_gaussian = prior_config.get("prior_gaussian", {})
     vary = prior_config["vary"]
 
     specs: List[ParameterSpec] = []
@@ -185,11 +215,40 @@ def build_parameter_specs(config: Mapping[str, object], prior_config: Mapping[st
                 name=name,
                 base_name=name,
                 target="sim_scalar",
+                fiducial=fid,
+                prior_kind="uniform",
                 prior_min=lo,
                 prior_max=hi,
-                fiducial=fid,
             )
         )
+
+    for name in vary.get("other_scalars", []):
+        if name in prior_gaussian:
+            mu, sigma = parse_prior_gaussian(prior_gaussian[name], name)
+            specs.append(
+                ParameterSpec(
+                    name=name,
+                    base_name=name,
+                    target="other_scalar",
+                    fiducial=float(other_params.get(name, mu)),
+                    prior_kind="normal",
+                    prior_mean=mu,
+                    prior_sigma=sigma,
+                )
+            )
+        else:
+            lo, hi = parse_prior_range(prior_uniform[name], name)
+            specs.append(
+                ParameterSpec(
+                    name=name,
+                    base_name=name,
+                    target="other_scalar",
+                    fiducial=float(other_params[name]),
+                    prior_kind="uniform",
+                    prior_min=lo,
+                    prior_max=hi,
+                )
+            )
 
     for base_name in vary["hod_arrays"]:
         array_key = f"{base_name}_array"
@@ -202,30 +261,85 @@ def build_parameter_specs(config: Mapping[str, object], prior_config: Mapping[st
                     name=f"{base_name}_pz{idx}",
                     base_name=base_name,
                     target="hod_array",
+                    fiducial=float(values[idx]),
+                    prior_kind="uniform",
                     prior_min=lo,
                     prior_max=hi,
-                    fiducial=float(values[idx]),
                     array_key=array_key,
                     array_index=idx,
                 )
             )
+
+    for bin_index in vary.get("des_source_photoz_bins", []):
+        idx = int(bin_index)
+        name = f"Delta_z_bias_bin{idx}"
+        mu, sigma = parse_prior_gaussian(prior_gaussian[name], name)
+        values = list(other_params.get("Delta_z_bias_array", []))
+        fid = float(values[idx - 1]) if len(values) >= idx else mu
+        specs.append(
+            ParameterSpec(
+                name=name,
+                base_name="Delta_z_bias",
+                target="other_array",
+                fiducial=fid,
+                prior_kind="normal",
+                prior_mean=mu,
+                prior_sigma=sigma,
+                array_key="Delta_z_bias_array",
+                array_index=idx - 1,
+            )
+        )
+
+    for bin_index in vary.get("des_shear_m_bins", []):
+        idx = int(bin_index)
+        name = f"mult_shear_bias_bin{idx}"
+        mu, sigma = parse_prior_gaussian(prior_gaussian[name], name)
+        values = list(other_params.get("mult_shear_bias_array", []))
+        fid = float(values[idx - 1]) if len(values) >= idx else mu
+        specs.append(
+            ParameterSpec(
+                name=name,
+                base_name="mult_shear_bias",
+                target="other_array",
+                fiducial=fid,
+                prior_kind="normal",
+                prior_mean=mu,
+                prior_sigma=sigma,
+                array_key="mult_shear_bias_array",
+                array_index=idx - 1,
+            )
+        )
     return tuple(specs)
 
 
-def validate_parameter_specs(config: Mapping[str, object], specs: Sequence[ParameterSpec]) -> dict:
+def validate_parameter_specs(
+    config: Mapping[str, object],
+    specs: Sequence[ParameterSpec],
+    prior_config: Optional[Mapping[str, object]] = None,
+) -> dict:
     sim_params = config["params"]["sim_params"]
     errors: List[str] = []
     names = [spec.name for spec in specs]
-    if len(names) != PARAMETER_COUNT_STAGE31:
-        errors.append(f"Expected {PARAMETER_COUNT_STAGE31} varied parameters, found {len(names)}.")
+    expected_count = None
+    if prior_config is not None and prior_config.get("expected_parameter_count") is not None:
+        expected_count = int(prior_config["expected_parameter_count"])
+    elif prior_config is not None:
+        expected_count = PARAMETER_COUNT_STAGE31
+    if expected_count is not None and len(names) != expected_count:
+        errors.append(f"Expected {expected_count} varied parameters, found {len(names)}.")
     if len(names) != len(set(names)):
         errors.append("Parameter names are not unique.")
     for spec in specs:
-        if not spec.prior_min <= spec.fiducial <= spec.prior_max:
+        if spec.prior_kind == "uniform" and not spec.prior_min <= spec.fiducial <= spec.prior_max:
             errors.append(
                 f"Fiducial {spec.name}={spec.fiducial:g} is outside "
                 f"[{spec.prior_min:g}, {spec.prior_max:g}]."
             )
+        if spec.prior_kind == "normal":
+            if spec.prior_mean is None or spec.prior_sigma is None or spec.prior_sigma <= 0.0:
+                errors.append(f"Gaussian prior for {spec.name} is missing a finite positive sigma.")
+        if spec.target == "other_array" and (spec.array_key is None or spec.array_index is None):
+            errors.append(f"Malformed other_params array spec for {spec.name}.")
         if spec.target == "hod_array" and spec.array_index == 0:
             errors.append(f"{spec.name} varies HOD array entry 0, which must remain fixed.")
     varied_bases = {spec.base_name for spec in specs}
@@ -318,11 +432,34 @@ def _positive_float_mapping(value: object, label: str) -> Dict[str, float]:
     for key, raw in value.items():
         if raw is None:
             continue
-        ell_max = float(raw)
-        if not np.isfinite(ell_max) or ell_max <= 0.0:
-            raise ValueError(f"{label}[{key!r}] must be a positive finite ell max, got {raw!r}.")
-        out[str(key)] = ell_max
+        ell_value = float(raw)
+        if not np.isfinite(ell_value) or ell_value <= 0.0:
+            raise ValueError(f"{label}[{key!r}] must be a positive finite ell value, got {raw!r}.")
+        out[str(key)] = ell_value
     return out
+
+
+def _ell_min_for_spectrum(
+    name: str,
+    family: str,
+    theory_key: str,
+    cut_config: Mapping[str, object],
+) -> Optional[float]:
+    if not cut_config:
+        return None
+    spectrum_map = _positive_float_mapping(cut_config.get("spectrum_ell_min"), "likelihood_cuts.spectrum_ell_min")
+    for key in (name, theory_key):
+        if key in spectrum_map:
+            return spectrum_map[key]
+    family_map = _positive_float_mapping(cut_config.get("family_ell_min"), "likelihood_cuts.family_ell_min")
+    if family in family_map:
+        return family_map[family]
+    if cut_config.get("default_ell_min") is None:
+        return None
+    ell_min = float(cut_config["default_ell_min"])
+    if not np.isfinite(ell_min) or ell_min <= 0.0:
+        raise ValueError(f"likelihood_cuts.default_ell_min must be positive finite, got {ell_min!r}.")
+    return ell_min
 
 
 def _ell_max_for_spectrum(
@@ -352,12 +489,13 @@ def _selected_band_indices(
     ell: np.ndarray,
     ell_left: Optional[np.ndarray],
     ell_right: Optional[np.ndarray],
+    ell_min: Optional[float],
     ell_max: Optional[float],
     selection: str,
     name: str,
 ) -> np.ndarray:
     n_band = int(np.asarray(ell).size)
-    if ell_max is None:
+    if ell_min is None and ell_max is None:
         return np.arange(n_band, dtype=int)
     selection = selection.lower()
     if selection in {"center", "centre", "effective"}:
@@ -377,9 +515,16 @@ def _selected_band_indices(
         )
     if basis.shape != (n_band,):
         raise ValueError(f"Band selection basis for {name} has shape {basis.shape}, expected {(n_band,)}.")
-    selected = np.flatnonzero(basis <= float(ell_max)).astype(int)
+    keep = np.ones(n_band, dtype=bool)
+    if ell_min is not None:
+        keep &= basis >= float(ell_min)
+    if ell_max is not None:
+        keep &= basis <= float(ell_max)
+    selected = np.flatnonzero(keep).astype(int)
     if selected.size == 0:
-        raise ValueError(f"ell_max={ell_max:g} selects zero bandpowers for {name}.")
+        lo = "-inf" if ell_min is None else f"{ell_min:g}"
+        hi = "inf" if ell_max is None else f"{ell_max:g}"
+        raise ValueError(f"ell range [{lo}, {hi}] selects zero bandpowers for {name}.")
     return selected
 
 
@@ -399,7 +544,10 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
     if not isinstance(cut_config, Mapping):
         raise ValueError(f"likelihood_cuts must be a mapping, got {type(cut_config).__name__}.")
     band_selection = str(cut_config.get("band_selection", "center"))
-    shear_m_bias = config["metadata"]["shear_m_bias_means"]
+    if bool(stage_config.get("sample_des_shear_m_bias_in_model", False)):
+        shear_m_bias = {}
+    else:
+        shear_m_bias = config["metadata"]["shear_m_bias_means"]
     spectrum_specs: List[SpectrumSpec] = []
 
     with h5py.File(measurement_path, "r") as h5:
@@ -447,8 +595,9 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
             source_band_count = source_stop - source_start
             if ell.shape != (source_band_count,):
                 raise ValueError(f"{name} ell has shape {ell.shape}, expected {(source_band_count,)}.")
+            ell_min = _ell_min_for_spectrum(name, family, theory_key, cut_config)
             ell_max = _ell_max_for_spectrum(name, family, theory_key, cut_config)
-            selected = _selected_band_indices(ell, ell_left, ell_right, ell_max, band_selection, name)
+            selected = _selected_band_indices(ell, ell_left, ell_right, ell_min, ell_max, band_selection, name)
             if np.any(selected < 0) or np.any(selected >= source_band_count):
                 raise ValueError(f"Selected band indices for {name} are outside 0..{source_band_count - 1}.")
             scalar = _shear_m_factor(fields, shear_m_bias)
@@ -527,7 +676,7 @@ def prepare_fit_context(config_path: str | Path = DEFAULT_STAGE31_CONFIG) -> Fit
     config = load_materialized_comparison(stage_config)
     validate_halo_mass_floor(stage_config, config)
     specs = build_parameter_specs(config, prior_config)
-    validate_parameter_specs(config, specs)
+    validate_parameter_specs(config, specs, prior_config)
     likelihood = prepare_likelihood_data(config, stage_config)
     return FitContext(
         config=config,
@@ -550,22 +699,33 @@ def pack_sample_from_params_file(context: FitContext, params_path: str | Path) -
     if "sim_params" not in params:
         raise KeyError(f"{params_path} does not contain a sim_params block.")
     sim_params = params["sim_params"]
+    other_params = params.get("other_params", {})
     out: Dict[str, float] = {}
     for spec in context.parameter_specs:
         if spec.target == "sim_scalar":
             if spec.base_name not in sim_params:
                 raise KeyError(f"{params_path} missing sim_params.{spec.base_name}.")
             value = sim_params[spec.base_name]
+        elif spec.target == "other_scalar":
+            if spec.base_name not in other_params:
+                raise KeyError(f"{params_path} missing other_params.{spec.base_name}.")
+            value = other_params[spec.base_name]
         elif spec.target == "hod_array":
             if spec.array_key is None or spec.array_index is None:
                 raise ValueError(f"Malformed HOD spec: {spec}")
             if spec.array_key not in sim_params:
                 raise KeyError(f"{params_path} missing sim_params.{spec.array_key}.")
             value = sim_params[spec.array_key][int(spec.array_index)]
+        elif spec.target == "other_array":
+            if spec.array_key is None or spec.array_index is None:
+                raise ValueError(f"Malformed other_params array spec: {spec}")
+            if spec.array_key not in other_params:
+                raise KeyError(f"{params_path} missing other_params.{spec.array_key}.")
+            value = other_params[spec.array_key][int(spec.array_index)]
         else:
             raise ValueError(f"Unknown parameter target {spec.target!r}.")
         value = float(value)
-        if not spec.prior_min <= value <= spec.prior_max:
+        if spec.prior_kind == "uniform" and not spec.prior_min <= value <= spec.prior_max:
             raise ValueError(
                 f"Initial value for {spec.name}={value:g} is outside "
                 f"[{spec.prior_min:g}, {spec.prior_max:g}]."
@@ -586,17 +746,40 @@ def unpack_parameter_vector(specs: Sequence[ParameterSpec], vector: jnp.ndarray)
 def apply_sample_to_config(config: Mapping[str, object], specs: Sequence[ParameterSpec], sample_values: Mapping[str, object]) -> dict:
     out = copy.deepcopy(dict(config))
     sim_params = out["params"]["sim_params"]
+    other_params = out["params"].setdefault("other_params", {})
+    sampled_shear_m = False
+    sampled_des_y3 = False
     for spec in specs:
         value = sample_values[spec.name]
         if spec.target == "sim_scalar":
             sim_params[spec.base_name] = value
+        elif spec.target == "other_scalar":
+            other_params[spec.base_name] = value
         elif spec.target == "hod_array":
             if spec.array_key is None or spec.array_index is None:
                 raise ValueError(f"Malformed HOD spec: {spec}")
             arr = jnp.asarray(sim_params[spec.array_key], dtype=jnp.float64)
             sim_params[spec.array_key] = arr.at[int(spec.array_index)].set(value)
+        elif spec.target == "other_array":
+            if spec.array_key is None or spec.array_index is None:
+                raise ValueError(f"Malformed other_params array spec: {spec}")
+            arr = jnp.asarray(other_params.get(spec.array_key, []), dtype=jnp.float64)
+            min_size = int(spec.array_index) + 1
+            if arr.size < min_size:
+                arr = jnp.pad(arr, (0, min_size - arr.size))
+            other_params[spec.array_key] = arr.at[int(spec.array_index)].set(value)
+            if spec.array_key == "mult_shear_bias_array":
+                sampled_shear_m = True
+                sampled_des_y3 = True
+            elif spec.array_key == "Delta_z_bias_array":
+                sampled_des_y3 = True
         else:
             raise ValueError(f"Unknown parameter target {spec.target!r}.")
+    if sampled_des_y3:
+        other_params["sampled_des_y3_nuisance"] = True
+    if sampled_shear_m:
+        other_params["sampled_des_shear_m_bias_in_model"] = True
+        out.setdefault("metadata", {})["sampled_des_shear_m_bias_in_model"] = True
     return out
 
 
@@ -880,7 +1063,15 @@ def finite_difference_diagnostics(
 def numpyro_model(context: FitContext) -> None:
     sample_values = {}
     for spec in context.parameter_specs:
-        sample_values[spec.name] = numpyro.sample(spec.name, dist.Uniform(spec.prior_min, spec.prior_max))
+        if spec.prior_kind == "normal":
+            if spec.prior_mean is None or spec.prior_sigma is None:
+                raise ValueError(f"Gaussian prior for {spec.name} is missing mean/sigma.")
+            prior = dist.Normal(float(spec.prior_mean), float(spec.prior_sigma))
+        elif spec.prior_kind == "uniform":
+            prior = dist.Uniform(float(spec.prior_min), float(spec.prior_max))
+        else:
+            raise ValueError(f"Unknown prior kind {spec.prior_kind!r} for {spec.name}.")
+        sample_values[spec.name] = numpyro.sample(spec.name, prior)
     theory_vector = evaluate_sample_theory_vector(context, sample_values)
     chi2 = whitened_chi2(context.likelihood, theory_vector)
     numpyro.deterministic("chi2", chi2)
@@ -888,7 +1079,7 @@ def numpyro_model(context: FitContext) -> None:
 
 
 def static_summary(context: FitContext) -> dict:
-    validation = validate_parameter_specs(context.config, context.parameter_specs)
+    validation = validate_parameter_specs(context.config, context.parameter_specs, context.prior_config)
     halo_mass_floor = validate_halo_mass_floor(context.stage_config, context.config)
     likelihood = context.likelihood
     analysis = context.config["params"].get("analysis", {})
@@ -1044,12 +1235,18 @@ def gpu_sanity_check(matrix_size: int = 4096, *, require_gpu: bool = True) -> di
     }
 
 
-def initialization_diagnostics(context: FitContext, settings: Mapping[str, object]) -> dict:
-    init_values = pack_fiducial_sample(context.parameter_specs)
+def initialization_diagnostics(
+    context: FitContext,
+    settings: Mapping[str, object],
+    init_values: Optional[Mapping[str, float]] = None,
+) -> dict:
+    provided_init = init_values is not None
+    init_values = dict(init_values) if provided_init else pack_fiducial_sample(context.parameter_specs)
     forward_mode = bool(settings.get("forward_mode_differentiation", False))
     out = {
         "seed": int(settings.get("seed", 42)),
         "forward_mode_differentiation": forward_mode,
+        "initial_point": "provided" if provided_init else "fiducial",
         "checks": [],
     }
     for validate_grad in (False, True):
@@ -1090,8 +1287,67 @@ def run_hmc(
     smoke: bool = False,
     overrides: Optional[Mapping[str, object]] = None,
     init_values: Optional[Mapping[str, float]] = None,
+    checkpoint_samples_every: Optional[int] = None,
+    output_dir: Optional[str | Path] = None,
 ) -> MCMC:
     settings = sampler_settings(context.stage_config, smoke=smoke, overrides=overrides)
+    checkpoint_every = int(checkpoint_samples_every or 0)
+    if checkpoint_every > 0 and not smoke:
+        return run_hmc_checkpointed(
+            context,
+            settings=settings,
+            init_values=init_values,
+            checkpoint_samples_every=checkpoint_every,
+            output_dir=output_dir,
+        )
+    return run_hmc_single(context, settings=settings, init_values=init_values)
+
+
+def _build_nuts_kernel(
+    context: FitContext,
+    settings: Mapping[str, object],
+    init_values: Mapping[str, float],
+) -> NUTS:
+    kwargs = {
+        "init_strategy": init_to_value(values=init_values),
+        "dense_mass": bool(settings.get("dense_mass", True)),
+        "max_tree_depth": int(settings.get("max_tree_depth", 8)),
+        "forward_mode_differentiation": bool(settings.get("forward_mode_differentiation", False)),
+    }
+    if settings.get("target_accept_prob") is not None:
+        kwargs["target_accept_prob"] = float(settings["target_accept_prob"])
+    return NUTS(lambda: numpyro_model(context), **kwargs)
+
+
+def _target_accept_label(settings: Mapping[str, object]) -> str:
+    value = settings.get("target_accept_prob")
+    return "numpyro_default" if value is None else f"{float(value)}"
+
+
+def _build_mcmc(
+    kernel: NUTS,
+    settings: Mapping[str, object],
+    *,
+    num_warmup: int,
+    num_samples: int,
+) -> MCMC:
+    return MCMC(
+        kernel,
+        num_warmup=int(num_warmup),
+        num_samples=int(num_samples),
+        num_chains=int(settings["num_chains"]),
+        chain_method=str(settings.get("chain_method", "vectorized")),
+        progress_bar=bool(settings.get("progress_bar", True)),
+        jit_model_args=bool(settings.get("jit_model_args", True)),
+    )
+
+
+def run_hmc_single(
+    context: FitContext,
+    *,
+    settings: Mapping[str, object],
+    init_values: Optional[Mapping[str, float]] = None,
+) -> MCMC:
     num_chains = int(settings["num_chains"])
     numpyro.set_host_device_count(max(1, num_chains))
     init_values = dict(init_values) if init_values is not None else pack_fiducial_sample(context.parameter_specs)
@@ -1100,26 +1356,16 @@ def run_hmc(
         f"num_chains={num_chains} chain_method={settings.get('chain_method', 'vectorized')} "
         f"num_warmup={int(settings['num_warmup'])} num_samples={int(settings['num_samples'])} "
         f"max_tree_depth={int(settings.get('max_tree_depth', 8))} "
-        f"target_accept_prob={float(settings.get('target_accept_prob', 0.85))} "
+        f"target_accept_prob={_target_accept_label(settings)} "
         f"dense_mass={bool(settings.get('dense_mass', True))} "
         f"progress_bar={bool(settings.get('progress_bar', True))}"
     )
-    kernel = NUTS(
-        lambda: numpyro_model(context),
-        init_strategy=init_to_value(values=init_values),
-        dense_mass=bool(settings.get("dense_mass", True)),
-        max_tree_depth=int(settings.get("max_tree_depth", 8)),
-        target_accept_prob=float(settings.get("target_accept_prob", 0.85)),
-        forward_mode_differentiation=bool(settings.get("forward_mode_differentiation", False)),
-    )
-    mcmc = MCMC(
+    kernel = _build_nuts_kernel(context, settings, init_values)
+    mcmc = _build_mcmc(
         kernel,
+        settings,
         num_warmup=int(settings["num_warmup"]),
         num_samples=int(settings["num_samples"]),
-        num_chains=num_chains,
-        chain_method=str(settings.get("chain_method", "vectorized")),
-        progress_bar=bool(settings.get("progress_bar", True)),
-        jit_model_args=bool(settings.get("jit_model_args", True)),
     )
     log_status("[hmc] mcmc.run begin")
     mcmc.run(
@@ -1130,12 +1376,195 @@ def run_hmc(
     return mcmc
 
 
+class _ArrayMCMCResult:
+    def __init__(self, samples: Mapping[str, np.ndarray], extra_fields: Mapping[str, np.ndarray]):
+        self._samples = {str(key): np.asarray(value) for key, value in samples.items()}
+        self._extra_fields = {str(key): np.asarray(value) for key, value in extra_fields.items()}
+
+    def get_samples(self, group_by_chain: bool = False) -> Dict[str, np.ndarray]:
+        if group_by_chain:
+            raise NotImplementedError("Checkpointed array result stores flattened chains only.")
+        return dict(self._samples)
+
+    def get_extra_fields(self, group_by_chain: bool = False) -> Dict[str, np.ndarray]:
+        if group_by_chain:
+            raise NotImplementedError("Checkpointed array result stores flattened chains only.")
+        return dict(self._extra_fields)
+
+
 def _flatten_extra_fields(extra_fields: Mapping[str, object]) -> Dict[str, np.ndarray]:
     out = {}
     for key, value in extra_fields.items():
         arr = np.asarray(value)
         out[key] = arr.reshape((-1,) + arr.shape[2:]) if arr.ndim >= 2 else arr.reshape(-1)
     return out
+
+
+def _concat_chain_dict(chunks: Sequence[Mapping[str, np.ndarray]]) -> Dict[str, np.ndarray]:
+    if not chunks:
+        return {}
+    keys = sorted(chunks[0])
+    return {key: np.concatenate([np.asarray(chunk[key]) for chunk in chunks], axis=0) for key in keys}
+
+
+def _save_npz_atomic(path: Path, **payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    with open(tmp_path, "wb") as handle:
+        np.savez_compressed(handle, **payload)
+    os.replace(tmp_path, path)
+
+
+def _write_checkpoint_outputs(
+    context: FitContext,
+    *,
+    samples: Mapping[str, np.ndarray],
+    extra: Mapping[str, np.ndarray],
+    output_dir: Path,
+    suffix: str,
+    chunk_index: int,
+    draws_per_worker: int,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if "chi2" in samples:
+        chi2 = np.asarray(samples["chi2"], dtype=np.float64)
+        best_idx = int(np.nanargmin(chi2))
+        best_chi2 = float(chi2[best_idx])
+        best_sample = {
+            spec.name: float(np.asarray(samples[spec.name])[best_idx])
+            for spec in context.parameter_specs
+            if spec.name in samples
+        }
+    else:
+        best_idx = -1
+        best_chi2 = float("nan")
+        best_sample = {}
+
+    payload = {f"sample__{key}": np.asarray(value) for key, value in samples.items()}
+    payload.update({f"extra__{key}": np.asarray(value) for key, value in extra.items()})
+    payload["parameter_names"] = np.asarray([spec.name for spec in context.parameter_specs])
+    payload["metadata_json"] = np.asarray(
+        json.dumps(
+            {
+                "checkpoint": True,
+                "chunk_index": int(chunk_index),
+                "draws_per_worker": int(draws_per_worker),
+                "n_flat_samples": int(np.asarray(next(iter(samples.values()))).shape[0]) if samples else 0,
+                "best_sample_index": best_idx,
+                "best_whitened_chi2": best_chi2,
+                "static_summary": static_summary(context),
+                "parameter_specs": parameter_specs_jsonable(context.parameter_specs),
+            }
+        )
+    )
+    checkpoint_path = output_dir / f"chain_{suffix}_checkpoint_{draws_per_worker:06d}.npz"
+    latest_path = output_dir / f"chain_{suffix}_checkpoint_latest.npz"
+    _save_npz_atomic(checkpoint_path, **payload)
+    _save_npz_atomic(latest_path, **payload)
+
+    summary_path = output_dir / f"checkpoint_summary_{suffix}.json"
+    with open(summary_path, "w", encoding="utf-8") as handle:
+        json.dump(
+            gmt.to_jsonable(
+                {
+                    "checkpoint_path": checkpoint_path,
+                    "latest_path": latest_path,
+                    "chunk_index": int(chunk_index),
+                    "draws_per_worker": int(draws_per_worker),
+                    "n_flat_samples": int(np.asarray(next(iter(samples.values()))).shape[0]) if samples else 0,
+                    "best_sample_index": best_idx,
+                    "best_whitened_chi2": best_chi2,
+                    "best_sample": best_sample,
+                }
+            ),
+            handle,
+            indent=2,
+        )
+
+    if best_sample:
+        best_config = apply_sample_to_config(context.config, context.parameter_specs, best_sample)
+        best_params_path = output_dir / f"bestfit_params_{suffix}_checkpoint_latest.yaml"
+        with open(best_params_path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(gmt.to_jsonable(best_config["params"]), handle, sort_keys=False)
+    log_status(
+        f"[hmc] checkpoint chunk={chunk_index} draws_per_worker={draws_per_worker} "
+        f"best_chi2={best_chi2:.8e} path={latest_path}"
+    )
+
+
+def run_hmc_checkpointed(
+    context: FitContext,
+    *,
+    settings: Mapping[str, object],
+    init_values: Optional[Mapping[str, float]],
+    checkpoint_samples_every: int,
+    output_dir: Optional[str | Path] = None,
+) -> _ArrayMCMCResult:
+    total_samples = int(settings["num_samples"])
+    chunk_size = int(checkpoint_samples_every)
+    if chunk_size <= 0:
+        raise ValueError("checkpoint_samples_every must be positive.")
+    num_chains = int(settings["num_chains"])
+    numpyro.set_host_device_count(max(1, num_chains))
+    init_values = dict(init_values) if init_values is not None else pack_fiducial_sample(context.parameter_specs)
+    output = Path(output_dir) if output_dir is not None else Path(context.stage_config["output_dir"])
+    suffix = "stage31"
+    log_status(
+        "[hmc] configuring checkpointed NUTS "
+        f"num_chains={num_chains} chain_method={settings.get('chain_method', 'vectorized')} "
+        f"num_warmup={int(settings['num_warmup'])} num_samples={total_samples} "
+        f"checkpoint_samples_every={chunk_size} "
+        f"max_tree_depth={int(settings.get('max_tree_depth', 8))} "
+        f"target_accept_prob={_target_accept_label(settings)} "
+        f"dense_mass={bool(settings.get('dense_mass', True))} "
+        f"progress_bar={bool(settings.get('progress_bar', True))}"
+    )
+    kernel = _build_nuts_kernel(context, settings, init_values)
+    mcmc = _build_mcmc(
+        kernel,
+        settings,
+        num_warmup=int(settings["num_warmup"]),
+        num_samples=min(chunk_size, total_samples),
+    )
+    rng_keys = jax.random.split(
+        jax.random.PRNGKey(int(settings.get("seed", 42))),
+        int(math.ceil(total_samples / chunk_size)) + 1,
+    )
+    extra_fields = ("potential_energy", "diverging", "accept_prob", "num_steps")
+    log_status("[hmc] checkpointed warmup begin")
+    mcmc.warmup(rng_keys[0], extra_fields=extra_fields)
+    log_status("[hmc] checkpointed warmup done")
+
+    sample_chunks: List[Dict[str, np.ndarray]] = []
+    extra_chunks: List[Dict[str, np.ndarray]] = []
+    draws_done = 0
+    chunk_index = 0
+    while draws_done < total_samples:
+        chunk_index += 1
+        current = min(chunk_size, total_samples - draws_done)
+        mcmc.num_samples = int(current)
+        log_status(
+            f"[hmc] checkpointed sample chunk {chunk_index} begin "
+            f"draws={draws_done}:{draws_done + current}"
+        )
+        mcmc.run(rng_keys[chunk_index], extra_fields=extra_fields)
+        sample_chunks.append({key: np.asarray(value) for key, value in mcmc.get_samples(group_by_chain=False).items()})
+        extra_chunks.append(_flatten_extra_fields(mcmc.get_extra_fields(group_by_chain=False)))
+        draws_done += current
+        samples = _concat_chain_dict(sample_chunks)
+        extra = _concat_chain_dict(extra_chunks)
+        _write_checkpoint_outputs(
+            context,
+            samples=samples,
+            extra=extra,
+            output_dir=output,
+            suffix=suffix,
+            chunk_index=chunk_index,
+            draws_per_worker=draws_done,
+        )
+        mcmc._warmup_state = mcmc._last_state
+    log_status("[hmc] checkpointed sampling done")
+    return _ArrayMCMCResult(_concat_chain_dict(sample_chunks), _concat_chain_dict(extra_chunks))
 
 
 def best_sample_from_mcmc(mcmc: MCMC, specs: Sequence[ParameterSpec]) -> Tuple[Dict[str, float], int, float]:
@@ -1151,6 +1580,17 @@ def best_sample_from_mcmc(mcmc: MCMC, specs: Sequence[ParameterSpec]) -> Tuple[D
 def measurement_from_likelihood(context: FitContext, likelihood: LikelihoodData) -> gmt.MeasurementData:
     source = gmt.load_measurement_data(context.config["paths"]["measurement_h5"])
     names = list(likelihood.names)
+    ell_left = None
+    ell_right = None
+    if source.ell_left is not None and source.ell_right is not None:
+        left_chunks = []
+        right_chunks = []
+        for spec in likelihood.spectrum_specs:
+            selected = np.asarray(spec.selected_band_indices, dtype=int)
+            left_chunks.append(np.asarray(source.ell_left, dtype=np.float64)[selected])
+            right_chunks.append(np.asarray(source.ell_right, dtype=np.float64)[selected])
+        ell_left = np.concatenate(left_chunks) if left_chunks else None
+        ell_right = np.concatenate(right_chunks) if right_chunks else None
     return gmt.MeasurementData(
         path=source.path,
         names=names,
@@ -1162,6 +1602,8 @@ def measurement_from_likelihood(context: FitContext, likelihood: LikelihoodData)
         families={name: family for name, family in zip(names, likelihood.families)},
         labels={name: label for name, label in zip(names, likelihood.labels)},
         theory_keys={name: theory_key for name, theory_key in zip(names, likelihood.theory_keys)},
+        ell_left=ell_left,
+        ell_right=ell_right,
     )
 
 
@@ -1175,14 +1617,21 @@ def full_likelihood_for_plots(context: FitContext) -> LikelihoodData:
     return prepare_likelihood_data(context.config, stage_config)
 
 
+def likelihood_active_band_indices(context: FitContext) -> Dict[str, Tuple[int, ...]]:
+    return {spec.name: tuple(int(i) for i in spec.selected_band_indices) for spec in context.likelihood.spectrum_specs}
+
+
 def parameter_specs_jsonable(specs: Sequence[ParameterSpec]) -> List[dict]:
     return [
         {
             "name": spec.name,
             "base_name": spec.base_name,
             "target": spec.target,
-            "prior_min": spec.prior_min,
-            "prior_max": spec.prior_max,
+            "prior_kind": spec.prior_kind,
+            "prior_min": spec.prior_min if np.isfinite(spec.prior_min) else None,
+            "prior_max": spec.prior_max if np.isfinite(spec.prior_max) else None,
+            "prior_mean": spec.prior_mean,
+            "prior_sigma": spec.prior_sigma,
             "fiducial": spec.fiducial,
             "array_key": spec.array_key,
             "array_index": spec.array_index,
@@ -1205,6 +1654,8 @@ def save_fit_outputs(
     samples = {key: np.asarray(value) for key, value in mcmc.get_samples(group_by_chain=False).items()}
     extra = _flatten_extra_fields(mcmc.get_extra_fields())
     best_sample, best_idx, best_chi2 = best_sample_from_mcmc(mcmc, context.parameter_specs)
+    chi2_dof = int(context.likelihood.rank)
+    reduced_chi2 = float(best_chi2) / max(float(chi2_dof), 1.0)
     models = build_models_from_sample(context, best_sample)
     theory_cls = extract_theory_cls_jax_from_models(models)
     best_theory = np.asarray(theory_data_vector_jax(context.likelihood, theory_cls))
@@ -1270,6 +1721,8 @@ def save_fit_outputs(
         output,
         pdf_path=dell_pdf_path,
         filename_prefix=f"posterior_predictive_dell_{suffix}",
+        total_reduced_chi2=reduced_chi2,
+        chi2_dof=chi2_dof,
     )
     full_dell_pdf_path = output / f"posterior_predictive_full_dell_comparison_{suffix}.pdf"
     full_dell_plot_paths = gmt.plot_family_dell_comparisons(
@@ -1278,6 +1731,9 @@ def save_fit_outputs(
         output,
         pdf_path=full_dell_pdf_path,
         filename_prefix=f"posterior_predictive_full_dell_{suffix}",
+        active_band_indices=likelihood_active_band_indices(context),
+        total_reduced_chi2=reduced_chi2,
+        chi2_dof=chi2_dof,
     )
 
     summary_path = output / f"fit_summary_{suffix}.json"
@@ -1338,6 +1794,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chain-method", choices=["parallel", "sequential", "vectorized"], default=None)
     parser.add_argument("--max-tree-depth", type=int, default=None)
     parser.add_argument("--target-accept-prob", type=float, default=None)
+    parser.add_argument(
+        "--checkpoint-samples-every",
+        type=int,
+        default=None,
+        help="If positive, run post-warmup sampling in chunks and save cumulative worker checkpoints every N samples.",
+    )
     parser.add_argument("--init-params", default=None, help="Saved params YAML to use as the NUTS initial point.")
     parser.add_argument("--platform", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--gpu-sanity-check", action="store_true", help="Run one synchronized JAX matmul before setup.")
@@ -1375,17 +1837,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         comparison = compare_fiducial_windowing(context)
         printable = {key: value for key, value in comparison.items() if key not in {"jax_vector", "wrapper_vector"}}
         print(json.dumps(gmt.to_jsonable(printable), indent=2), flush=True)
-    if args.debug_init:
-        log_status("[hmc] initialization diagnostics begin")
-        settings = sampler_settings(context.stage_config, smoke=args.smoke, overrides=overrides)
-        print(json.dumps(gmt.to_jsonable({"initialization_diagnostics": initialization_diagnostics(context, settings)}), indent=2), flush=True)
-    if args.validate_only:
-        log_status(f"[hmc] validated stage-31 setup in {time.time() - t0:.1f} s")
-        return 0
     init_values = pack_sample_from_params_file(context, args.init_params) if args.init_params else None
     if args.init_params:
         print(json.dumps(gmt.to_jsonable({"init_params": args.init_params}), indent=2), flush=True)
-    mcmc = run_hmc(context, smoke=args.smoke, overrides=overrides, init_values=init_values)
+    if args.debug_init:
+        log_status("[hmc] initialization diagnostics begin")
+        settings = sampler_settings(context.stage_config, smoke=args.smoke, overrides=overrides)
+        print(
+            json.dumps(
+                gmt.to_jsonable({"initialization_diagnostics": initialization_diagnostics(context, settings, init_values=init_values)}),
+                indent=2,
+            ),
+            flush=True,
+        )
+    if args.validate_only:
+        log_status(f"[hmc] validated stage-31 setup in {time.time() - t0:.1f} s")
+        return 0
+    mcmc = run_hmc(
+        context,
+        smoke=args.smoke,
+        overrides=overrides,
+        init_values=init_values,
+        checkpoint_samples_every=args.checkpoint_samples_every,
+        output_dir=args.output_dir,
+    )
     saved = save_fit_outputs(context, mcmc, smoke=args.smoke, output_dir=args.output_dir)
     print(json.dumps(gmt.to_jsonable(saved), indent=2), flush=True)
     log_status(f"[hmc] completed stage-31 HMC run in {time.time() - t0:.1f} s")

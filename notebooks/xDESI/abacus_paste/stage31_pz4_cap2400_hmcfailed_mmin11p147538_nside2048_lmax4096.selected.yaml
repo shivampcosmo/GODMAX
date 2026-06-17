@@ -1,0 +1,146 @@
+project:
+  name: stage31_allpz_cap2400_hmcfailed_mmin11p147538
+  xdesi_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI
+  output_root: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/abacus_backlight/stage31_allpz_cap2400_hmcfailed_mmin11p147538
+  catalog_subdir: halos
+  map_subdir: maps
+  measurement_subdir: measurements
+  theory_subdir: theory
+  plot_subdir: plots
+abacus:
+  input_root: /mnt/ceph/users/backlight/AbacusBacklight_base_c9999_ph9999/lightcone_halos
+  sim_name: AbacusBacklight_base_c9999_ph9999
+  read_only: true
+  redshift_dir_padding: 0.08
+catalogs:
+  pz4cap2400_hmcfailed_z0p713_1p19_logMgt11p147538:
+    output_name: abacus_c9999_ph9999_pz4cap2400_hmcfailed_z0p713_1p19_logMgt11p147538_halos.h5
+    z_min: 0.7131674616590881
+    z_max: 1.1898555882069786
+    log10_m_min_hmsun: 11.147538
+    metadata:
+      desi_pz_bin: 4
+      redshift_kind: spectroscopic_calibrated_true_redshift
+      selection_note: pz4 is a photometric tracer label; halos are selected by true
+        redshift only. Continuous fields are disabled so this config only supplies
+        the tomographic galaxy catalog.
+      pz4_true_nz_retained_fraction: 0.9900608345851288
+      pz4_true_nz_target_surface_density_per_deg2: 341.297435565
+      pz4_true_nz_central99_z_min: 0.7131674616590881
+      pz4_true_nz_central99_z_max: 1.1898555882069786
+      analytic_hod_log10_m_floor: 11.147538
+      resolved_catalog_log10_m_min_hmsun: 11.147538
+      mass_selection_note: Direct Abacus Backlight cap catalog for all-pz cap2400
+        hmcfailed diagnostic.
+      diagnostic_note: Non-converged HMC bestfit diagnostic cap2400 paste; do not
+        use as final converged product.
+sky_patch:
+  area_deg2: 2400.0
+  edge_buffer_deg: 1.0
+  selection_fields:
+  - g4
+  - pi4
+  - y
+  - T
+  - kappa
+  - s1
+  - s2
+  - s3
+  - s4
+  center_ra_deg: 37.96875
+  center_dec_deg: -34.953865257188454
+  radius_deg: 27.91480167872345
+  selected_common_area_deg2: 1637.9807229763405
+  selected_common_fraction: 0.6824816159709256
+  selected_actual_cap_area_deg2: 2400.036403392469
+godmax:
+  comparison_config: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/xDESI/params_multiprobe_midres2048_true_nz_theory_abacus_cosmo_simple1h2h.yaml
+  bestfit_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_midres2048_true_nz_hmc_stage31_multigpu/stage31_hmc_abacus_cosmo_midres2048_simple1h2h_lmax4096_gk1024_mmin11p147538_1600x16_v1/combined/bestfit_params_stage31_multigpu_abacus_cosmo_midres2048_simple1h2h_lmax4096_gk1024_mmin11p147538_1600x16_v1.yaml
+  measurement_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/multiprobe_namaster_true_nz/midres2048/xdesi_multiprobe_cls_cov_nside2048_lmax4096_nbin10_linear.h5
+  map_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/multiprobe_namaster_true_nz/midres2048/xdesi_multiprobe_maps_nside2048_lmax4096_nbin10_linear.h5
+  analytic_hod_log10_m_floor: 11.147538
+  resolved_catalog_log10_m_min_hmsun: 11.147538
+  override_cosmology_from_catalog: true
+pasting:
+  run_name: stage31_pz4_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096
+  catalog_key: pz4cap2400_hmcfailed_z0p713_1p19_logMgt11p147538
+  measurement_tag_base: pz4_cap2400_hmcfailed_mmin11p147538
+  pz_bin: 4
+  nside: 2048
+  lmax: 4096
+  ell_min: 8
+  n_bins: 10
+  binning: linear
+  random_seed: 42
+  verbose: true
+  pixel_log_batches: false
+  pixel_workers: 16
+  pixel_start_method: fork
+  persistent_pixel_pool: true
+  pixel_pool_warmup: true
+  split_strategy: block_striped
+  split_block_halos: 250000
+  jax:
+    preallocate: true
+    memory_fraction: 0.95
+    platforms: cuda
+    compilation_cache_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/abacus_backlight/stage31_allpz_cap2400_hmcfailed_mmin11p147538/jax_cache/pz4_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096
+  max_paint_R200c_factor: 5.0
+  smooth_profiles: true
+  profile_timing: true
+  use_fused_profile_maps: true
+  use_multi_kappa_maps: false
+  return_sparse_maps: true
+  store_projected_matter_maps: false
+  get_baryonifiedmap: false
+  galaxy_population_chunk_size: 20000
+  galaxy_max_gals_round_to: 16
+  galaxy_population_backend: padded_precomputed
+  galaxy_compact_max_satellite_groups: 8
+  galaxy_population_group_by_max_gals: false
+  pixel_batch_size: 1000000
+  pixel_gc_collect_every_n_batches: 0
+  pixel_pool_chunksize: 32
+  pixel_prefetch_next_chunk: false
+  single_pixel_angle_factor: 0.5
+  jax_clear_caches_every_n_chunks: 1
+  compute_covariance: false
+  include_diagnostic_gtau: true
+  sim_measurement_mask_mode: cap
+  ksz_velocity_mode: photoz_reconstruction_emulation
+  ksz_reconstruction_noise_seed: 12345
+  source_bins_for_galaxy_cross:
+  - 1
+  - 2
+  - 3
+  - 4
+  chunk_halos_by_nside:
+    128: 1000000
+    512: 1000000
+    1024: 1000000
+    2048: 500000
+  num_splits_by_nside:
+    128: 1
+    512: 4
+    1024: 4
+    2048: 4
+  get_galmap: true
+  get_ymap: false
+  get_kszmap: false
+  get_taumap: false
+  get_kappa_wl: false
+  get_kappa_cmb: false
+validation:
+  smoke_nside: 128
+  production_nside: 2048
+  cap_candidate_nside: 64
+  cap_refine_top_n: 256
+  target_pz3_surface_density_per_deg2: 334.86400893955306
+  pz3_true_nz_retained_fraction: 0.9810606924203307
+  resolved_catalog_log10_m_min_hmsun: 11.147538
+  target_pz4_surface_density_per_deg2: 341.297435565
+  pz4_true_nz_retained_fraction: 0.9900608345851288
+diagnostics:
+  source_hmc_convergence: 'failed: passes_basic_gate=false for stage31_multigpu_abacus_cosmo_midres2048_simple1h2h_lmax4096_gk1024_mmin11p147538_1600x16_v1'
+  allpz_config_note: Generated for all-pz cap2400 hmcfailed diagnostic.  pz3 galaxy
+    map is reused from the existing stage31_pz3_cap2400_hmcfailed_mmin11p147538 product.

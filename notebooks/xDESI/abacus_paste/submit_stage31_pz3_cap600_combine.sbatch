@@ -40,9 +40,11 @@ BESTFIT_VECTOR=${BESTFIT_VECTOR:-${REPO}/notebooks/xDESI/survey_measure/outputs/
 FIDUCIAL_VECTOR=${FIDUCIAL_VECTOR:-${BESTFIT_VECTOR}}
 KSZ_YLIM_MIN=${KSZ_YLIM_MIN:--5e-5}
 KSZ_YLIM_MAX=${KSZ_YLIM_MAX:-5e-5}
+PLOT_ELL_MAX=${PLOT_ELL_MAX:-2800}
 
 export PYTHONUNBUFFERED=1
 export MPLCONFIGDIR=${MPLCONFIGDIR:-/tmp/matplotlib_${USER}_${SLURM_JOB_ID}}
+unset SLURM_JOB_GRES SLURM_STEP_GRES SLURM_GPUS SLURM_STEP_GPUS SLURM_JOB_GPUS SLURM_STEP_GPUS CUDA_VISIBLE_DEVICES
 mkdir -p "${MPLCONFIGDIR}" "${SCRIPT_DIR}/slurm_logs"
 cd "${REPO}"
 
@@ -55,6 +57,7 @@ echo "[combine] full_area_plot=${FULL_AREA_PLOT}"
 echo "[combine] bestfit_vector=${BESTFIT_VECTOR}"
 echo "[combine] fiducial_vector=${FIDUCIAL_VECTOR}"
 echo "[combine] ksz_ylim=${KSZ_YLIM_MIN} ${KSZ_YLIM_MAX}"
+echo "[combine] plot_ell_max=${PLOT_ELL_MAX}"
 echo "[combine] do_full_data_plot=${DO_FULL_DATA_PLOT}"
 echo "[combine] monitor_interval=${MONITOR_INTERVAL}s gpu_sample_interval=${GPU_SAMPLE_INTERVAL}s"
 
@@ -99,7 +102,8 @@ if [ "${DO_FULL_DATA_PLOT}" -gt 0 ]; then
     --bestfit-vector "${BESTFIT_VECTOR}" \
     --output "${FULL_AREA_PLOT}" \
     --dell \
-    --ksz-ylim "${KSZ_YLIM_MIN}" "${KSZ_YLIM_MAX}" \
+    --plot-ell-max "${PLOT_ELL_MAX}" \
+    --ksz-ylim="${KSZ_YLIM_MIN}" "${KSZ_YLIM_MAX}" \
     --no-include-fiducial
 else
   echo "[combine] skipping plot-full-data because DO_FULL_DATA_PLOT=${DO_FULL_DATA_PLOT}"

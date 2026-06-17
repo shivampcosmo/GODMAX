@@ -33,17 +33,19 @@ def _config_from_map_metadata(config: MeasurementConfig, map_metadata: dict) -> 
     for key in (
         "stage",
         "nside",
-        "lmax",
-        "ell_min",
-        "n_bins",
-        "binning",
         "act_downgrade",
         "shear_e_to_kappa_sign",
         "shear_mask_dataset",
         "shear_noise_attr",
+        "mask_apodization_deg",
+        "mask_apodization_type",
     ):
         if key in map_config:
             setattr(config, key, map_config[key])
+    if "lmax" in map_config:
+        map_lmax = int(map_config["lmax"])
+        if int(config.lmax) > map_lmax:
+            raise ValueError(f"Requested lmax={config.lmax} exceeds cached-map lmax={map_lmax}.")
     config.validate()
     return config
 

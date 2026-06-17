@@ -1,0 +1,13 @@
+{
+  "base_config": "/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/stage31_pz3_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096.selected.yaml",
+  "configs": {
+    "allz": "/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/stage31_allz_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096.selected.yaml",
+    "pz1": "/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/stage31_pz1_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096.selected.yaml",
+    "pz2": "/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/stage31_pz2_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096.selected.yaml",
+    "pz4": "/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/stage31_pz4_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096.selected.yaml"
+  },
+  "output_root": "/mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/abacus_backlight/stage31_allpz_cap2400_hmcfailed_mmin11p147538",
+  "reused_pz3_config": "/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/stage31_pz3_cap2400_hmcfailed_mmin11p147538_nside2048_lmax4096.selected.yaml",
+  "reused_pz3_note": "pz3 galaxy map is reused from the existing hmcfailed cap2400 product.",
+  "schema": "stage31_allpz_cap2400_hmcfailed_config_manifest_v1"
+}

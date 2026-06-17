@@ -31,6 +31,7 @@ NSIDE=${NSIDE:-2048}
 SIM_MATCHED_TRANSFERS=${SIM_MATCHED_TRANSFERS:-1}
 KSZ_YLIM_MIN=${KSZ_YLIM_MIN:--5e-5}
 KSZ_YLIM_MAX=${KSZ_YLIM_MAX:-5e-5}
+PLOT_ELL_MAX=${PLOT_ELL_MAX:-2800}
 THEORY_TRANSFER_ARGS=()
 if [ "${SIM_MATCHED_TRANSFERS}" -gt 0 ]; then
   THEORY_TRANSFER_ARGS+=(--sim-matched-transfers)
@@ -46,6 +47,7 @@ export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-1}
 export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
+unset SLURM_JOB_GRES SLURM_STEP_GRES SLURM_GPUS SLURM_STEP_GPUS SLURM_JOB_GPUS SLURM_STEP_GPUS CUDA_VISIBLE_DEVICES
 
 mkdir -p "${MPLCONFIGDIR}" "${SCRIPT_DIR}/slurm_logs" "$(dirname "${SIM_MEAS}")" "$(dirname "${SUM_THEORY}")" "$(dirname "${VARIANT_PLOT}")"
 cd "${REPO}"
@@ -59,6 +61,7 @@ echo "[plus-direct] response_theory=${RESPONSE_THEORY}"
 echo "[plus-direct] variant_plot=${VARIANT_PLOT}"
 echo "[plus-direct] sim_matched_transfers=${SIM_MATCHED_TRANSFERS}"
 echo "[plus-direct] ksz_ylim=${KSZ_YLIM_MIN} ${KSZ_YLIM_MAX}"
+echo "[plus-direct] plot_ell_max=${PLOT_ELL_MAX}"
 
 srun --ntasks=1 --nodes=1 --cpus-per-task=8 --cpu-bind=none "${PYTHON}" "${DRIVER}" measure-sim \
   --config "${CONFIG}" \
@@ -90,6 +93,7 @@ srun --ntasks=1 --nodes=1 --cpus-per-task=8 --cpu-bind=none "${PYTHON}" "${DRIVE
   --response-theory "${RESPONSE_THEORY}" \
   --sim "${SIM_MEAS}" \
   --output "${VARIANT_PLOT}" \
-  --ksz-ylim "${KSZ_YLIM_MIN}" "${KSZ_YLIM_MAX}"
+  --plot-ell-max "${PLOT_ELL_MAX}" \
+  --ksz-ylim="${KSZ_YLIM_MIN}" "${KSZ_YLIM_MAX}"
 
 echo "[plus-direct] done"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -14,6 +15,10 @@ import yaml
 import godmax_multiprobe_hmc_stage31 as hmc31
 import godmax_multiprobe_theory_utils as gmt
 
+DEFAULT_PLOT_ELL_MAX = 2800.0
+DEFAULT_KSZ_YLIM = (-5.0e-5, 5.0e-5)
+DEFAULT_KSZ_YLIM_ARG = f"{DEFAULT_KSZ_YLIM[0]},{DEFAULT_KSZ_YLIM[1]}"
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -22,7 +27,58 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pattern", default="worker_*/chain_stage31.npz")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--suffix", default="stage31_multigpu")
+    parser.add_argument(
+        "--plot-ell-max",
+        type=float,
+        default=DEFAULT_PLOT_ELL_MAX,
+        help="Maximum ell shown in posterior predictive D_ell plots. Use <=0 to show all available bandpowers.",
+    )
+    parser.add_argument(
+        "--plot-ksz-ylim",
+        default=DEFAULT_KSZ_YLIM_ARG,
+        metavar="YMIN,YMAX",
+        help="Y-axis limits for the kSZ pi x T D_ell panel.",
+    )
+    parser.add_argument(
+        "--plot-ksz-scale",
+        type=float,
+        default=1.0,
+        help="Multiplicative display scale for the kSZ pi x T D_ell panel.",
+    )
     return parser
+
+
+def normalize_plot_ksz_ylim_args(argv: Optional[Sequence[str]]) -> list[str]:
+    """Allow negative scientific-notation y-limits after --plot-ksz-ylim."""
+
+    raw = list(sys.argv[1:] if argv is None else argv)
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        if raw[i] == "--plot-ksz-ylim" and i + 2 < len(raw):
+            out.append(f"--plot-ksz-ylim={raw[i + 1]},{raw[i + 2]}")
+            i += 3
+            continue
+        if raw[i].startswith("--plot-ksz-ylim=") and i + 1 < len(raw):
+            option, value = raw[i].split("=", 1)
+            if "," not in value:
+                out.append(f"{option}={value},{raw[i + 1]}")
+                i += 2
+                continue
+        out.append(raw[i])
+        i += 1
+    return out
+
+
+def parse_plot_ksz_ylim(value: object) -> Optional[tuple[float, float]]:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (float(value[0]), float(value[1]))
+    parts = str(value).replace(",", " ").split()
+    if len(parts) != 2:
+        raise ValueError(f"--plot-ksz-ylim must contain two values, got {value!r}.")
+    return (float(parts[0]), float(parts[1]))
 
 
 def _load_chain(path: Path) -> dict:
@@ -121,6 +177,10 @@ def combine_worker_chains(
     chain_paths: Sequence[Path],
     output_dir: Path,
     suffix: str,
+    *,
+    plot_ell_max: Optional[float] = DEFAULT_PLOT_ELL_MAX,
+    plot_ksz_ylim: Optional[tuple[float, float]] = DEFAULT_KSZ_YLIM,
+    plot_ksz_scale: float = 1.0,
 ) -> dict:
     if not chain_paths:
         raise FileNotFoundError("No worker chain files found.")
@@ -149,6 +209,8 @@ def combine_worker_chains(
         spec.name: float(np.asarray(combined[f"sample__{spec.name}"])[best_idx])
         for spec in context.parameter_specs
     }
+    chi2_dof = int(context.likelihood.rank)
+    reduced_chi2 = float(best_chi2) / max(float(chi2_dof), 1.0)
     convergence = convergence_diagnostics(payloads, [spec.name for spec in context.parameter_specs])
 
     chain_path = output_dir / f"chain_{suffix}.npz"
@@ -215,6 +277,11 @@ def combine_worker_chains(
         output_dir,
         pdf_path=dell_pdf_path,
         filename_prefix=f"posterior_predictive_dell_{suffix}",
+        ell_max=plot_ell_max,
+        ksz_ylim=plot_ksz_ylim,
+        ksz_scale=plot_ksz_scale,
+        total_reduced_chi2=reduced_chi2,
+        chi2_dof=chi2_dof,
     )
     full_dell_pdf_path = output_dir / f"posterior_predictive_full_dell_comparison_{suffix}.pdf"
     full_dell_plot_paths = gmt.plot_family_dell_comparisons(
@@ -223,6 +290,12 @@ def combine_worker_chains(
         output_dir,
         pdf_path=full_dell_pdf_path,
         filename_prefix=f"posterior_predictive_full_dell_{suffix}",
+        ell_max=plot_ell_max,
+        ksz_ylim=plot_ksz_ylim,
+        ksz_scale=plot_ksz_scale,
+        active_band_indices=hmc31.likelihood_active_band_indices(context),
+        total_reduced_chi2=reduced_chi2,
+        chi2_dof=chi2_dof,
     )
 
     summary_path = output_dir / f"fit_summary_{suffix}.json"
@@ -244,6 +317,13 @@ def combine_worker_chains(
         "convergence_diagnostics": convergence,
         "pseudo_inverse_stats": stats,
         "worker_chain_paths": [str(path) for path in chain_paths],
+        "n_samples_total": int(chi2.size),
+        "n_workers": len(chain_paths),
+        "plot_settings": {
+            "dell_ell_max": plot_ell_max,
+            "ksz_ylim": plot_ksz_ylim,
+            "ksz_scale": float(plot_ksz_scale),
+        },
         "static_summary": hmc31.static_summary(context),
         "parameter_specs": hmc31.parameter_specs_jsonable(context.parameter_specs),
         "priors": context.prior_config,
@@ -268,15 +348,30 @@ def combine_worker_chains(
         "convergence_diagnostics": convergence,
         "n_samples_total": int(chi2.size),
         "n_workers": len(chain_paths),
+        "plot_settings": {
+            "dell_ell_max": plot_ell_max,
+            "ksz_ylim": plot_ksz_ylim,
+            "ksz_scale": float(plot_ksz_scale),
+        },
     }
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    args = build_arg_parser().parse_args(normalize_plot_ksz_ylim_args(argv))
+    plot_ell_max = None if args.plot_ell_max is not None and args.plot_ell_max <= 0.0 else args.plot_ell_max
+    plot_ksz_ylim = parse_plot_ksz_ylim(args.plot_ksz_ylim)
     context = hmc31.prepare_fit_context(args.config)
     worker_dir = Path(args.worker_dir)
     chain_paths = sorted(worker_dir.glob(args.pattern))
-    result = combine_worker_chains(context, chain_paths, Path(args.output_dir), args.suffix)
+    result = combine_worker_chains(
+        context,
+        chain_paths,
+        Path(args.output_dir),
+        args.suffix,
+        plot_ell_max=plot_ell_max,
+        plot_ksz_ylim=plot_ksz_ylim,
+        plot_ksz_scale=float(args.plot_ksz_scale),
+    )
     print(json.dumps(gmt.to_jsonable(result), indent=2))
     return 0
 

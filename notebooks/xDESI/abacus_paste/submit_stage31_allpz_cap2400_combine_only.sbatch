@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=pz3_dirfield_done
+#SBATCH --job-name=allpz_cap2400_combine
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=06:00:00
+#SBATCH --time=04:00:00
 #SBATCH --mem=128G
 #SBATCH --output=/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/slurm_logs/%x_%j.out
 #SBATCH --error=/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/abacus_paste/slurm_logs/%x_%j.err
@@ -20,35 +20,34 @@ if [[ -f "${CONDA_ENV_HOOK}" ]]; then
 fi
 PYTHON=${PYTHON:-${CONDA_ENV_PREFIX}/bin/python}
 DRIVER=${SCRIPT_DIR}/stage31_pz1_backlight_validation.py
-CONFIG=${CONFIG:-${SCRIPT_DIR}/stage31_pz3_cap600.selected.yaml}
-
-NSIDE=${NSIDE:-1024}
+CONFIG=${CONFIG:?CONFIG is required}
+NSIDE=${NSIDE:-2048}
 NUM_SPLITS=${NUM_SPLITS:-4}
-BATCH_PARENT_PIXELS=${BATCH_PARENT_PIXELS:-262144}
+DO_PLOT_MAPS=${DO_PLOT_MAPS:-0}
 
 export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
-export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
-export MKL_NUM_THREADS=${MKL_NUM_THREADS:-1}
 export MPLCONFIGDIR=${MPLCONFIGDIR:-/tmp/matplotlib_${USER}_${SLURM_JOB_ID}}
-unset SLURM_JOB_GRES SLURM_STEP_GRES SLURM_GPUS SLURM_STEP_GPUS SLURM_JOB_GPUS SLURM_STEP_GPUS CUDA_VISIBLE_DEVICES
-
 mkdir -p "${MPLCONFIGDIR}" "${SCRIPT_DIR}/slurm_logs"
 cd "${REPO}"
 
-echo "[direct-field-finalize] host=$(hostname)"
-echo "[direct-field-finalize] config=${CONFIG}"
-echo "[direct-field-finalize] nside=${NSIDE} num_splits=${NUM_SPLITS}"
-echo "[direct-field-finalize] batch_parent_pixels=${BATCH_PARENT_PIXELS}"
+echo "[allpz-combine] host=$(hostname)"
+echo "[allpz-combine] config=${CONFIG}"
+echo "[allpz-combine] python=${PYTHON}"
+echo "[allpz-combine] nside=${NSIDE} num_splits=${NUM_SPLITS}"
+echo "[allpz-combine] do_plot_maps=${DO_PLOT_MAPS}"
 
-srun --ntasks=1 --nodes=1 "${PYTHON}" "${DRIVER}" combine-maps \
+srun --ntasks=1 --nodes=1 --cpus-per-task=8 --cpu-bind=none \
+  "${PYTHON}" "${DRIVER}" combine-maps \
   --config "${CONFIG}" \
   --nside "${NSIDE}" \
   --num-splits "${NUM_SPLITS}" \
   --overwrite
 
-srun --ntasks=1 --nodes=1 "${PYTHON}" "${DRIVER}" build-direct-field-map \
-  --config "${CONFIG}" \
-  --nside "${NSIDE}" \
-  --batch-parent-pixels "${BATCH_PARENT_PIXELS}" \
-  --overwrite
+if [ "${DO_PLOT_MAPS}" -gt 0 ]; then
+  srun --ntasks=1 --nodes=1 --cpus-per-task=8 --cpu-bind=none \
+    "${PYTHON}" "${DRIVER}" plot-healpix-maps \
+    --config "${CONFIG}" \
+    --nside "${NSIDE}"
+fi
+
+echo "[allpz-combine] done"

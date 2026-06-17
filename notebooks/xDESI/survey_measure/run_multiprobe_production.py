@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 import subprocess
@@ -12,10 +13,11 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Set, Tuple
 
 import h5py
 import numpy as np
+import pymaster as nmt
 
 from multiprobe_namaster import (
     SCHEMA_MAPS,
@@ -51,17 +53,17 @@ def _config_from_map_metadata(config: MeasurementConfig, map_metadata: Mapping[s
         for key in (
             "stage",
             "nside",
-            "lmax",
-            "ell_min",
-            "n_bins",
-            "binning",
             "act_downgrade",
             "shear_e_to_kappa_sign",
             "shear_mask_dataset",
             "shear_noise_attr",
+            "mask_apodization_deg",
+            "mask_apodization_type",
         ):
             if key in map_config:
                 setattr(config, key, map_config[key])
+        if "lmax" in map_config and int(config.lmax) > int(map_config["lmax"]):
+            raise ValueError(f"Requested lmax={config.lmax} exceeds cached-map lmax={map_config['lmax']}.")
     config.validate()
     return config
 
@@ -80,6 +82,103 @@ def block_dir(config: MeasurementConfig) -> Path:
 
 def block_shard_path(config: MeasurementConfig, group: Mapping[str, object]) -> Path:
     return block_dir(config) / f"cov_group_{int(group['index']):04d}_{str(group['class'])}.h5"
+
+
+def cov_workspace_cache_dir(config: MeasurementConfig) -> Path:
+    return block_dir(config) / "cov_workspaces"
+
+
+def _field_names_for_groups(groups: Iterable[Mapping[str, object]]) -> Set[str]:
+    """Return only the field names a set of covariance groups actually reference.
+
+    A group's covariance only needs the fields that appear in its blocks (plus the
+    representative fields used for the covariance workspace). Building just these instead
+    of all ~15 probe fields cuts per-process memory by ~3-5x (the spin-2 alms dominate),
+    which lets many more single-threaded groups pack onto one node.
+    """
+
+    names: Set[str] = set()
+    for group in groups:
+        names.update(str(n) for n in group.get("representative_fields", []))
+        for block in group.get("blocks", []):
+            names.update(str(n) for n in block.get("fields_i", []))
+            names.update(str(n) for n in block.get("fields_j", []))
+    return names
+
+
+def _build_cov_fields(
+    map_fields: Mapping[str, object],
+    config: MeasurementConfig,
+    groups: Iterable[Mapping[str, object]],
+) -> Dict[str, object]:
+    """Build NaMaster fields for only the probes referenced by ``groups``."""
+
+    needed = _field_names_for_groups(groups)
+    subset = {name: fmap for name, fmap in map_fields.items() if name in needed}
+    missing = sorted(needed - set(subset))
+    if missing:
+        raise KeyError(f"Covariance group references field(s) absent from the map product: {missing}")
+    return build_nmt_fields(subset, config)
+
+
+def _cov_workspace_cache_path(config: MeasurementConfig, group: Mapping[str, object]) -> Path:
+    """Path of the on-disk covariance workspace for a group's mask/spin signature.
+
+    The covariance workspace depends only on the four masks (the alias key), the spins,
+    and lmax/Toeplitz settings -- never on the field data or the noise model. So it is
+    valid across any rerun that keeps the same map product (masks) and binning, e.g. a
+    shape-noise/data-vector change. It is scoped under the tag-specific block dir, so a
+    different product (different nside/apodization) gets a separate cache.
+    """
+
+    signature = {
+        "key": [str(k) for k in group.get("key", [])],
+        "spins": [int(s) for s in group.get("spins", [])],
+        "lmax": int(config.lmax),
+        "l_toeplitz": int(config.covariance_l_toeplitz),
+        "l_exact": int(config.covariance_l_exact),
+        "dl_band": int(config.covariance_dl_band),
+    }
+    digest = hashlib.md5(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:16]
+    return cov_workspace_cache_dir(config) / f"cw_{digest}.fits"
+
+
+def _get_or_build_cov_workspace(
+    group: Mapping[str, object],
+    fields: Mapping[str, object],
+    config: MeasurementConfig,
+    *,
+    use_cache: bool = True,
+) -> object:
+    """Load the group's covariance workspace from disk if cached, else build and cache it."""
+
+    representatives = list(group["representative_fields"])
+    path = _cov_workspace_cache_path(config, group)
+    if use_cache and path.exists():
+        try:
+            cw = nmt.NmtCovarianceWorkspace.from_file(str(path))
+            print(f"[{utc_now()}] group {group['index']} reused cached covariance workspace {path.name}", flush=True)
+            return cw
+        except Exception as exc:  # pragma: no cover - corrupt/old cache, rebuild
+            print(f"[{utc_now()}] group {group['index']} cached workspace {path.name} unreadable ({exc}); rebuilding", flush=True)
+    cw = _covariance_workspace_from_fields(
+        fields[representatives[0]].cov_field,
+        fields[representatives[1]].cov_field,
+        fields[representatives[2]].cov_field,
+        fields[representatives[3]].cov_field,
+        config,
+    )
+    if use_cache:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".fits.tmp")
+            if tmp.exists():
+                tmp.unlink()
+            cw.write_to(str(tmp))
+            os.replace(tmp, path)
+        except Exception as exc:  # pragma: no cover - cache write best effort
+            print(f"[{utc_now()}] group {group['index']} could not cache workspace ({exc})", flush=True)
+    return cw
 
 
 def _config_value_matches(actual: object, expected: object) -> bool:
@@ -112,7 +211,18 @@ def _existing_product_matches_config(path: Path, schema: str, config: Measuremen
                 cfg = json.loads(h5.attrs["config_json"])
     except Exception as exc:
         return False, f"could not read product metadata: {exc}"
-    for key in ("stage", "nside", "lmax", "ell_min", "n_bins", "binning", "act_downgrade"):
+    for key in (
+        "stage",
+        "nside",
+        "lmax",
+        "ell_min",
+        "n_bins",
+        "binning",
+        "act_downgrade",
+        "mask_apodization_deg",
+        "mask_apodization_type",
+        "pair_overlap_mean_subtract",
+    ):
         expected = getattr(config, key)
         if key not in cfg:
             return False, f"missing config key {key!r}"
@@ -171,6 +281,9 @@ def build_covariance_manifest(config: MeasurementConfig) -> Dict[str, object]:
             "ell_min": int(config.ell_min),
             "n_bins": int(config.n_bins),
             "binning": str(config.binning),
+            "mask_apodization_deg": float(config.mask_apodization_deg),
+            "mask_apodization_type": str(config.mask_apodization_type),
+            "pair_overlap_mean_subtract": bool(config.pair_overlap_mean_subtract),
         },
         "n_spectra": len(specs),
         "n_covariance_blocks": len(specs) * (len(specs) + 1) // 2,
@@ -334,6 +447,8 @@ def _read_spectra_product(path: Path) -> Tuple[Dict[str, object], Dict[str, obje
                     None if "noise_decoupled_all_components" not in g else g["noise_decoupled_all_components"][:]
                 ),
             }
+            if "pair_overlap_mean_subtraction_json" in g.attrs:
+                spectra[name]["pair_overlap_mean_subtraction"] = json.loads(g.attrs["pair_overlap_mean_subtraction_json"])
         null_tests: Dict[str, Dict[str, object]] = {}
         if "null_tests" in h5:
             for name in h5["null_tests"]:
@@ -415,9 +530,84 @@ def run_prepare(args: argparse.Namespace) -> None:
     print(f"[{utc_now()}] Wrote {output}", flush=True)
 
 
+SHEAR_AUTO_SPEC_NAMES = tuple(f"des_shear_EE_tomo{i}_tomo{i}" for i in range(1, 5))
+_PATCHABLE_SPECTRUM_DATASETS = (
+    "cl",
+    "cl_all_components",
+    "pcl_all_components",
+    "noise_decoupled_all_components",
+)
+
+
+def _patch_shear_autos_in_spectra_product(
+    output: Path,
+    maps: Path,
+    config: MeasurementConfig,
+    verbose: bool = True,
+) -> int:
+    """Recompute only the 4 same-bin DES shear EE autos and overwrite them in place.
+
+    The shape-noise fix changes ONLY the shear-auto spectra; the other 42 (cross-tomo
+    shear, galaxy autos/crosses, kSZ, ...) have an untouched noise path and are bit-identical.
+    So when a compatible spectra product already exists, we recompute just the 4 autos
+    (loading only the shear fields and building only their workspaces) and replace their
+    datasets in the HDF5, instead of regenerating all 46 (~2.9 h -> ~25 min). assemble
+    rebuilds the data vector from the per-spectrum ``cl``, so no ``joint`` group exists to fix.
+    """
+
+    from multiprobe_namaster import build_nmt_fields, default_spectrum_specs, make_bins, measure_spectrum
+
+    shear_map_fields, _ = load_map_product(maps, field_names={f"s{i}" for i in range(1, 5)})
+    fields = build_nmt_fields(shear_map_fields, config)
+    bins = make_bins(config)
+    specs = [spec for spec in default_spectrum_specs() if spec.name in SHEAR_AUTO_SPEC_NAMES]
+    workspace_cache: Dict[Tuple[str, str], object] = {}
+    with h5py.File(output, "r+") as h5:
+        for spec in specs:
+            if verbose:
+                print(f"[{utc_now()}] Patching shear auto {spec.name}", flush=True)
+            res = measure_spectrum(spec, fields, bins, workspace_cache, config)
+            grp = h5[f"spectra/{spec.name}"]
+            for key in _PATCHABLE_SPECTRUM_DATASETS:
+                value = np.asarray(res[key], dtype=np.float64)
+                if key in grp:
+                    del grp[key]
+                grp.create_dataset(key, data=value)
+    print(f"[{utc_now()}] Patched {len(specs)} shear-auto spectra in {output}", flush=True)
+    return len(specs)
+
+
 def run_spectra(args: argparse.Namespace) -> None:
     config = config_from_args(args)
     maps = Path(args.maps_path).resolve() if args.maps_path else config.default_maps_path
+
+    if getattr(args, "patch_shear_only", False):
+        # Resolve the output tag from the map metadata without loading any field maps.
+        _, meta_for_tag = load_map_product(maps, field_names=set())
+        cfg = _config_from_map_metadata(config, meta_for_tag)
+        cfg.output_dir = args.output_dir
+        out = Path(args.spectra_out).resolve() if args.spectra_out else spectra_path(cfg)
+        if out.exists():
+            ok, reason = _existing_product_matches_config(out, SCHEMA_MEASUREMENT, cfg)
+            if not ok:
+                raise FileExistsError(
+                    f"--patch-shear-only: existing {out} is incompatible ({reason}); "
+                    "rerun without --patch-shear-only (optionally with --force) to regenerate fully."
+                )
+            cfg.compute_covariance = False
+            print(f"[{utc_now()}] Patch mode: recomputing only shear autos in {out}", flush=True)
+            _patch_shear_autos_in_spectra_product(out, maps, cfg, verbose=not args.quiet)
+            return
+        print(
+            f"[{utc_now()}] --patch-shear-only requested but {out} is absent; "
+            "doing a full spectra recompute instead.",
+            flush=True,
+        )
+
+    print(f"[{utc_now()}] Loading maps for spectra: {maps}", flush=True)
+    map_fields, map_metadata = load_map_product(maps)
+    config = _config_from_map_metadata(config, map_metadata)
+    config.output_dir = args.output_dir
     output = Path(args.spectra_out).resolve() if args.spectra_out else spectra_path(config)
     if output.exists() and not args.force:
         ok, reason = _existing_product_matches_config(output, SCHEMA_MEASUREMENT, config)
@@ -425,10 +615,6 @@ def run_spectra(args: argparse.Namespace) -> None:
             print(f"[{utc_now()}] Reusing existing compatible spectra product: {output}", flush=True)
             return
         raise FileExistsError(f"{output} exists but is not compatible ({reason}); pass --force to replace it.")
-    print(f"[{utc_now()}] Loading maps for spectra: {maps}", flush=True)
-    map_fields, map_metadata = load_map_product(maps)
-    config = _config_from_map_metadata(config, map_metadata)
-    config.output_dir = args.output_dir
     config.compute_covariance = False
     from multiprobe_namaster import measure_all
 
@@ -477,24 +663,19 @@ def run_cov_key(args: argparse.Namespace) -> None:
         allocated_cpus=allocated_cpus,
     ):
         with timed_step(f"group {group['index']} load map product"):
-            map_fields, map_metadata = load_map_product(maps)
+            map_fields, map_metadata = load_map_product(maps, field_names=_field_names_for_groups([group]))
         config = _config_from_map_metadata(config, map_metadata)
         config.output_dir = args.output_dir
         with timed_step(f"group {group['index']} make bins"):
             bins = make_bins(config)
         with timed_step(f"group {group['index']} build NaMaster fields"):
-            fields = build_nmt_fields(map_fields, config)
-        representatives = list(group["representative_fields"])
+            fields = _build_cov_fields(map_fields, config, [group])
         with timed_step(
-            f"group {group['index']} build covariance workspace "
-            f"({','.join(representatives)})"
+            f"group {group['index']} get/build covariance workspace "
+            f"({','.join(group['representative_fields'])})"
         ):
-            cw = _covariance_workspace_from_fields(
-                fields[representatives[0]].cov_field,
-                fields[representatives[1]].cov_field,
-                fields[representatives[2]].cov_field,
-                fields[representatives[3]].cov_field,
-                config,
+            cw = _get_or_build_cov_workspace(
+                group, fields, config, use_cache=not getattr(args, "no_cov_workspace_cache", False)
             )
         specs = {spec.name: spec for spec in default_spectrum_specs()}
         workspace_cache = {}
@@ -542,24 +723,18 @@ def _compute_covariance_group(
     config: MeasurementConfig,
     *,
     force: bool,
+    use_cache: bool = True,
 ) -> Path:
     output = block_shard_path(config, group)
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() and not force:
         print(f"[{utc_now()}] Existing covariance shard {output}; skipping.", flush=True)
         return output
-    representatives = list(group["representative_fields"])
     with timed_step(
-        f"group {group['index']} build covariance workspace "
-        f"({','.join(representatives)})"
+        f"group {group['index']} get/build covariance workspace "
+        f"({','.join(group['representative_fields'])})"
     ):
-        cw = _covariance_workspace_from_fields(
-            fields[representatives[0]].cov_field,
-            fields[representatives[1]].cov_field,
-            fields[representatives[2]].cov_field,
-            fields[representatives[3]].cov_field,
-            config,
-        )
+        cw = _get_or_build_cov_workspace(group, fields, config, use_cache=use_cache)
     specs = {spec.name: spec for spec in default_spectrum_specs()}
     workspace_cache = {}
     input_cl_cache: Dict[Tuple[str, ...], np.ndarray] = {}
@@ -644,6 +819,8 @@ def run_cov_batch(args: argparse.Namespace) -> None:
             common.extend(["--maps-path", str(args.maps_path)])
         if args.force:
             common.append("--force")
+        if getattr(args, "no_cov_workspace_cache", False):
+            common.append("--no-cov-workspace-cache")
         running = []
         for group in selected_groups:
             task_id = groups.index(group)
@@ -678,19 +855,20 @@ def run_cov_batch(args: argparse.Namespace) -> None:
         allocated_cpus=allocated_cpus,
     ):
         with timed_step(f"batch {batch_id} load map product"):
-            map_fields, map_metadata = load_map_product(maps)
+            map_fields, map_metadata = load_map_product(maps, field_names=_field_names_for_groups(selected_groups))
         config = _config_from_map_metadata(config, map_metadata)
         config.output_dir = args.output_dir
         with timed_step(f"batch {batch_id} make bins"):
             bins = make_bins(config)
         with timed_step(f"batch {batch_id} build NaMaster fields"):
-            fields = build_nmt_fields(map_fields, config)
+            fields = _build_cov_fields(map_fields, config, selected_groups)
+        use_cache = not getattr(args, "no_cov_workspace_cache", False)
         for group in selected_groups:
             print(
                 f"[{utc_now()}] Group {group['index']} ({group['class']}, {group['n_blocks']} blocks)",
                 flush=True,
             )
-            _compute_covariance_group(group, fields, bins, config, force=args.force)
+            _compute_covariance_group(group, fields, bins, config, force=args.force, use_cache=use_cache)
 
 
 def run_assemble(args: argparse.Namespace) -> None:
@@ -756,10 +934,16 @@ def run_validate(args: argparse.Namespace) -> None:
     path = Path(args.measurement_path).resolve() if args.measurement_path else config.default_measurement_path
     with h5py.File(path, "r") as h5:
         cov = h5["joint/cov"][:]
+        data = h5["joint/data_vector"][:]
         names = _read_string_dataset(h5["joint/spectrum_names"])
+        diagnostics = json.loads(str(h5["joint"].attrs.get("diagnostics_json", "{}")))
     expected = 46 * int(config.n_bins)
     if cov.shape != (expected, expected):
         raise ValueError(f"Covariance shape {cov.shape} does not match expected {(expected, expected)}.")
+    if data.shape != (expected,):
+        raise ValueError(f"Data vector shape {data.shape} does not match expected {(expected,)}.")
+    if not np.all(np.isfinite(data)):
+        raise ValueError("Data vector contains non-finite values.")
     if not np.all(np.isfinite(cov)):
         raise ValueError("Covariance contains non-finite values.")
     if not np.allclose(cov, cov.T, rtol=1e-8, atol=1e-20):
@@ -769,11 +953,91 @@ def run_validate(args: argparse.Namespace) -> None:
         raise ValueError("Covariance diagonal is not strictly positive and finite.")
     if len(names) != 46:
         raise ValueError(f"Expected 46 spectra, found {len(names)}.")
+    sigma = np.sqrt(diag)
+    corr = cov / np.outer(sigma, sigma)
+    corr = 0.5 * (corr + corr.T)
+    corr_eig = np.linalg.eigvalsh(corr)
+    cov_eig = np.linalg.eigvalsh(0.5 * (cov + cov.T))
+    if not np.all(np.isfinite(corr_eig)) or not np.all(np.isfinite(cov_eig)):
+        raise ValueError("Covariance/correlation eigenvalues contain non-finite values.")
+    corr_threshold = float(args.corr_eigen_threshold)
+    rank = int(np.sum(corr_eig > corr_threshold))
+    if rank <= 0:
+        raise ValueError(f"Correlation eigencut threshold {corr_threshold:g} retains zero modes.")
+    if float(np.min(corr_eig)) < -1.0e-6:
+        raise ValueError(f"Correlation matrix has a strongly negative eigenvalue: {np.min(corr_eig):.6e}.")
+    report = {
+        "measurement_path": str(path),
+        "n_spectra": len(names),
+        "n_bins": int(config.n_bins),
+        "data_vector_size": int(data.size),
+        "covariance_shape": list(cov.shape),
+        "data_finite": bool(np.all(np.isfinite(data))),
+        "covariance_finite": bool(np.all(np.isfinite(cov))),
+        "covariance_symmetric": bool(np.allclose(cov, cov.T, rtol=1e-8, atol=1e-20)),
+        "diag_min": float(np.min(diag)),
+        "diag_max": float(np.max(diag)),
+        "cov_eigen_min": float(np.min(cov_eig)),
+        "cov_eigen_max": float(np.max(cov_eig)),
+        "corr_eigen_min": float(np.min(corr_eig)),
+        "corr_eigen_max": float(np.max(corr_eig)),
+        "corr_eigen_threshold": corr_threshold,
+        "corr_eigencut_rank": rank,
+        "corr_eigencut_dropped_modes": int(corr_eig.size - rank),
+        "hdf5_diagnostics": diagnostics,
+    }
+    report_path = path.with_name(f"measurement_validation_{config.product_tag}.json")
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(
         f"[{utc_now()}] Validation passed for {path}: shape={cov.shape}, "
-        f"diag=[{diag.min():.3e}, {diag.max():.3e}]",
+        f"diag=[{diag.min():.3e}, {diag.max():.3e}], "
+        f"corr_eig=[{corr_eig.min():.3e}, {corr_eig.max():.3e}], "
+        f"rank@{corr_threshold:g}={rank}/{corr_eig.size}, report={report_path}",
         flush=True,
     )
+
+
+def _parse_ksz_ylim(value: object) -> Optional[Tuple[float, float]]:
+    if value is None:
+        return None
+    parts = str(value).replace(",", " ").split()
+    if len(parts) != 2:
+        raise ValueError(f"Expected two values for --plot-ksz-ylim, got {value!r}.")
+    return float(parts[0]), float(parts[1])
+
+
+def run_plot_measurement_dell(args: argparse.Namespace) -> None:
+    config = config_from_args(args)
+    path = Path(args.measurement_path).resolve() if args.measurement_path else config.default_measurement_path
+    output_dir = Path(args.plot_dir).resolve() if args.plot_dir else config.output_root / "plots"
+    pdf = Path(args.pdf_out).resolve() if args.pdf_out else output_dir / f"measurement_dell_{config.product_tag}.pdf"
+    ell_max = None if args.plot_ell_max is not None and float(args.plot_ell_max) <= 0.0 else args.plot_ell_max
+    ksz_ylim = _parse_ksz_ylim(args.plot_ksz_ylim)
+
+    import godmax_multiprobe_theory_utils as gmt
+
+    measurement = gmt.load_measurement_data(path)
+    outputs = gmt.plot_measurement_dell(
+        measurement,
+        output_dir,
+        pdf_path=pdf,
+        filename_prefix=f"measurement_dell_{config.product_tag}",
+        ell_max=ell_max,
+        ksz_ylim=ksz_ylim,
+        ksz_scale=float(args.plot_ksz_scale),
+    )
+    summary = {
+        "measurement_h5": str(path),
+        "pdf": str(pdf),
+        "pngs": [str(p) for p in outputs],
+        "ell_max": ell_max,
+        "ksz_ylim": ksz_ylim,
+        "ksz_scale": float(args.plot_ksz_scale),
+    }
+    summary_path = output_dir / f"measurement_dell_{config.product_tag}.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"[{utc_now()}] Wrote measurement D_ell plot {pdf}", flush=True)
+    print(f"[{utc_now()}] Wrote measurement D_ell plot summary {summary_path}", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -793,6 +1057,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--maps-path", default=None)
     p.add_argument("--spectra-out", default=None)
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--patch-shear-only", action="store_true",
+                   help="If a compatible spectra product exists, recompute ONLY the 4 shear-auto "
+                        "spectra and overwrite them in place (the other 42 are unaffected by the "
+                        "shape-noise fix). Falls back to a full recompute if no product exists.")
     p.set_defaults(func=run_spectra)
 
     p = sub.add_parser("make-cov-manifest")
@@ -807,6 +1075,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--task-id", type=int, default=None)
     p.add_argument("--cov-class", choices=["all", "scalar", "spin2"], default="all")
     p.add_argument("--heartbeat-interval", type=float, default=120.0)
+    p.add_argument("--no-cov-workspace-cache", action="store_true",
+                   help="Do not read/write the on-disk covariance-workspace cache (rebuild every time).")
     p.set_defaults(func=run_cov_key)
 
     p = sub.add_parser("cov-batch")
@@ -819,6 +1089,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--omp-threads-per-group", type=int, default=1)
     p.add_argument("--cov-class", choices=["all", "scalar", "spin2"], default="all")
     p.add_argument("--heartbeat-interval", type=float, default=120.0)
+    p.add_argument("--no-cov-workspace-cache", action="store_true",
+                   help="Do not read/write the on-disk covariance-workspace cache (rebuild every time).")
     p.set_defaults(func=run_cov_batch)
 
     p = sub.add_parser("assemble")
@@ -832,7 +1104,18 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("validate")
     add_common(p)
     p.add_argument("--measurement-path", default=None)
+    p.add_argument("--corr-eigen-threshold", type=float, default=1.0e-8)
     p.set_defaults(func=run_validate)
+
+    p = sub.add_parser("plot-measurement-dell")
+    add_common(p)
+    p.add_argument("--measurement-path", default=None)
+    p.add_argument("--plot-dir", default=None)
+    p.add_argument("--pdf-out", default=None)
+    p.add_argument("--plot-ell-max", type=float, default=2800.0)
+    p.add_argument("--plot-ksz-ylim", default="-5e-5,5e-5")
+    p.add_argument("--plot-ksz-scale", type=float, default=1.0)
+    p.set_defaults(func=run_plot_measurement_dell)
 
     return parser.parse_args()
 

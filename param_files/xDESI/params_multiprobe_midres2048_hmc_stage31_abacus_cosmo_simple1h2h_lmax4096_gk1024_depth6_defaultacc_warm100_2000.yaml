@@ -1,0 +1,53 @@
+description: >
+  Stage-31 NumPyro HMC configuration for fitting the xDESI midres2048
+  multi-probe measurement with fixed Abacus/Backlight-like cosmology,
+  simple 1-halo + 2-halo tracer-side transitions while keeping the
+  matter transition on the response model, all probes kept to the
+  lmax4096 data vector, and DESI galaxy x ACT kappa restricted to
+  effective ell <= 1024. This retry starts from the first combined
+  bestfit, uses max tree depth 6, leaves the NUTS target acceptance at
+  the NumPyro default, and runs 100 warmup samples plus 2000 production
+  samples per chain.
+
+comparison_config: param_files/xDESI/params_multiprobe_midres2048_true_nz_theory_abacus_cosmo_simple1h2h.yaml
+prior_file: param_files/xDESI/priors_multiprobe_fast1024_hmc_stage31.yaml
+
+stage: stage31_midres2048_abacus_cosmo_simple1h2h_lmax4096_gk1024_depth6_defaultacc_warm100
+output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_midres2048_true_nz_hmc_stage31_abacus_cosmo_simple1h2h_lmax4096_gk1024_depth6_defaultacc_warm100
+minimum_halo_log10_m200c_hmsun: 11.147538
+force_simple_1h2h: true
+
+likelihood_cuts:
+  band_selection: center
+  default_ell_max: 4096
+  family_ell_max:
+    desi_g_act_kappa: 1024
+
+covariance:
+  type: whitened_correlation_eigencut
+  eigenvalue_threshold: 1.0e-8
+
+sampler:
+  seed: 1042
+  num_warmup: 100
+  num_samples: 2000
+  num_chains: 4
+  chain_method: vectorized
+  dense_mass: true
+  max_tree_depth: 6
+  forward_mode_differentiation: false
+  jit_model_args: true
+  progress_bar: false
+
+smoke_sampler:
+  seed: 1043
+  num_warmup: 80
+  num_samples: 160
+  num_chains: 1
+  chain_method: sequential
+  dense_mass: true
+  max_tree_depth: 5
+  target_accept_prob: 0.9
+  forward_mode_differentiation: false
+  jit_model_args: true
+  progress_bar: true
