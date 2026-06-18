@@ -23,6 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
+from numpyro.distributions.transforms import biject_to
 from jax.flatten_util import ravel_pytree
 from numpyro.infer import MCMC, NUTS, init_to_value
 from numpyro.infer.util import initialize_model
@@ -165,6 +166,8 @@ def load_materialized_comparison(stage_config: Mapping[str, object]) -> dict:
     cfg = gmt.load_comparison_config(stage_config["comparison_config"])
     if bool(stage_config.get("force_simple_1h2h", False)):
         cfg = enforce_simple_1h2h_transitions(cfg)
+    if "comparison_overrides" in stage_config:
+        cfg = gmt.deep_update(cfg, stage_config["comparison_overrides"])
     cfg = gmt.materialize_nz_inputs(cfg)
     cfg = gmt.compute_desi_nbar_comoving(cfg)
     return cfg
@@ -713,9 +716,11 @@ def pack_sample_from_params_file(context: FitContext, params_path: str | Path) -
         elif spec.target == "hod_array":
             if spec.array_key is None or spec.array_index is None:
                 raise ValueError(f"Malformed HOD spec: {spec}")
-            if spec.array_key not in sim_params:
-                raise KeyError(f"{params_path} missing sim_params.{spec.array_key}.")
-            value = sim_params[spec.array_key][int(spec.array_index)]
+            values = sim_params.get(spec.array_key)
+            if values is None or len(values) <= int(spec.array_index):
+                value = spec.fiducial
+            else:
+                value = values[int(spec.array_index)]
         elif spec.target == "other_array":
             if spec.array_key is None or spec.array_index is None:
                 raise ValueError(f"Malformed other_params array spec: {spec}")
@@ -732,6 +737,143 @@ def pack_sample_from_params_file(context: FitContext, params_path: str | Path) -
             )
         out[spec.name] = value
     return out
+
+
+def _finite_prior_width(spec: ParameterSpec, center: float) -> float:
+    if spec.prior_kind == "uniform" and np.isfinite(spec.prior_min) and np.isfinite(spec.prior_max):
+        return max(float(spec.prior_max - spec.prior_min), np.finfo(float).tiny)
+    if spec.prior_sigma is not None and np.isfinite(spec.prior_sigma) and float(spec.prior_sigma) > 0:
+        return float(spec.prior_sigma)
+    return max(abs(float(center)), 1.0)
+
+
+def make_init_ball_values(
+    specs: Sequence[ParameterSpec],
+    center_values: Mapping[str, float],
+    *,
+    num_chains: int,
+    scale: float,
+    seed: int,
+) -> Dict[str, object]:
+    """Return per-chain initial values in a small prior-normalized ball."""
+
+    if scale <= 0.0 or num_chains <= 1:
+        return {str(key): float(value) for key, value in center_values.items()}
+    rng = np.random.default_rng(int(seed))
+    values: Dict[str, object] = {}
+    clip_eps = 1.0e-8
+    for spec in specs:
+        center = float(center_values[spec.name])
+        width = _finite_prior_width(spec, center)
+        draws = center + rng.normal(loc=0.0, scale=float(scale) * width, size=int(num_chains))
+        if spec.prior_kind == "uniform" and np.isfinite(spec.prior_min) and np.isfinite(spec.prior_max):
+            span = float(spec.prior_max - spec.prior_min)
+            lo = float(spec.prior_min) + clip_eps * span
+            hi = float(spec.prior_max) - clip_eps * span
+            draws = np.clip(draws, lo, hi)
+        values[spec.name] = draws.astype(np.float64)
+    return values
+
+
+def summarize_init_values(
+    specs: Sequence[ParameterSpec],
+    init_values: Mapping[str, object],
+    *,
+    center_values: Optional[Mapping[str, float]] = None,
+) -> dict:
+    summary = {
+        "n_parameters": len(specs),
+        "parameter_names": [spec.name for spec in specs],
+        "array_valued_parameters": [],
+    }
+    max_abs_prior_unit_delta = 0.0
+    max_abs_parameter_delta = 0.0
+    min_chains = None
+    max_chains = 0
+    for spec in specs:
+        value = np.asarray(init_values[spec.name], dtype=np.float64)
+        if value.ndim == 0:
+            continue
+        flat = value.reshape(-1)
+        min_chains = flat.size if min_chains is None else min(min_chains, flat.size)
+        max_chains = max(max_chains, flat.size)
+        center = float(center_values[spec.name]) if center_values is not None else float(np.mean(flat))
+        delta = flat - center
+        width = _finite_prior_width(spec, center)
+        max_abs_parameter_delta = max(max_abs_parameter_delta, float(np.max(np.abs(delta))))
+        max_abs_prior_unit_delta = max(max_abs_prior_unit_delta, float(np.max(np.abs(delta))) / width)
+        summary["array_valued_parameters"].append(
+            {
+                "name": spec.name,
+                "n_values": int(flat.size),
+                "center": center,
+                "min": float(np.min(flat)),
+                "max": float(np.max(flat)),
+                "std": float(np.std(flat)),
+                "max_abs_delta": float(np.max(np.abs(delta))),
+                "max_abs_prior_unit_delta": float(np.max(np.abs(delta)) / width),
+            }
+        )
+    summary["n_array_valued_parameters"] = len(summary["array_valued_parameters"])
+    summary["min_values_per_parameter"] = int(min_chains or 0)
+    summary["max_values_per_parameter"] = int(max_chains)
+    summary["max_abs_parameter_delta"] = float(max_abs_parameter_delta)
+    summary["max_abs_prior_unit_delta"] = float(max_abs_prior_unit_delta)
+    return summary
+
+
+def init_ball_chain_values(
+    specs: Sequence[ParameterSpec],
+    center_values: Mapping[str, float],
+    *,
+    num_chains: int,
+    scale: float,
+    seed: int,
+) -> Tuple[List[Dict[str, float]], dict]:
+    ball_values = make_init_ball_values(
+        specs,
+        center_values,
+        num_chains=num_chains,
+        scale=scale,
+        seed=seed,
+    )
+    chain_values: List[Dict[str, float]] = []
+    for chain_index in range(int(num_chains)):
+        chain_values.append(
+            {
+                spec.name: float(np.asarray(ball_values[spec.name], dtype=np.float64).reshape(-1)[chain_index])
+                for spec in specs
+            }
+        )
+    summary = summarize_init_values(specs, ball_values, center_values=center_values)
+    return chain_values, summary
+
+
+def constrained_values_to_init_params(
+    specs: Sequence[ParameterSpec],
+    values_by_chain: Sequence[Mapping[str, float]],
+) -> object:
+    """Convert constrained per-chain initial values to NumPyro unconstrained params."""
+
+    z_values = []
+    for chain_index, values in enumerate(values_by_chain):
+        z = {}
+        for spec in specs:
+            value = jnp.asarray(float(values[spec.name]), dtype=jnp.float64)
+            if spec.prior_kind == "normal":
+                unconstrained = value
+            elif spec.prior_kind == "uniform":
+                prior = dist.Uniform(float(spec.prior_min), float(spec.prior_max))
+                unconstrained = biject_to(prior.support).inv(value)
+            else:
+                raise ValueError(f"Unknown prior kind {spec.prior_kind!r} for {spec.name}.")
+            if not bool(np.all(np.isfinite(np.asarray(unconstrained)))):
+                raise RuntimeError(f"Non-finite init param for chain {chain_index}, parameter {spec.name}.")
+            z[spec.name] = unconstrained
+        z_values.append(z)
+    if len(z_values) == 1:
+        return z_values[0]
+    return jax.tree_util.tree_map(lambda *xs: jnp.stack([jnp.asarray(x) for x in xs]), *z_values)
 
 
 def pack_fiducial_vector(specs: Sequence[ParameterSpec]) -> jnp.ndarray:
@@ -1287,6 +1429,7 @@ def run_hmc(
     smoke: bool = False,
     overrides: Optional[Mapping[str, object]] = None,
     init_values: Optional[Mapping[str, float]] = None,
+    init_params: Optional[object] = None,
     checkpoint_samples_every: Optional[int] = None,
     output_dir: Optional[str | Path] = None,
 ) -> MCMC:
@@ -1297,10 +1440,11 @@ def run_hmc(
             context,
             settings=settings,
             init_values=init_values,
+            init_params=init_params,
             checkpoint_samples_every=checkpoint_every,
             output_dir=output_dir,
         )
-    return run_hmc_single(context, settings=settings, init_values=init_values)
+    return run_hmc_single(context, settings=settings, init_values=init_values, init_params=init_params)
 
 
 def _build_nuts_kernel(
@@ -1347,6 +1491,7 @@ def run_hmc_single(
     *,
     settings: Mapping[str, object],
     init_values: Optional[Mapping[str, float]] = None,
+    init_params: Optional[object] = None,
 ) -> MCMC:
     num_chains = int(settings["num_chains"])
     numpyro.set_host_device_count(max(1, num_chains))
@@ -1371,6 +1516,7 @@ def run_hmc_single(
     mcmc.run(
         jax.random.PRNGKey(int(settings.get("seed", 42))),
         extra_fields=("potential_energy", "diverging", "accept_prob", "num_steps"),
+        init_params=init_params,
     )
     log_status("[hmc] mcmc.run done")
     return mcmc
@@ -1497,6 +1643,7 @@ def run_hmc_checkpointed(
     *,
     settings: Mapping[str, object],
     init_values: Optional[Mapping[str, float]],
+    init_params: Optional[object] = None,
     checkpoint_samples_every: int,
     output_dir: Optional[str | Path] = None,
 ) -> _ArrayMCMCResult:
@@ -1532,7 +1679,7 @@ def run_hmc_checkpointed(
     )
     extra_fields = ("potential_energy", "diverging", "accept_prob", "num_steps")
     log_status("[hmc] checkpointed warmup begin")
-    mcmc.warmup(rng_keys[0], extra_fields=extra_fields)
+    mcmc.warmup(rng_keys[0], extra_fields=extra_fields, init_params=init_params)
     log_status("[hmc] checkpointed warmup done")
 
     sample_chunks: List[Dict[str, np.ndarray]] = []
@@ -1654,8 +1801,11 @@ def save_fit_outputs(
     samples = {key: np.asarray(value) for key, value in mcmc.get_samples(group_by_chain=False).items()}
     extra = _flatten_extra_fields(mcmc.get_extra_fields())
     best_sample, best_idx, best_chi2 = best_sample_from_mcmc(mcmc, context.parameter_specs)
-    chi2_dof = int(context.likelihood.rank)
-    reduced_chi2 = float(best_chi2) / max(float(chi2_dof), 1.0)
+    chi2_n_modes = int(context.likelihood.rank)
+    n_fit_parameters = len(context.parameter_specs)
+    chi2_dof = max(chi2_n_modes - n_fit_parameters, 1)
+    reduced_chi2 = float(best_chi2) / float(chi2_dof)
+    chi2_per_mode = float(best_chi2) / max(float(chi2_n_modes), 1.0)
     models = build_models_from_sample(context, best_sample)
     theory_cls = extract_theory_cls_jax_from_models(models)
     best_theory = np.asarray(theory_data_vector_jax(context.likelihood, theory_cls))
@@ -1675,6 +1825,11 @@ def save_fit_outputs(
                 "smoke": smoke,
                 "best_sample_index": best_idx,
                 "best_whitened_chi2": best_chi2,
+                "best_reduced_chi2": reduced_chi2,
+                "best_chi2_dof": chi2_dof,
+                "best_chi2_per_mode": chi2_per_mode,
+                "chi2_n_modes": chi2_n_modes,
+                "n_fit_parameters": n_fit_parameters,
                 "static_summary": static_summary(context),
                 "parameter_specs": parameter_specs_jsonable(context.parameter_specs),
             }
@@ -1752,6 +1907,11 @@ def save_fit_outputs(
         "best_sample_index": best_idx,
         "best_sample": best_sample,
         "best_whitened_chi2": best_chi2,
+        "best_reduced_chi2": reduced_chi2,
+        "best_chi2_dof": chi2_dof,
+        "best_chi2_per_mode": chi2_per_mode,
+        "chi2_n_modes": chi2_n_modes,
+        "n_fit_parameters": n_fit_parameters,
         "pseudo_inverse_stats": stats,
         "static_summary": static_summary(context),
         "parameter_specs": parameter_specs_jsonable(context.parameter_specs),
@@ -1801,6 +1961,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="If positive, run post-warmup sampling in chunks and save cumulative worker checkpoints every N samples.",
     )
     parser.add_argument("--init-params", default=None, help="Saved params YAML to use as the NUTS initial point.")
+    parser.add_argument(
+        "--init-ball-scale",
+        type=float,
+        default=0.0,
+        help=(
+            "If --init-params is provided and this is positive, initialize vectorized chains in a "
+            "Gaussian ball around that point. Uniform parameters use scale times prior width; "
+            "Gaussian parameters use scale times prior sigma."
+        ),
+    )
+    parser.add_argument(
+        "--init-ball-seed",
+        type=int,
+        default=None,
+        help="Seed for the per-chain initialization ball. Defaults to the sampler seed.",
+    )
     parser.add_argument("--platform", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--gpu-sanity-check", action="store_true", help="Run one synchronized JAX matmul before setup.")
     parser.add_argument("--gpu-sanity-matrix-size", type=int, default=4096)
@@ -1837,15 +2013,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         comparison = compare_fiducial_windowing(context)
         printable = {key: value for key, value in comparison.items() if key not in {"jax_vector", "wrapper_vector"}}
         print(json.dumps(gmt.to_jsonable(printable), indent=2), flush=True)
-    init_values = pack_sample_from_params_file(context, args.init_params) if args.init_params else None
+    settings_for_init = sampler_settings(context.stage_config, smoke=args.smoke, overrides=overrides)
+    init_center_values = pack_sample_from_params_file(context, args.init_params) if args.init_params else None
+    init_values = init_center_values
+    init_params = None
     if args.init_params:
         print(json.dumps(gmt.to_jsonable({"init_params": args.init_params}), indent=2), flush=True)
-    if args.debug_init:
-        log_status("[hmc] initialization diagnostics begin")
-        settings = sampler_settings(context.stage_config, smoke=args.smoke, overrides=overrides)
+    if float(args.init_ball_scale) > 0.0:
+        if init_center_values is None:
+            init_center_values = pack_fiducial_sample(context.parameter_specs)
+            init_values = init_center_values
+        init_seed = int(args.init_ball_seed if args.init_ball_seed is not None else settings_for_init.get("seed", 42))
+        values_by_chain, init_ball_summary = init_ball_chain_values(
+            context.parameter_specs,
+            init_center_values or init_values,
+            num_chains=int(settings_for_init["num_chains"]),
+            scale=float(args.init_ball_scale),
+            seed=init_seed,
+        )
+        init_params = constrained_values_to_init_params(context.parameter_specs, values_by_chain)
         print(
             json.dumps(
-                gmt.to_jsonable({"initialization_diagnostics": initialization_diagnostics(context, settings, init_values=init_values)}),
+                gmt.to_jsonable(
+                    {
+                        "init_ball": {
+                            "enabled": True,
+                            "scale": float(args.init_ball_scale),
+                            "seed": init_seed,
+                            "num_chains": int(settings_for_init["num_chains"]),
+                            "coordinate_system": "constrained ball converted to unconstrained numpyro init_params",
+                            "summary": init_ball_summary,
+                        }
+                    }
+                ),
+                indent=2,
+            ),
+            flush=True,
+        )
+    if args.debug_init:
+        log_status("[hmc] initialization diagnostics begin")
+        print(
+            json.dumps(
+                gmt.to_jsonable({"initialization_diagnostics": initialization_diagnostics(context, settings_for_init, init_values=init_values)}),
                 indent=2,
             ),
             flush=True,
@@ -1858,6 +2067,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         smoke=args.smoke,
         overrides=overrides,
         init_values=init_values,
+        init_params=init_params,
         checkpoint_samples_every=args.checkpoint_samples_every,
         output_dir=args.output_dir,
     )

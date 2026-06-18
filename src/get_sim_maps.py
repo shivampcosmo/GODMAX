@@ -282,18 +282,27 @@ class setup_sim_map(Profiles):
         if self.profile_timing: self.timing_results['kappa_map_interpolator_creation'] = time.perf_counter() - start_time
 
     def _setup_galmap(self):
-        """Setup Ncen, Nsat interpolator.
+        """Setup Ncen, Nsat interpolators.
 
-        Uses monotonic interpolation to prevent cubic-spline overshoot at
-        the sharp nbar(z) boundary, which otherwise creates unphysical
-        pile-ups in the galaxy redshift distribution.
+        N_cen is a sharp erf turn-on in [0, 1]; it is interpolated LINEARLY in
+        its value (method='linear'). Interpolating log(N_cen) with the monotone
+        scheme on the coarse mass grid systematically undershoots the central
+        turn-on, suppressing the realized galaxy number density by ~13% (the
+        centrals specifically by ~16%). Linear interpolation removes that
+        undershoot and, being piecewise-linear, also avoids the cubic-spline
+        overshoot at the sharp nbar(z) boundary that motivated the monotone
+        scheme; the downstream clip to [0, 1] in get_hod_params bounds any
+        extrapolation.
+
+        N_sat is ~power-law in mass and is well represented by monotone
+        interpolation of log(N_sat), which is retained.
         """
-        self.logNcen_interp = interpax.Interpolator2D(
+        self.Ncen_interp = interpax.Interpolator2D(
             self.z_array.astype(jnp.float32),
             jnp.log(self.M_array).astype(jnp.float32),
-            jnp.log(self.Ncen_mat + 1e-20).astype(jnp.float32),
-            method='monotonic',
-            extrap=[-20, -20]
+            self.Ncen_mat.astype(jnp.float32),
+            method='linear',
+            extrap=True,
         )
         self.logNsat_interp = interpax.Interpolator2D(
             self.z_array.astype(jnp.float32),
@@ -1208,7 +1217,7 @@ class get_sim_map(Profiles):
     @partial(jit, static_argnums=(0,))
     def get_hod_params(self, mass, z):
         """Get HOD parameters for M200c mass definition"""
-        mean_ncen = jnp.nan_to_num(jnp.exp(self.logNcen_interp(z, jnp.log(mass))))
+        mean_ncen = jnp.nan_to_num(self.Ncen_interp(z, jnp.log(mass)))
         mean_nsat = jnp.nan_to_num(jnp.exp(self.logNsat_interp(z, jnp.log(mass))))
         # Clamp to physical range (Ncen ∈ [0,1] by construction of the erf HOD)
         mean_ncen = jnp.clip(mean_ncen, 0.0, 1.0)

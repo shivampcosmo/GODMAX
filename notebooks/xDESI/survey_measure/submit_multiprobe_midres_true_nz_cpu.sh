@@ -13,23 +13,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_STAGES="${STAGES:-midres2048}"
 DEFAULT_OUTPUT_DIR="${OUTPUT_DIR:-data/xDESI/processed/multiprobe_namaster_true_nz}"
 
-# NaMaster covariance is SINGLE-THREADED here (measured cpu_recent=1.00 core regardless of
-# OMP), so the only way to fill an exclusive 128-core/1TB rome node is to run many groups
-# in parallel at OMP=1. The cov-key path now (a) loads/builds ONLY the few fields a group
-# references (raw map floor 6 GB -> 1.6 GB) and (b) caches covariance workspaces to disk.
-# Peak RSS drops from ~24 GB to ~14 GB/group -- the remaining floor is the transient
-# gaussian_covariance working set (~9 GB), which does NOT shrink, so ~56 groups fit in
-# ~990 GB. BATCH_SIZE = groups per array task; 249 spin2 groups, batch 125 x concurrency 2
-# = 2 full nodes x 56 parallel. Check `seff` RSS on the first run and tune PARALLEL_GROUPS
-# (48 = very safe, 64 = edge). Present shards skip on an early exit; cached workspaces are
-# reused across reruns (delete <block_dir>/cov_workspaces only if you change masks/maps).
+# NaMaster covariance is SINGLE-THREADED *and memory-bandwidth bound* (each build/block
+# churns a ~0.5 GB workspace + ~9 GB transient). MEASURED THE HARD WAY: packing 56 builds
+# per node saturated the memory bus -> each process got cpu_recent~0.05 cores and a build
+# that takes ~5 min solo took ~1h50m (~20x slowdown). So do NOT pack densely -- run a FEW
+# groups per node and parallelize ACROSS nodes instead. PARALLEL_GROUPS=4 keeps each process
+# near full speed; spread the work with ARRAY_CONCURRENCY (nodes). With ~78 groups to (re)do,
+# batch 16 x concurrency 16 = 16 nodes x 4 parallel (~1 wave). VERIFY on the first heartbeat
+# that cpu_recent is ~0.6-1.0 cores; if it is well below ~0.4, drop PARALLEL_GROUPS to 2.
+# Present shards skip on an early exit and cached workspaces are reused, so reruns resume.
 export MIDRES_COV_SCALAR_ARRAY_CONCURRENCY="${MIDRES_COV_SCALAR_ARRAY_CONCURRENCY:-1}"
-export MIDRES_COV_SPIN2_ARRAY_CONCURRENCY="${MIDRES_COV_SPIN2_ARRAY_CONCURRENCY:-2}"
+export MIDRES_COV_SPIN2_ARRAY_CONCURRENCY="${MIDRES_COV_SPIN2_ARRAY_CONCURRENCY:-16}"
 export MIDRES_COV_SERIALIZE_CLASSES="${MIDRES_COV_SERIALIZE_CLASSES:-1}"
 export MIDRES_COV_SCALAR_BATCH_SIZE="${MIDRES_COV_SCALAR_BATCH_SIZE:-10}"
-export MIDRES_COV_SPIN2_BATCH_SIZE="${MIDRES_COV_SPIN2_BATCH_SIZE:-125}"
-export MIDRES_COV_SCALAR_PARALLEL_GROUPS="${MIDRES_COV_SCALAR_PARALLEL_GROUPS:-10}"
-export MIDRES_COV_SPIN2_PARALLEL_GROUPS="${MIDRES_COV_SPIN2_PARALLEL_GROUPS:-56}"
+export MIDRES_COV_SPIN2_BATCH_SIZE="${MIDRES_COV_SPIN2_BATCH_SIZE:-16}"
+export MIDRES_COV_SCALAR_PARALLEL_GROUPS="${MIDRES_COV_SCALAR_PARALLEL_GROUPS:-4}"
+export MIDRES_COV_SPIN2_PARALLEL_GROUPS="${MIDRES_COV_SPIN2_PARALLEL_GROUPS:-4}"
 export MIDRES_COV_SCALAR_OMP_THREADS="${MIDRES_COV_SCALAR_OMP_THREADS:-1}"
 export MIDRES_COV_SPIN2_OMP_THREADS="${MIDRES_COV_SPIN2_OMP_THREADS:-1}"
 

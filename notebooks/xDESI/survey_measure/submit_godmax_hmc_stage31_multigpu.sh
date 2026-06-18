@@ -4,8 +4,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=15
-#SBATCH --mem=800G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=256G
 #SBATCH --time=24:00:00
 #SBATCH --job-name=xdesi_hmc_stage31_4gpu
 #SBATCH --output=/mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/survey_measure/logs/%x.%j.out
@@ -18,7 +18,8 @@ PYTHON="/mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python"
 RUNNER="${REPO_ROOT}/notebooks/xDESI/survey_measure/run_godmax_multiprobe_hmc_stage31.py"
 COMBINER="${REPO_ROOT}/notebooks/xDESI/survey_measure/combine_godmax_hmc_stage31_workers.py"
 CHECKPOINT_MONITOR="${REPO_ROOT}/notebooks/xDESI/survey_measure/monitor_godmax_hmc_stage31_checkpoints.py"
-CONFIG="${CONFIG:-${REPO_ROOT}/param_files/xDESI/params_multiprobe_midres2048_hmc_stage31_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm25_2000_60param.yaml}"
+GETDIST_SCRIPT="${REPO_ROOT}/notebooks/xDESI/survey_measure/plot_stage31_getdist_gas_hod_ia_checkpoint.py"
+CONFIG="${CONFIG:-${REPO_ROOT}/param_files/xDESI/params_multiprobe_midres2048_hmc_stage31_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_2000_60param.yaml}"
 LOG_DIR="${REPO_ROOT}/notebooks/xDESI/survey_measure/logs"
 
 yaml_value() {
@@ -49,7 +50,7 @@ if value is not None:
 ' "$1" "$2"
 }
 
-RUN_VERSION="${RUN_VERSION:-abacus_cosmo_midres2048_simple1h2h_lmax3000_gk1000_mmin11p147538_60param_13log_apo1degC2_pairmean_v1}"
+RUN_VERSION="${RUN_VERSION:-abacus_cosmo_midres2048_simple1h2h_lmax3000_gk1000_mmin11p147538_60param_13log_apo1degC2_pairmean_warm100_2000x16_checkpoint25_v1}"
 RUN_LABEL="${1:-stage31_hmc_${RUN_VERSION}}"
 COMBINED_SUFFIX="${COMBINED_SUFFIX:-stage31_multigpu_${RUN_VERSION}}"
 N_WORKERS="${N_WORKERS:-4}"
@@ -59,11 +60,16 @@ NUM_SAMPLES="${NUM_SAMPLES:-$(yaml_value "${CONFIG}" sampler.num_samples)}"
 MAX_TREE_DEPTH="${MAX_TREE_DEPTH:-$(yaml_value "${CONFIG}" sampler.max_tree_depth)}"
 TARGET_ACCEPT="${TARGET_ACCEPT:-$(yaml_value_optional "${CONFIG}" sampler.target_accept_prob)}"
 BASE_SEED="${BASE_SEED:-42000}"
+INIT_BALL_SCALE="${INIT_BALL_SCALE:-0}"
+INIT_BALL_SEED_BASE="${INIT_BALL_SEED_BASE:-${BASE_SEED}}"
 GPU_SANITY_CHECK="${GPU_SANITY_CHECK:-1}"
 COMBINE_AFTER="${COMBINE_AFTER:-1}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-120}"
 CHECKPOINT_SAMPLES_EVERY="${CHECKPOINT_SAMPLES_EVERY:-25}"
 CHECKPOINT_COMBINE_AFTER="${CHECKPOINT_COMBINE_AFTER:-1}"
+CHECKPOINT_GETDIST_AFTER="${CHECKPOINT_GETDIST_AFTER:-0}"
+CHECKPOINT_GETDIST_TAG_PREFIX="${CHECKPOINT_GETDIST_TAG_PREFIX:-stage31_hmc}"
+CHECKPOINT_GETDIST_LABEL="${CHECKPOINT_GETDIST_LABEL:-${RUN_LABEL}}"
 CHECKPOINT_PASTE_AFTER="${CHECKPOINT_PASTE_AFTER:-0}"
 CHECKPOINT_MONITOR_INTERVAL="${CHECKPOINT_MONITOR_INTERVAL:-60}"
 CHECKPOINT_PZ3_GATE="${CHECKPOINT_PZ3_GATE:-${REPO_ROOT}/notebooks/xDESI/abacus_paste/submit_stage31_pz3_cap2400_hmcbestfit_gate.sbatch}"
@@ -91,7 +97,9 @@ KSZ_VELOCITY_MODE="${KSZ_VELOCITY_MODE:-photoz_reconstruction_emulation}"
 KSZ_RECONSTRUCTION_NOISE_SEED="${KSZ_RECONSTRUCTION_NOISE_SEED:-12345}"
 KSZ_YLIM_MIN="${KSZ_YLIM_MIN:--5e-5}"
 KSZ_YLIM_MAX="${KSZ_YLIM_MAX:-5e-5}"
-PLOT_ELL_MAX="${PLOT_ELL_MAX:-2800}"
+PLOT_ELL_MAX="${PLOT_ELL_MAX:-3000}"
+PLOT_XSCALE="${PLOT_XSCALE:-log}"
+PLOT_XLIM="${PLOT_XLIM:-100,3000}"
 
 VALIDATE_ONLY="${VALIDATE_ONLY:-0}"
 COMPARE_FIDUCIAL="${COMPARE_FIDUCIAL:-0}"
@@ -147,9 +155,13 @@ echo "[$(date)] num_warmup=${NUM_WARMUP}"
 echo "[$(date)] num_samples=${NUM_SAMPLES}"
 echo "[$(date)] max_tree_depth=${MAX_TREE_DEPTH}"
 echo "[$(date)] target_accept=${TARGET_ACCEPT}"
+echo "[$(date)] init_ball_scale=${INIT_BALL_SCALE}"
+echo "[$(date)] init_ball_seed_base=${INIT_BALL_SEED_BASE}"
 echo "[$(date)] heartbeat_seconds=${HEARTBEAT_SECONDS}"
 echo "[$(date)] checkpoint_samples_every=${CHECKPOINT_SAMPLES_EVERY}"
 echo "[$(date)] checkpoint_combine_after=${CHECKPOINT_COMBINE_AFTER}"
+echo "[$(date)] checkpoint_getdist_after=${CHECKPOINT_GETDIST_AFTER}"
+echo "[$(date)] checkpoint_getdist_tag_prefix=${CHECKPOINT_GETDIST_TAG_PREFIX}"
 echo "[$(date)] checkpoint_paste_after=${CHECKPOINT_PASTE_AFTER}"
 echo "[$(date)] checkpoint_monitor_interval=${CHECKPOINT_MONITOR_INTERVAL}"
 echo "[$(date)] checkpoint_paste_nside=${CHECKPOINT_PASTE_NSIDE}"
@@ -160,6 +172,8 @@ echo "[$(date)] checkpoint_paste_catalog_output_name=${CHECKPOINT_PASTE_CATALOG_
 echo "[$(date)] checkpoint_paste_do_preprocess=${CHECKPOINT_PASTE_DO_PREPROCESS}"
 echo "[$(date)] checkpoint_postprocess_platform=${CHECKPOINT_POSTPROCESS_PLATFORM}"
 echo "[$(date)] plot_ell_max=${PLOT_ELL_MAX}"
+echo "[$(date)] plot_xscale=${PLOT_XSCALE}"
+echo "[$(date)] plot_xlim=${PLOT_XLIM}"
 echo "[$(date)] init_params=${INIT_PARAMS:-fiducial}"
 echo "[$(date)] validate_only=${VALIDATE_ONLY}"
 echo "[$(date)] compare_fiducial=${COMPARE_FIDUCIAL}"
@@ -200,6 +214,8 @@ for rank in $(seq 0 $((N_WORKERS - 1))); do
     export CONFIG="${CONFIG}"
     export WORKER_RANK="${rank}"
     export WORKER_SEED="${seed}"
+    export INIT_BALL_SCALE="${INIT_BALL_SCALE}"
+    export INIT_BALL_SEED="$((INIT_BALL_SEED_BASE + rank))"
     export WORKER_DIR="${worker_dir}"
     export NUM_WARMUP="${NUM_WARMUP}"
     export NUM_SAMPLES="${NUM_SAMPLES}"
@@ -208,6 +224,9 @@ for rank in $(seq 0 $((N_WORKERS - 1))); do
     export TARGET_ACCEPT="${TARGET_ACCEPT}"
     export INIT_PARAMS="${INIT_PARAMS}"
     export GPU_SANITY_CHECK="${GPU_SANITY_CHECK}"
+    export VALIDATE_ONLY="${VALIDATE_ONLY}"
+    export COMPARE_FIDUCIAL="${COMPARE_FIDUCIAL}"
+    export DEBUG_INIT="${DEBUG_INIT}"
     export HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS}"
     export CHECKPOINT_SAMPLES_EVERY="${CHECKPOINT_SAMPLES_EVERY}"
     export JAX_PLATFORMS="${JAX_PLATFORMS}"
@@ -218,7 +237,7 @@ for rank in $(seq 0 $((N_WORKERS - 1))); do
     export MPLCONFIGDIR="${MPLCONFIGDIR}"
     export CUDA_VISIBLE_DEVICES="${gpu_id}"
     export JAX_VISIBLE_DEVICES=0
-    export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-15}"
+    export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
     bash -c '
         set -euo pipefail
         cd "${REPO_ROOT}"
@@ -278,6 +297,9 @@ for rank in $(seq 0 $((N_WORKERS - 1))); do
         if [[ -n "${INIT_PARAMS}" ]]; then
           args+=(--init-params "${INIT_PARAMS}")
         fi
+        if [[ "${INIT_BALL_SCALE}" != "0" ]]; then
+          args+=(--init-ball-scale "${INIT_BALL_SCALE}" --init-ball-seed "${INIT_BALL_SEED}")
+        fi
         echo "[$(date)] worker=${WORKER_RANK} starting HMC command: ${PYTHON} -u ${args[*]}"
         "${PYTHON}" -u "${args[@]}"
         echo "[$(date)] worker=${WORKER_RANK} HMC command finished"
@@ -302,6 +324,10 @@ if [[ "${CHECKPOINT_SAMPLES_EVERY}" != "0" && "${CHECKPOINT_COMBINE_AFTER}" == "
     --stop-file "${CHECKPOINT_MONITOR_STOP_FILE}"
     --combiner "${COMBINER}"
     --python "${PYTHON}"
+    --getdist-script "${GETDIST_SCRIPT}"
+    --getdist-python "${PYTHON}"
+    --getdist-tag-prefix "${CHECKPOINT_GETDIST_TAG_PREFIX}"
+    --getdist-label "${CHECKPOINT_GETDIST_LABEL}"
     --paste-gate "${CHECKPOINT_PZ3_GATE}"
     --paste-config-template "${CHECKPOINT_PASTE_CONFIG_TEMPLATE}"
     --paste-run-root-base "${CHECKPOINT_PASTE_RUN_ROOT_BASE}"
@@ -312,6 +338,7 @@ if [[ "${CHECKPOINT_SAMPLES_EVERY}" != "0" && "${CHECKPOINT_COMBINE_AFTER}" == "
     --ksz-ylim-min="${KSZ_YLIM_MIN}"
     --ksz-ylim-max="${KSZ_YLIM_MAX}"
     --plot-ell-max "${PLOT_ELL_MAX}"
+    --plot-xscale "${PLOT_XSCALE}"
     --ksz-velocity-mode "${KSZ_VELOCITY_MODE}"
     --ksz-reconstruction-noise-seed "${KSZ_RECONSTRUCTION_NOISE_SEED}"
     --sim-matched-transfers "${CHECKPOINT_PASTE_SIM_MATCHED_TRANSFERS}"
@@ -324,8 +351,14 @@ if [[ "${CHECKPOINT_SAMPLES_EVERY}" != "0" && "${CHECKPOINT_COMBINE_AFTER}" == "
     --postprocess-platform "${CHECKPOINT_POSTPROCESS_PLATFORM}"
     --retry-failed
   )
+  if [[ -n "${PLOT_XLIM}" ]]; then
+    monitor_args+=(--plot-xlim "${PLOT_XLIM}")
+  fi
   if [[ "${CHECKPOINT_PASTE_AFTER}" == "1" ]]; then
     monitor_args+=(--submit-paste)
+  fi
+  if [[ "${CHECKPOINT_GETDIST_AFTER}" == "1" ]]; then
+    monitor_args+=(--make-getdist)
   fi
   echo "[$(date)] starting checkpoint monitor: ${PYTHON} -u ${monitor_args[*]}"
   "${PYTHON}" -u "${monitor_args[@]}" >"${WORKER_LOG_DIR}/checkpoint_monitor.out" 2>"${WORKER_LOG_DIR}/checkpoint_monitor.err" &
@@ -361,13 +394,20 @@ echo "[$(date)] all workers finished"
 
 if [[ "${COMBINE_AFTER}" == "1" ]]; then
   echo "[$(date)] combining worker chains"
-  CUDA_VISIBLE_DEVICES="${ALLOCATED_GPUS[0]}" JAX_VISIBLE_DEVICES=0 "${PYTHON}" -u "${COMBINER}" \
-    --config "${CONFIG}" \
-    --worker-dir "${WORKER_ROOT}" \
-    --output-dir "${COMBINED_DIR}" \
-    --suffix "${COMBINED_SUFFIX}" \
-    --plot-ell-max "${PLOT_ELL_MAX}" \
+  combine_args=(
+    "${COMBINER}"
+    --config "${CONFIG}"
+    --worker-dir "${WORKER_ROOT}"
+    --output-dir "${COMBINED_DIR}"
+    --suffix "${COMBINED_SUFFIX}"
+    --plot-ell-max "${PLOT_ELL_MAX}"
     --plot-ksz-ylim="${KSZ_YLIM_MIN},${KSZ_YLIM_MAX}"
+    --plot-xscale "${PLOT_XSCALE}"
+  )
+  if [[ -n "${PLOT_XLIM}" ]]; then
+    combine_args+=(--plot-xlim "${PLOT_XLIM}")
+  fi
+  CUDA_VISIBLE_DEVICES="${ALLOCATED_GPUS[0]}" JAX_VISIBLE_DEVICES=0 "${PYTHON}" -u "${combine_args[@]}"
 fi
 
 echo "[$(date)] done"

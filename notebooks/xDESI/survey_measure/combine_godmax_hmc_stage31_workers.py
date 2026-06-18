@@ -18,6 +18,7 @@ import godmax_multiprobe_theory_utils as gmt
 DEFAULT_PLOT_ELL_MAX = 2800.0
 DEFAULT_KSZ_YLIM = (-5.0e-5, 5.0e-5)
 DEFAULT_KSZ_YLIM_ARG = f"{DEFAULT_KSZ_YLIM[0]},{DEFAULT_KSZ_YLIM[1]}"
+DEFAULT_PLOT_XSCALE = "linear"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -44,6 +45,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Multiplicative display scale for the kSZ pi x T D_ell panel.",
+    )
+    parser.add_argument(
+        "--plot-xscale",
+        default=DEFAULT_PLOT_XSCALE,
+        choices=("linear", "log", "symlog"),
+        help="X-axis scaling for posterior predictive D_ell plots.",
+    )
+    parser.add_argument(
+        "--plot-xlim",
+        default=None,
+        metavar="XMIN,XMAX",
+        help="Optional x-axis limits for posterior predictive D_ell plots.",
     )
     return parser
 
@@ -79,6 +92,18 @@ def parse_plot_ksz_ylim(value: object) -> Optional[tuple[float, float]]:
     if len(parts) != 2:
         raise ValueError(f"--plot-ksz-ylim must contain two values, got {value!r}.")
     return (float(parts[0]), float(parts[1]))
+
+
+def parse_plot_xlim(value: object) -> Optional[tuple[float, float]]:
+    if value is None or str(value).strip() == "":
+        return None
+    parts = str(value).replace(",", " ").split()
+    if len(parts) != 2:
+        raise ValueError(f"--plot-xlim must contain two values, got {value!r}.")
+    lo, hi = float(parts[0]), float(parts[1])
+    if not np.isfinite(lo) or not np.isfinite(hi) or not lo < hi:
+        raise ValueError(f"--plot-xlim must be finite and increasing, got {value!r}.")
+    return (lo, hi)
 
 
 def _load_chain(path: Path) -> dict:
@@ -181,6 +206,8 @@ def combine_worker_chains(
     plot_ell_max: Optional[float] = DEFAULT_PLOT_ELL_MAX,
     plot_ksz_ylim: Optional[tuple[float, float]] = DEFAULT_KSZ_YLIM,
     plot_ksz_scale: float = 1.0,
+    plot_xscale: str = DEFAULT_PLOT_XSCALE,
+    plot_xlim: Optional[tuple[float, float]] = None,
 ) -> dict:
     if not chain_paths:
         raise FileNotFoundError("No worker chain files found.")
@@ -209,8 +236,11 @@ def combine_worker_chains(
         spec.name: float(np.asarray(combined[f"sample__{spec.name}"])[best_idx])
         for spec in context.parameter_specs
     }
-    chi2_dof = int(context.likelihood.rank)
-    reduced_chi2 = float(best_chi2) / max(float(chi2_dof), 1.0)
+    chi2_n_modes = int(context.likelihood.rank)
+    n_fit_parameters = len(context.parameter_specs)
+    chi2_dof = max(chi2_n_modes - n_fit_parameters, 1)
+    reduced_chi2 = float(best_chi2) / float(chi2_dof)
+    chi2_per_mode = float(best_chi2) / max(float(chi2_n_modes), 1.0)
     convergence = convergence_diagnostics(payloads, [spec.name for spec in context.parameter_specs])
 
     chain_path = output_dir / f"chain_{suffix}.npz"
@@ -219,6 +249,11 @@ def combine_worker_chains(
             {
                 "best_sample_index": best_idx,
                 "best_whitened_chi2": best_chi2,
+                "best_reduced_chi2": reduced_chi2,
+                "best_chi2_dof": chi2_dof,
+                "best_chi2_per_mode": chi2_per_mode,
+                "chi2_n_modes": chi2_n_modes,
+                "n_fit_parameters": n_fit_parameters,
                 "convergence": convergence,
                 "worker_chain_paths": [str(path) for path in chain_paths],
                 "convergence_diagnostics": convergence,
@@ -282,6 +317,8 @@ def combine_worker_chains(
         ksz_scale=plot_ksz_scale,
         total_reduced_chi2=reduced_chi2,
         chi2_dof=chi2_dof,
+        xscale=plot_xscale,
+        xlim=plot_xlim,
     )
     full_dell_pdf_path = output_dir / f"posterior_predictive_full_dell_comparison_{suffix}.pdf"
     full_dell_plot_paths = gmt.plot_family_dell_comparisons(
@@ -296,6 +333,8 @@ def combine_worker_chains(
         active_band_indices=hmc31.likelihood_active_band_indices(context),
         total_reduced_chi2=reduced_chi2,
         chi2_dof=chi2_dof,
+        xscale=plot_xscale,
+        xlim=plot_xlim,
     )
 
     summary_path = output_dir / f"fit_summary_{suffix}.json"
@@ -313,6 +352,11 @@ def combine_worker_chains(
         "best_sample_index": best_idx,
         "best_sample": best_sample,
         "best_whitened_chi2": best_chi2,
+        "best_reduced_chi2": reduced_chi2,
+        "best_chi2_dof": chi2_dof,
+        "best_chi2_per_mode": chi2_per_mode,
+        "chi2_n_modes": chi2_n_modes,
+        "n_fit_parameters": n_fit_parameters,
         "convergence": convergence,
         "convergence_diagnostics": convergence,
         "pseudo_inverse_stats": stats,
@@ -323,6 +367,8 @@ def combine_worker_chains(
             "dell_ell_max": plot_ell_max,
             "ksz_ylim": plot_ksz_ylim,
             "ksz_scale": float(plot_ksz_scale),
+            "xscale": plot_xscale,
+            "xlim": plot_xlim,
         },
         "static_summary": hmc31.static_summary(context),
         "parameter_specs": hmc31.parameter_specs_jsonable(context.parameter_specs),
@@ -344,6 +390,11 @@ def combine_worker_chains(
         "dell_plots": dell_plot_paths,
         "full_dell_plots": full_dell_plot_paths,
         "best_whitened_chi2": best_chi2,
+        "best_reduced_chi2": reduced_chi2,
+        "best_chi2_dof": chi2_dof,
+        "best_chi2_per_mode": chi2_per_mode,
+        "chi2_n_modes": chi2_n_modes,
+        "n_fit_parameters": n_fit_parameters,
         "convergence": convergence,
         "convergence_diagnostics": convergence,
         "n_samples_total": int(chi2.size),
@@ -352,6 +403,8 @@ def combine_worker_chains(
             "dell_ell_max": plot_ell_max,
             "ksz_ylim": plot_ksz_ylim,
             "ksz_scale": float(plot_ksz_scale),
+            "xscale": plot_xscale,
+            "xlim": plot_xlim,
         },
     }
 
@@ -360,6 +413,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_arg_parser().parse_args(normalize_plot_ksz_ylim_args(argv))
     plot_ell_max = None if args.plot_ell_max is not None and args.plot_ell_max <= 0.0 else args.plot_ell_max
     plot_ksz_ylim = parse_plot_ksz_ylim(args.plot_ksz_ylim)
+    plot_xlim = parse_plot_xlim(args.plot_xlim)
     context = hmc31.prepare_fit_context(args.config)
     worker_dir = Path(args.worker_dir)
     chain_paths = sorted(worker_dir.glob(args.pattern))
@@ -371,6 +425,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         plot_ell_max=plot_ell_max,
         plot_ksz_ylim=plot_ksz_ylim,
         plot_ksz_scale=float(args.plot_ksz_scale),
+        plot_xscale=str(args.plot_xscale),
+        plot_xlim=plot_xlim,
     )
     print(json.dumps(gmt.to_jsonable(result), indent=2))
     return 0

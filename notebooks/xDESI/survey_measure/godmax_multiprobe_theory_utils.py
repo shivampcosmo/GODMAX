@@ -1069,6 +1069,8 @@ def plot_family_dell_comparisons(
     active_band_indices: Optional[Mapping[str, Sequence[int]]] = None,
     total_reduced_chi2: Optional[float] = None,
     chi2_dof: Optional[int] = None,
+    xscale: str = "linear",
+    xlim: Optional[Tuple[float, float]] = None,
 ) -> List[Path]:
     import matplotlib
 
@@ -1133,19 +1135,13 @@ def plot_family_dell_comparisons(
                 if active_band_indices is not None and name in active_band_indices:
                     active = set(int(x) for x in active_band_indices[name])
                     excluded = np.asarray([int(i) not in active for i in local_index], dtype=bool)
-                    if np.any(excluded) and ell_left is not None and ell_right is not None:
-                        first = True
-                        for lo, hi in zip(ell_left[excluded], ell_right[excluded]):
-                            ax.axvspan(
-                                float(lo),
-                                float(hi),
-                                color="#b8bcc5",
-                                alpha=0.24,
-                                lw=0,
-                                zorder=0,
-                                label="not in likelihood" if first else None,
-                            )
-                            first = False
+                    inactive_spans = (
+                        [(float(lo), float(hi)) for lo, hi in zip(ell_left[excluded], ell_right[excluded])]
+                        if np.any(excluded) and ell_left is not None and ell_right is not None
+                        else []
+                    )
+                else:
+                    inactive_spans = []
                 fac = dell_factor(ell)
                 sign = -1.0 if family == "desi_pi_act_T" else 1.0
                 scale = float(ksz_scale) if family == "desi_pi_act_T" else 1.0
@@ -1155,6 +1151,21 @@ def plot_family_dell_comparisons(
                 ylabel = r"$D_\ell$"
                 if family == "desi_pi_act_T":
                     ylabel = r"$-D_\ell^{\pi T}$" if np.isclose(scale, 1.0) else r"$-10^3 D_\ell^{\pi T}$"
+                if inactive_spans:
+                    first_inactive = True
+                    for lo, hi in inactive_spans:
+                        ax.fill_between(
+                            [lo, hi],
+                            [0.0, 0.0],
+                            [1.0, 1.0],
+                            transform=ax.get_xaxis_transform(),
+                            color="#b8bcc5",
+                            alpha=0.28,
+                            lw=0,
+                            zorder=0,
+                            label="not in likelihood" if first_inactive else None,
+                        )
+                        first_inactive = False
                 ax.errorbar(ell, y_data, yerr=y_err, fmt="o", ms=3.2, lw=1.0, color=colors.get(family, "#333333"), label="data", zorder=2)
                 ax.plot(ell, y_theory, "-", lw=1.6, color="#111111", label="bestfit theory", zorder=3)
                 ax.axhline(0.0, color="#777777", lw=0.7, alpha=0.55)
@@ -1163,6 +1174,10 @@ def plot_family_dell_comparisons(
                 if family == "desi_pi_act_T" and ksz_ylim is not None:
                     ax.set_ylim(float(ksz_ylim[0]), float(ksz_ylim[1]))
                 ax.grid(True, color="#d8dbe2", lw=0.7, alpha=0.75)
+                if str(xscale) != "linear":
+                    ax.set_xscale(str(xscale))
+                if xlim is not None:
+                    ax.set_xlim(float(xlim[0]), float(xlim[1]))
                 ax.set_xlabel(r"$\ell$")
                 ax.set_ylabel(ylabel)
                 ax.set_title(measurement.labels.get(name, name), fontsize=9)
@@ -1173,10 +1188,159 @@ def plot_family_dell_comparisons(
             if family == "desi_pi_act_T":
                 title += " (positive kSZ convention)"
             if total_reduced_chi2 is not None:
-                title += rf"; total $\chi^2_\nu={float(total_reduced_chi2):.2f}$"
+                title += "\n" + rf"best-fit reduced $\chi^2={float(total_reduced_chi2):.2f}$"
                 if chi2_dof is not None:
-                    title += f" ({int(chi2_dof)} modes)"
-            fig.suptitle(title, fontsize=13)
+                    title += f" ({int(chi2_dof)} dof)"
+            fig.suptitle(title, fontsize=12)
+            out = output_dir / f"{filename_prefix}_{family}.png"
+            fig.savefig(out, dpi=180)
+            outputs.append(out)
+            if pdf is not None:
+                pdf.savefig(fig)
+            plt.close(fig)
+    finally:
+        if pdf is not None:
+            pdf.close()
+    return outputs
+
+
+def plot_family_dell_residual_comparisons(
+    measurement: MeasurementData,
+    theory_vector: np.ndarray,
+    output_dir: str | Path,
+    *,
+    pdf_path: Optional[str | Path] = None,
+    filename_prefix: str = "godmax_dell_residual",
+    ell_max: Optional[float] = None,
+    ksz_scale: float = 1.0,
+    active_band_indices: Optional[Mapping[str, Sequence[int]]] = None,
+    total_reduced_chi2: Optional[float] = None,
+    chi2_dof: Optional[int] = None,
+    xscale: str = "linear",
+    xlim: Optional[Tuple[float, float]] = None,
+    ylim: Optional[Tuple[float, float]] = None,
+) -> List[Path]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    if theory_vector.shape != measurement.data_vector.shape:
+        raise ValueError(
+            f"Theory vector shape {theory_vector.shape} does not match data shape {measurement.data_vector.shape}."
+        )
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pdf = PdfPages(pdf_path) if pdf_path is not None else None
+    outputs: List[Path] = []
+    family_order = [
+        "des_shear_EE",
+        "act_y_des_shear_E",
+        "desi_g_auto",
+        "desi_g_act_y",
+        "desi_g_des_shear_E",
+        "desi_g_act_kappa",
+        "desi_pi_act_T",
+    ]
+    colors = {
+        "des_shear_EE": "#2457a6",
+        "act_y_des_shear_E": "#b43c2f",
+        "desi_g_auto": "#1e7a49",
+        "desi_g_act_y": "#7a4aa0",
+        "desi_g_des_shear_E": "#c26a1b",
+        "desi_g_act_kappa": "#00838f",
+        "desi_pi_act_T": "#5e5147",
+    }
+    try:
+        for family in family_order:
+            names = [name for name in measurement.names if measurement.families[name] == family]
+            if not names:
+                continue
+            ncol = min(4, int(math.ceil(math.sqrt(len(names)))))
+            nrow = int(math.ceil(len(names) / ncol))
+            fig, axes = plt.subplots(nrow, ncol, figsize=(4.4 * ncol, 3.2 * nrow), squeeze=False, constrained_layout=True)
+            for ax, name in zip(axes.flat, names):
+                index = measurement.names.index(name)
+                start = int(measurement.starts[index])
+                stop = int(measurement.stops[index])
+                ell = measurement_ell_slice(measurement, start, stop)
+                ell_left, ell_right = measurement_ell_edge_slice(measurement, start, stop)
+                data_cl = measurement.data_vector[start:stop]
+                theory_cl = theory_vector[start:stop]
+                err = np.sqrt(np.clip(np.diag(measurement.covariance[start:stop, start:stop]), 0.0, np.inf))
+                local_index = np.arange(ell.size, dtype=int)
+                if ell_max is not None:
+                    keep = ell <= float(ell_max)
+                    local_index = local_index[keep]
+                    ell = ell[keep]
+                    if ell_left is not None and ell_right is not None:
+                        ell_left = ell_left[keep]
+                        ell_right = ell_right[keep]
+                    data_cl = data_cl[keep]
+                    theory_cl = theory_cl[keep]
+                    err = err[keep]
+                if active_band_indices is not None and name in active_band_indices:
+                    active = set(int(x) for x in active_band_indices[name])
+                    excluded = np.asarray([int(i) not in active for i in local_index], dtype=bool)
+                    inactive_spans = (
+                        [(float(lo), float(hi)) for lo, hi in zip(ell_left[excluded], ell_right[excluded])]
+                        if np.any(excluded) and ell_left is not None and ell_right is not None
+                        else []
+                    )
+                else:
+                    inactive_spans = []
+                fac = dell_factor(ell)
+                sign = -1.0 if family == "desi_pi_act_T" else 1.0
+                scale = float(ksz_scale) if family == "desi_pi_act_T" else 1.0
+                y_data = sign * scale * fac * data_cl
+                y_theory = sign * scale * fac * theory_cl
+                y_err = scale * fac * err
+                residual = np.full_like(y_data, np.nan, dtype=np.float64)
+                valid = np.isfinite(y_data) & np.isfinite(y_theory) & np.isfinite(y_err) & (y_err > 0.0)
+                residual[valid] = (y_theory[valid] - y_data[valid]) / y_err[valid]
+                if inactive_spans:
+                    first_inactive = True
+                    for lo, hi in inactive_spans:
+                        ax.fill_between(
+                            [lo, hi],
+                            [0.0, 0.0],
+                            [1.0, 1.0],
+                            transform=ax.get_xaxis_transform(),
+                            color="#b8bcc5",
+                            alpha=0.28,
+                            lw=0,
+                            zorder=0,
+                            label="not in likelihood" if first_inactive else None,
+                        )
+                        first_inactive = False
+                ax.axhline(0.0, color="#555555", lw=0.8, alpha=0.75, zorder=1)
+                ax.axhline(1.0, color="#4f4f4f", lw=1.6, ls="--", alpha=0.95, zorder=1, label=r"$\pm 1\sigma$")
+                ax.axhline(-1.0, color="#4f4f4f", lw=1.6, ls="--", alpha=0.95, zorder=1)
+                ax.plot(ell, residual, "o-", ms=3.2, lw=1.1, color=colors.get(family, "#333333"), label=r"$(\mathrm{bestfit}-\mathrm{data})/\sigma$", zorder=3)
+                if ell_max is not None:
+                    ax.set_xlim(right=float(ell_max))
+                if str(xscale) != "linear":
+                    ax.set_xscale(str(xscale))
+                if xlim is not None:
+                    ax.set_xlim(float(xlim[0]), float(xlim[1]))
+                if ylim is not None:
+                    ax.set_ylim(float(ylim[0]), float(ylim[1]))
+                ax.grid(True, color="#d8dbe2", lw=0.7, alpha=0.75)
+                ax.set_xlabel(r"$\ell$")
+                ax.set_ylabel(r"$(D_\ell^\mathrm{bf}-D_\ell^\mathrm{data})/\sigma(D_\ell)$")
+                ax.set_title(measurement.labels.get(name, name), fontsize=9)
+                ax.legend(loc="best", fontsize=7, frameon=False)
+            for ax in axes.flat[len(names) :]:
+                ax.set_visible(False)
+            title = f"{family}: bestfit residuals"
+            if family == "desi_pi_act_T":
+                title += " (positive kSZ convention)"
+            if total_reduced_chi2 is not None:
+                title += "\n" + rf"best-fit reduced $\chi^2={float(total_reduced_chi2):.2f}$"
+                if chi2_dof is not None:
+                    title += f" ({int(chi2_dof)} dof)"
+            fig.suptitle(title, fontsize=12)
             out = output_dir / f"{filename_prefix}_{family}.png"
             fig.savefig(out, dpi=180)
             outputs.append(out)
@@ -1198,6 +1362,8 @@ def plot_measurement_dell(
     ell_max: Optional[float] = None,
     ksz_ylim: Optional[Tuple[float, float]] = None,
     ksz_scale: float = 1.0,
+    xscale: str = "linear",
+    xlim: Optional[Tuple[float, float]] = None,
 ) -> List[Path]:
     import matplotlib
 
@@ -1262,6 +1428,10 @@ def plot_measurement_dell(
                 if family == "desi_pi_act_T" and ksz_ylim is not None:
                     ax.set_ylim(float(ksz_ylim[0]), float(ksz_ylim[1]))
                 ax.grid(True, color="#d8dbe2", lw=0.7, alpha=0.75)
+                if str(xscale) != "linear":
+                    ax.set_xscale(str(xscale))
+                if xlim is not None:
+                    ax.set_xlim(float(xlim[0]), float(xlim[1]))
                 ax.set_xlabel(r"$\ell$")
                 ax.set_ylabel(ylabel)
                 ax.set_title(measurement.labels.get(name, name), fontsize=9)

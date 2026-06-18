@@ -35,6 +35,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-file", required=True)
     parser.add_argument("--combiner", required=True)
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--make-getdist", action="store_true")
+    parser.add_argument("--getdist-script", default=None)
+    parser.add_argument("--getdist-python", default=None)
+    parser.add_argument("--getdist-tag-prefix", default="stage31_hmc")
+    parser.add_argument("--getdist-label", default=None)
     parser.add_argument("--paste-gate", default=None)
     parser.add_argument("--paste-config-template", default=None)
     parser.add_argument("--submit-paste", action="store_true")
@@ -46,6 +51,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ksz-ylim-min", default="-5e-5")
     parser.add_argument("--ksz-ylim-max", default="5e-5")
     parser.add_argument("--plot-ell-max", default="2800")
+    parser.add_argument("--plot-xscale", default="linear", choices=("linear", "log", "symlog"))
+    parser.add_argument("--plot-xlim", default=None)
     parser.add_argument("--ksz-velocity-mode", default="photoz_reconstruction_emulation")
     parser.add_argument("--ksz-reconstruction-noise-seed", default="12345")
     parser.add_argument("--sim-matched-transfers", default="1")
@@ -186,6 +193,50 @@ def submit_paste(args: argparse.Namespace, checkpoint_dir: Path, suffix: str, dr
     if proc.returncode != 0:
         raise RuntimeError(f"sbatch failed for checkpoint {draw}: {proc.stderr.strip()}")
     return proc.stdout.strip()
+
+
+def make_getdist(args: argparse.Namespace, checkpoint_dir: Path, suffix: str, draw: int, monitor_dir: Path) -> Optional[dict]:
+    if not args.make_getdist:
+        return None
+    if not args.getdist_script:
+        raise ValueError("--make-getdist requires --getdist-script")
+    chain_path = checkpoint_dir / f"chain_{suffix}.npz"
+    if not chain_path.is_file():
+        raise FileNotFoundError(f"Missing combined checkpoint chain for GetDist: {chain_path}")
+    tag = f"{args.getdist_tag_prefix}_checkpoint_{draw:06d}"
+    out_dir = checkpoint_dir / "getdist_gas_hod_ia"
+    label_base = args.getdist_label or args.run_label
+    sample_label = f"{label_base} checkpoint {draw:06d}"
+    py = str(Path(args.getdist_python or args.python).expanduser().resolve())
+    cmd = [
+        py,
+        "-u",
+        str(Path(args.getdist_script).expanduser().resolve()),
+        "--chain",
+        str(chain_path),
+        "--output-dir",
+        str(out_dir),
+        "--sample-label",
+        sample_label,
+        "--tag",
+        tag,
+    ]
+    run_command(
+        cmd,
+        log_path=monitor_dir / f"getdist_checkpoint_{draw:06d}.out",
+        err_path=monitor_dir / f"getdist_checkpoint_{draw:06d}.err",
+        env=postprocess_env(args),
+    )
+    summary_path = out_dir / f"getdist_gas_hod_ia_sample_summary_{tag}.json"
+    result = {
+        "tag": tag,
+        "output_dir": str(out_dir),
+        "summary_path": str(summary_path),
+        "all_selected_pdf": str(out_dir / f"getdist_all_selected_{tag}.pdf"),
+    }
+    if summary_path.is_file():
+        result["summary"] = _json_load(summary_path)
+    return result
 
 
 def _json_load(path: Path) -> dict:
@@ -374,7 +425,11 @@ def process_checkpoint(args: argparse.Namespace, draw: int, monitor_dir: Path) -
         "--plot-ell-max",
         str(args.plot_ell_max),
         f"--plot-ksz-ylim={args.ksz_ylim_min},{args.ksz_ylim_max}",
+        "--plot-xscale",
+        str(args.plot_xscale),
     ]
+    if args.plot_xlim:
+        cmd.extend(["--plot-xlim", str(args.plot_xlim)])
     try:
         run_command(
             cmd,
@@ -383,6 +438,7 @@ def process_checkpoint(args: argparse.Namespace, draw: int, monitor_dir: Path) -
             env=postprocess_env(args),
         )
         health = checkpoint_health(checkpoint_dir, suffix, draw, monitor_dir)
+        getdist = make_getdist(args, checkpoint_dir, suffix, draw, monitor_dir)
         if not health["healthy"] and args.require_healthy_for_paste:
             paste_job = None
             log(
@@ -395,6 +451,7 @@ def process_checkpoint(args: argparse.Namespace, draw: int, monitor_dir: Path) -
             "draws_per_worker": draw,
             "checkpoint_dir": str(checkpoint_dir),
             "suffix": suffix,
+            "getdist": getdist,
             "paste_job": paste_job,
             "healthy": bool(health["healthy"]),
             "best_whitened_chi2": health.get("best_whitened_chi2"),
@@ -405,7 +462,7 @@ def process_checkpoint(args: argparse.Namespace, draw: int, monitor_dir: Path) -
         marker.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if failed_marker.exists():
             failed_marker.unlink()
-        log(f"checkpoint {draw:06d} complete paste_job={paste_job}")
+        log(f"checkpoint {draw:06d} complete paste_job={paste_job} getdist={bool(getdist)}")
     except Exception as exc:
         payload = {
             "draws_per_worker": draw,
@@ -425,7 +482,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log(
         "checkpoint monitor starting "
         f"worker_dir={args.worker_dir} combined_dir={args.combined_dir} "
-        f"expected_workers={args.expected_workers} submit_paste={args.submit_paste}"
+        f"expected_workers={args.expected_workers} submit_paste={args.submit_paste} "
+        f"make_getdist={args.make_getdist}"
     )
     while True:
         draws = checkpoint_draws(Path(args.worker_dir).expanduser().resolve(), int(args.expected_workers))

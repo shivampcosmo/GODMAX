@@ -4362,6 +4362,86 @@ def plot_full_data(args: argparse.Namespace) -> None:
     )
 
 
+def _likelihood_cut_bound(
+    cut_config: Mapping[str, object],
+    name: str,
+    family: str,
+    theory_key: str,
+    which: str,
+) -> Optional[float]:
+    """Resolve the likelihood ell_min/ell_max for a spectrum.
+
+    Mirrors _ell_min_for_spectrum / _ell_max_for_spectrum in
+    godmax_multiprobe_hmc_stage31.py: precedence is spectrum_ell_<which>[name or
+    theory_key] -> family_ell_<which>[family] -> default_ell_<which>.  ``which``
+    is "min" or "max".  Replicated here to avoid importing the numpyro-heavy HMC
+    module into the plotting job.
+    """
+
+    if not cut_config:
+        return None
+    spectrum_map = cut_config.get(f"spectrum_ell_{which}") or {}
+    for key in (name, theory_key):
+        if key in spectrum_map:
+            return float(spectrum_map[key])
+    family_map = cut_config.get(f"family_ell_{which}") or {}
+    if family in family_map:
+        return float(family_map[family])
+    default = cut_config.get(f"default_ell_{which}")
+    return None if default is None else float(default)
+
+
+def _likelihood_active_band_mask(
+    ell_centers: np.ndarray,
+    ell_left: Optional[np.ndarray],
+    ell_right: Optional[np.ndarray],
+    cut_config: Mapping[str, object],
+    name: str,
+    family: str,
+    theory_key: str,
+) -> np.ndarray:
+    """Boolean mask of bandpowers kept by the likelihood scale cuts.
+
+    Mirrors _selected_band_indices in godmax_multiprobe_hmc_stage31.py with the
+    configured band_selection basis (default "center").
+    """
+
+    centers = np.asarray(ell_centers, dtype=np.float64)
+    n_band = int(centers.size)
+    ell_min = _likelihood_cut_bound(cut_config, name, family, theory_key, "min")
+    ell_max = _likelihood_cut_bound(cut_config, name, family, theory_key, "max")
+    if ell_min is None and ell_max is None:
+        return np.ones(n_band, dtype=bool)
+    selection = str(cut_config.get("band_selection", "center")).lower()
+    if selection in {"left", "lower", "ell_left"} and ell_left is not None:
+        basis = np.asarray(ell_left, dtype=np.float64)
+    elif selection in {"right", "upper", "ell_right"} and ell_right is not None:
+        basis = np.asarray(ell_right, dtype=np.float64)
+    else:
+        basis = centers
+    keep = np.ones(n_band, dtype=bool)
+    if ell_min is not None:
+        keep &= basis >= float(ell_min)
+    if ell_max is not None:
+        keep &= basis <= float(ell_max)
+    return keep
+
+
+def _inactive_band_spans(
+    active_mask: np.ndarray,
+    ell_left: Optional[np.ndarray],
+    ell_right: Optional[np.ndarray],
+) -> List[Tuple[float, float]]:
+    """(lo, hi) ell ranges of bandpowers excluded by the likelihood cuts."""
+
+    if ell_left is None or ell_right is None:
+        return []
+    excluded = ~np.asarray(active_mask, dtype=bool)
+    left = np.asarray(ell_left, dtype=np.float64)
+    right = np.asarray(ell_right, dtype=np.float64)
+    return [(float(lo), float(hi)) for lo, hi in zip(left[excluded], right[excluded])]
+
+
 def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
     import shutil
     import matplotlib as mpl
@@ -4370,7 +4450,7 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
     config = read_config(args.config)
     measurement_path = Path(args.measurement) if args.measurement else Path(config["godmax"]["measurement_h5"])
     sum_theory_path = Path(args.sum_theory)
-    response_theory_path = Path(args.response_theory)
+    response_theory_path = Path(args.response_theory) if args.response_theory else None
     sim_path = Path(args.sim) if args.sim else None
     extra_sim_paths = [Path(path) for path in (args.extra_sim or [])]
     extra_sim_labels = list(args.extra_sim_label or [])
@@ -4379,7 +4459,7 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
 
     measurement = gmt.load_measurement_data(measurement_path)
     sum_theory = read_windowed_theory(sum_theory_path)
-    response_theory = read_windowed_theory(response_theory_path)
+    response_theory = read_windowed_theory(response_theory_path) if response_theory_path is not None else {}
     sim = read_measurement_spectra(sim_path) if sim_path is not None and sim_path.exists() else {}
     pz_bin = pz_bin_from_config(config)
     nside = int(args.nside or config.get("pasting", {}).get("nside", 1024))
@@ -4388,6 +4468,8 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
     if theory_component not in {"full", "resolved"}:
         raise ValueError("--theory-component must be 'full' or 'resolved'.")
     plot_ell_max = _plot_ell_max_from_args(args)
+    cut_config = config.get("likelihood_cuts") or {}
+    gray_unused = bool(cut_config) if args.gray_unused_bands is None else bool(args.gray_unused_bands)
     extra_sims = []
     for idx, path in enumerate(extra_sim_paths):
         if not path.exists():
@@ -4403,7 +4485,8 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
     names = [
         name
         for name in core_spectra_for_pz(pz_bin)
-        if name in measurement.names and name in sum_theory and name in response_theory
+        if name in measurement.names and name in sum_theory
+        and (response_theory_path is None or name in response_theory)
     ]
     if not names:
         raise RuntimeError("No overlapping spectra found between data and theory products.")
@@ -4492,6 +4575,30 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
             err = np.sqrt(np.clip(np.diag(measurement.covariance[start:stop, start:stop]), 0.0, np.inf))
             ell_panel, data_cl, err = _clip_plot_ell(ell, data_cl, err, ell_max=plot_ell_max)
             y_data, y_err, ylabel = transform(name, ell_panel, data_cl, err)
+            if gray_unused:
+                active_mask = _likelihood_active_band_mask(
+                    ell,
+                    measurement.ell_left,
+                    measurement.ell_right,
+                    cut_config,
+                    name,
+                    measurement.families.get(name, ""),
+                    measurement.theory_keys.get(name, name),
+                )
+                first_inactive = True
+                for lo, hi in _inactive_band_spans(active_mask, measurement.ell_left, measurement.ell_right):
+                    ax.fill_between(
+                        [lo, hi],
+                        [0.0, 0.0],
+                        [1.0, 1.0],
+                        transform=ax.get_xaxis_transform(),
+                        color="#b8bcc5",
+                        alpha=0.28,
+                        lw=0,
+                        zorder=0,
+                        label="not in likelihood" if first_inactive else None,
+                    )
+                    first_inactive = False
             ax.errorbar(
                 ell_panel,
                 y_data,
@@ -4510,37 +4617,39 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
             )
 
             th_sum = sum_theory[name]
-            th_response = response_theory[name]
             ell_sum, cl_sum = _clip_plot_ell(
                 th_sum["ell"],
                 th_sum[theory_component],
                 ell_max=plot_ell_max,
             )
-            ell_response, cl_response = _clip_plot_ell(
-                th_response["ell"],
-                th_response[theory_component],
-                ell_max=plot_ell_max,
-            )
             y_sum, _, _ = transform(name, ell_sum, cl_sum)
-            y_response, _, _ = transform(name, ell_response, cl_response)
+            sum_label = "Theory (1h+2h)" if response_theory_path is None else "Theory power-add transitions"
             ax.plot(
                 ell_sum,
                 y_sum,
                 "-",
                 lw=2.0,
                 color=colors["sum"],
-                label="Theory power-add transitions",
+                label=sum_label,
                 zorder=3,
             )
-            ax.plot(
-                ell_response,
-                y_response,
-                "--",
-                lw=1.8,
-                color=colors["response"],
-                label="Theory response transitions",
-                zorder=3,
-            )
+            if response_theory_path is not None and name in response_theory:
+                th_response = response_theory[name]
+                ell_response, cl_response = _clip_plot_ell(
+                    th_response["ell"],
+                    th_response[theory_component],
+                    ell_max=plot_ell_max,
+                )
+                y_response, _, _ = transform(name, ell_response, cl_response)
+                ax.plot(
+                    ell_response,
+                    y_response,
+                    "--",
+                    lw=1.8,
+                    color=colors["response"],
+                    label="Theory response transitions",
+                    zorder=3,
+                )
             for series in sim_series:
                 spectra = series["spectra"]
                 if name not in spectra:
@@ -4566,6 +4675,8 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
                 ax.set_ylim(float(ksz_ylim[0]), float(ksz_ylim[1]))
             elif name.startswith("desi_g_auto") and np.all(y_data > 0.0) and np.all(y_sum > 0.0):
                 ax.set_yscale("log")
+            if str(getattr(args, "plot_xscale", "linear")) == "log":
+                ax.set_xscale("log")
             if plot_ell_max is not None:
                 ax.set_xlim(right=float(plot_ell_max))
             ax.grid(True, color=colors["grid"], lw=0.75, alpha=0.72)
@@ -4604,7 +4715,7 @@ def plot_full_data_theory_variants(args: argparse.Namespace) -> None:
                 "output": str(output),
                 "measurement": str(measurement_path),
                 "sum_theory": str(sum_theory_path),
-                "response_theory": str(response_theory_path),
+                "response_theory": str(response_theory_path) if response_theory_path is not None else None,
                 "sim": str(sim_path) if sim_path else None,
                 "sim_label": args.sim_label,
                 "extra_sim": [str(path) for path in extra_sim_paths],
@@ -5351,7 +5462,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("--measurement", default=None, help="Full-footprint measurement HDF5. Defaults to godmax.measurement_h5.")
     p.add_argument("--sum-theory", required=True, help="Theory HDF5 built with all supported transition models set to poweradd.")
-    p.add_argument("--response-theory", required=True, help="Theory HDF5 built with all supported transition models set to response.")
+    p.add_argument("--response-theory", required=False, default=None, help="Theory HDF5 built with all supported transition models set to response. Optional: if omitted, only the power-add (1h+2h) theory curve is shown.")
     p.add_argument("--sim", default=None, help="Optional cap simulation measurement HDF5.")
     p.add_argument("--sim-label", default=None, help="Legend label for --sim.")
     p.add_argument("--extra-sim", action="append", default=[], help="Additional simulation measurement HDF5 to overlay. Repeatable.")
@@ -5377,6 +5488,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="YMIN,YMAX",
         help="y-axis limits for the kSZ pi x T panel. Accepts YMIN,YMAX or YMIN YMAX. Defaults to -5e-5 5e-5.",
+    )
+    p.add_argument(
+        "--gray-unused-bands",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Shade bandpowers excluded by the likelihood scale cuts (config 'likelihood_cuts'), "
+            "matching the survey full_dell_comparison figure. Default: auto-on when the config "
+            "carries a 'likelihood_cuts' block."
+        ),
+    )
+    p.add_argument(
+        "--plot-xscale",
+        default="linear",
+        choices=("linear", "log"),
+        help="X-axis (multipole) scale for the panels. Default linear.",
     )
     p.set_defaults(func=plot_full_data_theory_variants)
     return parser
