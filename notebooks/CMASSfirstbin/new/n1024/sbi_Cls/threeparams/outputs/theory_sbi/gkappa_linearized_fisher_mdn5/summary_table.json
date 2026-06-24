@@ -1,0 +1,29 @@
+[
+  {
+    "param": "theta_ej_0",
+    "fiducial": 2.0,
+    "hmc_mean": 2.449808556627554,
+    "hmc_std": 0.9048206484097671,
+    "sbi_mean": 2.4159371739246622,
+    "sbi_std": 0.865007590485974,
+    "delta_mean_over_hmc_std": -0.037434360900606034
+  },
+  {
+    "param": "nu_theta_ej_M",
+    "fiducial": -0.1,
+    "hmc_mean": -0.13412993776106952,
+    "hmc_std": 0.0851122162271331,
+    "sbi_mean": -0.13702450494220061,
+    "sbi_std": 0.08347705235000591,
+    "delta_mean_over_hmc_std": -0.03400883339010425
+  },
+  {
+    "param": "nu_theta_ej_z",
+    "fiducial": 0.0,
+    "hmc_mean": -0.882143442448411,
+    "hmc_std": 1.3292008048809032,
+    "sbi_mean": -0.8710539749003993,
+    "sbi_std": 1.2927087831670714,
+    "delta_mean_over_hmc_std": 0.008342958796963252
+  }
+]

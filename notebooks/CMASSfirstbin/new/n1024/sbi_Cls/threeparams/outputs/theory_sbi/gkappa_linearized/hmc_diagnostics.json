@@ -1,0 +1,70 @@
+{
+  "arviz_summary": {
+    "ess_bulk": {
+      "nu_theta_ej_M": 7023.0,
+      "nu_theta_ej_z": 4377.0,
+      "theta_ej_0": 3984.0
+    },
+    "ess_tail": {
+      "nu_theta_ej_M": 6076.0,
+      "nu_theta_ej_z": 3796.0,
+      "theta_ej_0": 2948.0
+    },
+    "hdi_3%": {
+      "nu_theta_ej_M": -0.275,
+      "nu_theta_ej_z": -2.999,
+      "theta_ej_0": 1.001
+    },
+    "hdi_97%": {
+      "nu_theta_ej_M": 0.0,
+      "nu_theta_ej_z": 1.346,
+      "theta_ej_0": 3.962
+    },
+    "mcse_mean": {
+      "nu_theta_ej_M": 0.001,
+      "nu_theta_ej_z": 0.019,
+      "theta_ej_0": 0.013
+    },
+    "mcse_sd": {
+      "nu_theta_ej_M": 0.001,
+      "nu_theta_ej_z": 0.01,
+      "theta_ej_0": 0.007
+    },
+    "mean": {
+      "nu_theta_ej_M": -0.134,
+      "nu_theta_ej_z": -0.882,
+      "theta_ej_0": 2.45
+    },
+    "r_hat": {
+      "nu_theta_ej_M": 1.0,
+      "nu_theta_ej_z": 1.0,
+      "theta_ej_0": 1.0
+    },
+    "sd": {
+      "nu_theta_ej_M": 0.085,
+      "nu_theta_ej_z": 1.329,
+      "theta_ej_0": 0.905
+    }
+  },
+  "chain_method": "vectorized",
+  "dense_mass": true,
+  "fiducial_offset_correction": true,
+  "fiducial_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate/outputs/theory_sbi/fiducial_thetaej2_nuejm_minus0p1.npz",
+  "max_rhat": 1.0,
+  "max_tree_depth": 6,
+  "min_ess_bulk": 3984.0,
+  "num_chains": 4,
+  "num_samples": 4000,
+  "num_warmup": 4000,
+  "runtime_sec": 24.12659192085266,
+  "target_accept_prob": 0.9,
+  "theory_backend": "linearized",
+  "validation": {
+    "finite_gradient": true,
+    "finite_prediction": true,
+    "gradient_norm": 0.0,
+    "max_abs_diff": 0.0,
+    "max_rel_diff": 0.0,
+    "median_rel_diff": 0.0
+  }
+}
