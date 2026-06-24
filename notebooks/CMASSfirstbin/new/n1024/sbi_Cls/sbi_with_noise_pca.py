@@ -502,6 +502,13 @@ def train_one_statistic(args):
 
         # ── PCA compression ───────────────────────────────────────────────────
         pca, n_comp = fit_pca(xt_norm)
+        r2_nu = np.array([np.corrcoef(pca.transform(xt_norm)[:, i],
+                theta_train[:, 1])[0, 1]**2 for i in range(pca.n_components_)])
+        cumr2_nu = np.cumsum(r2_nu)
+        n_comp_nu = int(np.searchsorted(cumr2_nu, 0.80 * cumr2_nu[-1]) + 1)
+        n_comp_var = n_comp
+        n_comp = max(n_comp, n_comp_nu)
+        print(f'  [PCA] variance-based={n_comp_var}, nu-signal-based={n_comp_nu}, final={n_comp}')
         xt_pca = pca.transform(xt_norm)[:, :n_comp].astype(np.float32)
         xo_pca = pca.transform(xo_norm.reshape(1, -1))[:, :n_comp][0].astype(np.float32)
 
