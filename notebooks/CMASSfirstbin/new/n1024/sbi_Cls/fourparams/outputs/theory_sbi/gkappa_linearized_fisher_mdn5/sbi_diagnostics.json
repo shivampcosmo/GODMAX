@@ -1,0 +1,43 @@
+{
+  "density_estimator": "mdn",
+  "device": "cuda",
+  "discard_prior_samples": true,
+  "fiducial_offset_correction": true,
+  "fiducial_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate/outputs/theory_sbi/fiducial_thetaej2_nuejm_minus0p1.npz",
+  "force_first_round_loss": false,
+  "hidden_features": 64,
+  "learning_rate": 0.0005,
+  "max_num_epochs": 200,
+  "num_atoms": 20,
+  "num_bins": 10,
+  "num_components": 5,
+  "num_transforms": 5,
+  "parameter_transform": "fisher",
+  "posterior_sample_attempts": 206422,
+  "posterior_samples": 30000,
+  "retrain_from_scratch": true,
+  "round_paths": [
+    "/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/fourparams/outputs/theory_sbi/gkappa_linearized_fisher_mdn5/sbi_round0_simulations.npz",
+    "/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/fourparams/outputs/theory_sbi/gkappa_linearized_fisher_mdn5/sbi_round1_simulations.npz",
+    "/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/fourparams/outputs/theory_sbi/gkappa_linearized_fisher_mdn5/sbi_round2_simulations.npz"
+  ],
+  "runtime_sec": 35.50149893760681,
+  "samples_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/fourparams/outputs/theory_sbi/gkappa_linearized_fisher_mdn5/sbi_posterior_samples.npz",
+  "simulations_per_round": [
+    4096,
+    4096,
+    8192
+  ],
+  "summary_compression": "score",
+  "theory_backend": "linearized",
+  "training_batch_size": 256,
+  "validation": {
+    "finite_gradient": true,
+    "finite_prediction": true,
+    "gradient_norm": 0.0,
+    "max_abs_diff": 0.0,
+    "max_rel_diff": 0.0,
+    "median_rel_diff": 0.0
+  },
+  "validation_fraction": 0.1
+}
