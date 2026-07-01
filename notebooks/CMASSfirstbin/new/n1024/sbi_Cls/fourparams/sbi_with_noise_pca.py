@@ -671,7 +671,8 @@ if __name__ == '__main__':
                     if v is not None:
                         np.save(cache_file, v)
                 if v is not None:
-                    theta_list.append([row['theta_ej_0'], row['nu_theta_ej_M']])
+                    theta_list.append([row['theta_ej_0'],row['nu_theta_ej_M'],
+                                       row['nu_theta_ej_z'],row['mu_beta'],])
                     x_list.append(v)
 
         x_train     = np.array(x_list,     dtype=np.float32)
@@ -727,6 +728,7 @@ if __name__ == '__main__':
         status = 'OK  ' if success else 'FAIL'
         print(f'  [{status}] {msg}')
 
+    '''
     # ── Validation ────────────────────────────────────────────────────────────
     if not os.path.exists(VALIDATION_CSV):
         print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
@@ -845,7 +847,7 @@ if __name__ == '__main__':
             print(f'  OK:     {val_ok}')
             if val_failed:
                 print(f'  Failed: {val_failed}')
-
+    '''
     # ── Active learning proposal ──────────────────────────────────────────────
     print(f'\nGenerating round {NEXT_ROUND} proposals from '
           f'{PROPOSAL_STAT} posterior...')
