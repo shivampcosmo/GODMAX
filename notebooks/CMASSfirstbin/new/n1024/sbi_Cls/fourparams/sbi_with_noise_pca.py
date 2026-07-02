@@ -31,7 +31,7 @@ WORK_DIR       = str(Path(__file__).parent.resolve())
 OUTPUTS_DIR    = str(Path(WORK_DIR).parent.parent / 'outputs')
 NOISE_PATH     = os.path.join(OUTPUTS_DIR, 'sbi_noise_spectra.npz')
 
-ADD_SURVEY_NOISE = True   # set False to reproduce noiseless runs
+ADD_SURVEY_NOISE = False   # set False to reproduce noiseless runs
 
 _CACHE_SUFFIX  = '_noisy' if ADD_SURVEY_NOISE else ''
 CACHE_DIR      = os.path.join(WORK_DIR, f'sample_vector_cache_cls{_CACHE_SUFFIX}')
@@ -75,7 +75,7 @@ PROPOSAL_STAT = 'JOINT'
 VAL_FRACTION  = 0.10
 
 # ── PCA compression ───────────────────────────────────────────────────────────
-PCA_VARIANCE_THRESHOLD = 0.99   # keep components until this fraction is explained
+PCA_VARIANCE_THRESHOLD = 0.95   # keep components until this fraction is explained
 
 # ── Ell binning ───────────────────────────────────────────────────────────────
 def make_ell_bins(lmin=LMIN, lmax=LMAX, n_bins=N_ELL_BINS):
@@ -149,11 +149,11 @@ N_STATISTICS = len(STAT_MAP)
 # ── Architecture ──────────────────────────────────────────────────────────────
 FORCE_EQUAL_ARCH = False
 EQUAL_ARCH = {
-    'hidden_features': 64,
-    'num_components':  5,
-    'learning_rate':   5e-4,
-    'batch_size':      64,
-    'max_num_epochs':  200,
+    'hidden_features': 128,
+    'num_components':  10,
+    'learning_rate':   3e-4,
+    'batch_size':      128,
+    'max_num_epochs':  500,
     'repeats':         6,
 }
 
@@ -504,14 +504,25 @@ def train_one_statistic(args):
         np.save(fpath(f'scaler_{name}_std.npy'),  x_std)
 
         # ── PCA compression ───────────────────────────────────────────────────
-        pca, n_comp = fit_pca(xt_norm)
-        r2_nu = np.array([np.corrcoef(pca.transform(xt_norm)[:, i],
-                theta_train[:, 1])[0, 1]**2 for i in range(pca.n_components_)])
-        cumr2_nu = np.cumsum(r2_nu)
-        n_comp_nu = int(np.searchsorted(cumr2_nu, 0.80 * cumr2_nu[-1]) + 1)
-        n_comp_var = n_comp
-        n_comp = max(n_comp, n_comp_nu)
-        print(f'  [PCA] variance-based={n_comp_var}, nu-signal-based={n_comp_nu}, final={n_comp}')
+        pca, n_comp = fit_pca(xt_norm)  # n_comp is the variance-based count
+        # Check all parameters for signal in each PCA component
+        r2_all = np.zeros(pca.n_components_)
+        pca_transformed = pca.transform(xt_norm)  # compute once, reuse
+
+        for p in range(theta_train.shape[1]):
+            r2_p = np.array([np.corrcoef(pca_transformed[:, i], theta_train[:, p])[0, 1]**2
+                            for i in range(pca.n_components_)])
+            r2_all = np.maximum(r2_all, r2_p)  # keep component if ANY param correlates
+
+        # Find last component with meaningful signal for any parameter
+        signal_threshold = 0.01  # r^2 > 1% counts as signal
+        signal_comps = np.where(r2_all > signal_threshold)[0]
+        n_comp_signal = int(signal_comps[-1] + 1) if len(signal_comps) > 0 else n_comp
+
+        n_comp = max(n_comp, n_comp_signal)
+        print(f'  [PCA] variance-based={n_comp}, signal-based={n_comp_signal}, final={n_comp}')
+        print(f'  [PCA] max r^2 per component (first 20): {r2_all[:20].round(4).tolist()}')
+        
         xt_pca = pca.transform(xt_norm)[:, :n_comp].astype(np.float32)
         xo_pca = pca.transform(xo_norm.reshape(1, -1))[:, :n_comp][0].astype(np.float32)
 
@@ -882,5 +893,5 @@ if __name__ == '__main__':
         col = next_theta[:, i]
         print(f'  {pname}: mean={col.mean():.3f}  std={col.std():.3f}  '
               f'range=[{col.min():.3f}, {col.max():.3f}]')
-
+    
     print('\nAll done. Generate contour plots and run the next round of samples!')
