@@ -1,0 +1,56 @@
+# Prior Min and Max Values
+prior_uniform:
+  # log10M1_fshmr_bin1: 11.05 15.5
+  log10M1_fshmr_bin2: 11.05 15.5
+  # log10M1_fshmr_bin3: 11.05 15.5
+
+  # log10M1_a_fshmr_bin1: -3.0 3.0
+  log10M1_a_fshmr_bin2: -3.0 3.0
+  # log10M1_a_fshmr_bin3: -3.0 3.0
+
+
+  # beta_fshmr_bin1: 0.001 1.5
+  beta_fshmr_bin2: 0.001 1.5
+  # beta_fshmr_bin3: 0.001 1.5
+
+  # log10Mstar0_fshmr_bin1: 8.5 13.5
+  log10Mstar0_fshmr_bin2: 8.5 13.5
+  # log10Mstar0_fshmr_bin3: 8.5 13.5
+
+  # log10Mstar0_a_fshmr_bin1: -3.0 3.0
+  # log10Mstar0_a_fshmr_bin2: -3.0 3.0
+  # log10Mstar0_a_fshmr_bin3: -3.0 3.0
+
+  # delta_fshmr_bin1: 0.001 1.5
+  delta_fshmr_bin2: 0.001 1.0
+  # delta_fshmr_bin3: 0.001 1.5
+
+  # gamma_fshmr_bin1: 0.01 3.0
+  gamma_fshmr_bin2: 0.01 3.0
+  # gamma_fshmr_bin3: 0.01 3.0
+
+  # siglogMstar_Ncen_bin1: 0.01 1.5
+  siglogMstar_Ncen_bin2: 0.01 1.5
+  # siglogMstar_Ncen_bin3: 0.01 1.5
+
+  # Bcut_Nsat_bin1: 0.5 5.0
+  Bcut_Nsat_bin2: 0.1 5.0
+  # Bcut_Nsat_bin3: 0.5 5.0
+
+  # Bsat_Nsat_bin1: 5.0 15.0
+  Bsat_Nsat_bin2: 2.0 15.0
+  # Bsat_Nsat_bin3: 5.0 15.0
+
+  # betacut_Nsat_bin1: -0.5 2.0
+  betacut_Nsat_bin2: -2.0 2.0
+  # betacut_Nsat_bin3: -0.5 2.0
+
+  # betasat_Nsat_bin1: -1.0 1.0
+  betasat_Nsat_bin2: -1.0 1.0
+  # betasat_Nsat_bin3: -1.0 1.0
+
+  # alphasat_Nsat_bin1: 0.1 2.0
+  alphasat_Nsat_bin2: 0.1 2.0
+  # alphasat_Nsat_bin3: 0.1 2.0
+
+  # alpha_gg : 0.5 1.5

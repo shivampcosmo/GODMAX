@@ -156,7 +156,9 @@ class get_Pkz(Profiles):
             self.Pgy_tot_mat = ((self.Pgy_1h_kz_mat)**(self.alpha_gy) + (self.Pgy_2h_kz_mat)**(self.alpha_gy))**(1/self.alpha_gy)
             if self.tSZ_transition_model == 'response':
                 self.Pgy_tot_mat = self.Pgy_tot_mat * self.Pmm_sup_tot_mat
-            self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat
+            self.Pgg_tot_mat = ((self.Pgg_1h_kz_mat)**(self.alpha_gg) + (self.Pgg_2h_kz_mat)**(self.alpha_gg))**(1/self.alpha_gg)
+            if self.gg_transition_model == 'response':
+                self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat
 
 
 

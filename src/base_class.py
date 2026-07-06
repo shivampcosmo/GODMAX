@@ -195,22 +195,42 @@ class base_class:
 
         # Stellar profile parameters. Basically these are the parameters for the HOD of galaxies as well. See Leauthaud et al. 2011 for more details.
         # The parameters control the amplitude and redshift evolution of the stellar profile.
-        self.log10M1_fshmr = sim_params_dict.get('log10M1_fshmr', 12.35)
-        self.log10M1_a_fshmr = sim_params_dict.get('log10M1_a_fshmr', 0.28)        
-        self.log10Mstar0_fshmr = sim_params_dict.get('log10Mstar0_fshmr', 10.72)
-        self.log10Mstar0_a_fshmr = sim_params_dict.get('log10Mstar0_a_fshmr', 0.55)        
-        self.beta_fshmr = sim_params_dict.get('beta_fshmr', 0.44)        
-        self.beta_a_fshmr = sim_params_dict.get('beta_a_fshmr', 0.18)        
-        self.delta_fshmr = sim_params_dict.get('delta_fshmr', 0.57)        
-        self.delta_a_fshmr = sim_params_dict.get('delta_a_fshmr', 0.17)                
-        self.gamma_fshmr = sim_params_dict.get('gamma_fshmr', 1.56)        
-        self.gamma_a_fshmr = sim_params_dict.get('gamma_a_fshmr', 2.51)                
-        self.siglogMstar_Ncen = sim_params_dict.get('siglogMstar_Ncen', 0.25)                
-        self.alphasat_Nsat = sim_params_dict.get('alphasat_Nsat', 1.0)                
-        self.Bcut_Nsat = sim_params_dict.get('Bcut_Nsat', 1.69)                        
-        self.Bsat_Nsat = sim_params_dict.get('Bsat_Nsat', 9.01)                                
-        self.betacut_Nsat = sim_params_dict.get('betacut_Nsat', 0.6)                                
-        self.betasat_Nsat = sim_params_dict.get('betasat_Nsat', 0.74)    
+        # self.log10M1_fshmr = sim_params_dict.get('log10M1_fshmr', 12.35)
+        # self.log10M1_a_fshmr = sim_params_dict.get('log10M1_a_fshmr', 0.28)        
+        # self.log10Mstar0_fshmr = sim_params_dict.get('log10Mstar0_fshmr', 10.72)
+        # self.log10Mstar0_a_fshmr = sim_params_dict.get('log10Mstar0_a_fshmr', 0.55)        
+        # self.beta_fshmr = sim_params_dict.get('beta_fshmr', 0.44)        
+        # self.beta_a_fshmr = sim_params_dict.get('beta_a_fshmr', 0.18)        
+        # self.delta_fshmr = sim_params_dict.get('delta_fshmr', 0.57)        
+        # self.delta_a_fshmr = sim_params_dict.get('delta_a_fshmr', 0.17)                
+        # self.gamma_fshmr = sim_params_dict.get('gamma_fshmr', 1.56)        
+        # self.gamma_a_fshmr = sim_params_dict.get('gamma_a_fshmr', 2.51)                
+        # self.siglogMstar_Ncen = sim_params_dict.get('siglogMstar_Ncen', 0.25)                
+        # self.alphasat_Nsat = sim_params_dict.get('alphasat_Nsat', 1.0)                
+        # self.Bcut_Nsat = sim_params_dict.get('Bcut_Nsat', 1.69)                        
+        # self.Bsat_Nsat = sim_params_dict.get('Bsat_Nsat', 9.01)                                
+        # self.betacut_Nsat = sim_params_dict.get('betacut_Nsat', 0.6)                                
+        # self.betasat_Nsat = sim_params_dict.get('betasat_Nsat', 0.74)    
+
+        self.log10M1_fshmr_array = jnp.array(sim_params_dict.get('log10M1_fshmr_array', [12.35]))
+        self.log10M1_a_fshmr_array = jnp.array(sim_params_dict.get('log10M1_a_fshmr_array', [0.28]))        
+        self.log10Mstar0_fshmr_array = jnp.array(sim_params_dict.get('log10Mstar0_fshmr_array', [10.72]))
+        self.log10Mstar0_a_fshmr_array = jnp.array(sim_params_dict.get('log10Mstar0_a_fshmr_array', [0.55]))        
+        self.beta_fshmr_array = jnp.array(sim_params_dict.get('beta_fshmr_array', [0.44]))        
+        self.beta_a_fshmr_array = jnp.array(sim_params_dict.get('beta_a_fshmr_array', [0.18]))        
+        self.delta_fshmr_array = jnp.array(sim_params_dict.get('delta_fshmr_array', [0.57]))        
+        self.delta_a_fshmr_array = jnp.array(sim_params_dict.get('delta_a_fshmr_array', [0.17]))                
+        self.gamma_fshmr_array = jnp.array(sim_params_dict.get('gamma_fshmr_array', [1.56]))        
+        self.gamma_a_fshmr_array = jnp.array(sim_params_dict.get('gamma_a_fshmr_array', [2.51]))                
+        self.siglogMstar_Ncen_array = jnp.array(sim_params_dict.get('siglogMstar_Ncen_array', [0.25]))                
+        self.alphasat_Nsat_array = jnp.array(sim_params_dict.get('alphasat_Nsat_array', [1.0]))                
+        self.Bcut_Nsat_array = jnp.array(sim_params_dict.get('Bcut_Nsat_array', [1.69]))                        
+        self.Bsat_Nsat_array = jnp.array(sim_params_dict.get('Bsat_Nsat_array', [9.01]))                                
+        self.betacut_Nsat_array = jnp.array(sim_params_dict.get('betacut_Nsat_array', [0.6]))                                
+        self.betasat_Nsat_array = jnp.array(sim_params_dict.get('betasat_Nsat_array', [0.74]))    
+
+        self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
+
 
         # In case don't want to model proper galaxies, then can just set simple stellar profile parameters:
         self.eta_star=sim_params_dict.get('eta_star',0.3)
@@ -318,9 +338,11 @@ class base_class:
             for jb in range(self.nbins_lens):
                 pzs_inp_mat[jb, :] = nz_info_dict['nz' + str(jb)]
             self.pzs_inp_mat_inp_lens = jnp.array(pzs_inp_mat)
+            self.z_edges_bins_lens = nz_info_dict['z_edges_bins_lens']
         except:
             self.nbins_lens = 1
             self.z_array_nz_lens = jnp.linspace(0.01, 1.5, 128)
+            self.z_edges_bins_lens = jnp.array([[0.1, 1.5]])
             self.pzs_inp_mat_inp_lens = jnp.array([jnp.ones_like(self.z_array_nz_lens)])
 
 
@@ -334,8 +356,10 @@ class base_class:
         self.mult_shear_bias_array = jnp.array(other_params_dict.get('mult_shear_bias_array', [0.0]))
 
         self.tSZ_transition_model = analysis_dict.get('tSZ_transition_model', 'poweradd')
+        self.gg_transition_model = analysis_dict.get('gg_transition_model', 'poweradd')
         self.alpha_ky = other_params_dict.get('alpha_ky', 1.0)
         self.alpha_gy = other_params_dict.get('alpha_gy', 1.0)
+        self.alpha_gg = other_params_dict.get('alpha_gg', 1.0)
 
     @timing_decorator
     def get_power_spectra_cosmo(self):
