@@ -91,7 +91,7 @@ def make_residual_plot(args: argparse.Namespace) -> dict:
     context = hmc31.prepare_fit_context(config_path)
     sample = hmc31.pack_sample_from_params_file(context, params_path)
     models = hmc31.build_models_from_sample(context, sample)
-    theory_cls = hmc31.extract_theory_cls_jax_from_models(models)
+    theory_cls = hmc31._dense_theory_cls_from_models(context, models)
 
     active_theory = hmc31.theory_data_vector_jax(context.likelihood, theory_cls)
     best_chi2 = float(np.asarray(hmc31.whitened_chi2(context.likelihood, active_theory)))

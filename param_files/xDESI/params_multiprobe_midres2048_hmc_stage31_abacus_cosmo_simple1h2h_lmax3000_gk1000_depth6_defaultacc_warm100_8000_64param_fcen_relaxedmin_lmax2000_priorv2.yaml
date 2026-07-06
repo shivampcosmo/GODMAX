@@ -1,16 +1,17 @@
 description: >
   Stage-31 configuration for fitting the corrected 2026-06-17 xDESI
-  midres2048 multi-probe measurement with the 60-parameter setup plus one
-  sampled f_cen HOD amplitude per DESI photometric tomographic bin. This
-  variant removes the low-ell cuts for shear-y, galaxy auto, galaxy-y,
-  galaxy-kappa, and kSZ, and caps galaxy auto, galaxy-shear, galaxy-y, and
-  kSZ at ell_max=2000.
+  midres2048 multi-probe measurement with the 64-parameter setup (60-parameter
+  DES-Y3 nuisances plus one sampled f_cen HOD amplitude per DESI photometric
+  tomographic bin). Variant of the warm100_2000 sparse-l=192 run that (a) uses
+  the v2 (wider) 64-parameter prior and (b) draws 8000 HMC samples per chain.
+  Removes low-ell cuts for shear-y, galaxy auto, galaxy-y, galaxy-kappa, and kSZ,
+  and caps galaxy auto, galaxy-shear, galaxy-y, and kSZ at ell_max=2000.
 
 comparison_config: param_files/xDESI/params_multiprobe_midres2048_true_nz_theory_abacus_cosmo_simple1h2h_lmax3000_13log_apo1deg_C2.yaml
-prior_file: param_files/xDESI/priors_multiprobe_midres2048_hmc_stage31_64param_desy3_fcen.yaml
+prior_file: param_files/xDESI/priors_multiprobe_midres2048_hmc_stage31_64param_desy3_fcen_v2.yaml
 
-stage: stage31_midres2048_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_64param_fcen_relaxedmin_lmax2000
-output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_midres2048_true_nz_hmc_stage31_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_64param_fcen_relaxedmin_lmax2000
+stage: stage31_midres2048_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_8000_64param_fcen_relaxedmin_lmax2000_priorv2
+output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_midres2048_true_nz_hmc_stage31_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_8000_64param_fcen_relaxedmin_lmax2000_priorv2
 minimum_halo_log10_m200c_hmsun: 11.147538
 force_simple_1h2h: true
 sample_des_shear_m_bias_in_model: true
@@ -49,7 +50,7 @@ covariance:
 sampler:
   seed: 1062
   num_warmup: 100
-  num_samples: 2000
+  num_samples: 8000
   num_chains: 4
   chain_method: vectorized
   dense_mass: true

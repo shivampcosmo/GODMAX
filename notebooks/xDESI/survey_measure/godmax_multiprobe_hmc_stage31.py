@@ -10,7 +10,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import h5py
 import numpy as np
@@ -21,6 +21,7 @@ jax_config.update("jax_enable_x64", True)
 
 import jax
 import jax.numpy as jnp
+import interpax
 import numpyro
 import numpyro.distributions as dist
 from numpyro.distributions.transforms import biject_to
@@ -1057,9 +1058,45 @@ def theory_data_vector_jax(likelihood: LikelihoodData, theory_cls: Mapping[str, 
     return jnp.concatenate(out)
 
 
+def _densify_theory_cls_to_full_lmax(
+    theory_cls: Mapping[str, jnp.ndarray],
+    model_ell: jnp.ndarray,
+    lmax: int,
+) -> Dict[str, jnp.ndarray]:
+    """Interpolate C(l) computed on a sparse log-l grid back to the dense integer
+    grid arange(2, lmax+1) that the bandpower windows expect.
+
+    No-op (returns the input dict) when the model already used the dense grid, so
+    the default code path is bit-identical to before. Interpolation is cubic in
+    C(l) vs log(l) (handles negative cross-spectra); validated to reproduce the
+    dense windowed data vector to <0.01% at ~190 sparse points.
+    """
+    dense_ell = jnp.arange(2, int(lmax) + 1, dtype=jnp.float64)
+    if int(model_ell.shape[0]) == int(dense_ell.shape[0]):
+        return dict(theory_cls)
+    log_model = jnp.log(jnp.asarray(model_ell, dtype=jnp.float64))
+    log_dense = jnp.log(dense_ell)
+    return {
+        key: interpax.Interpolator1D(log_model, val, method="cubic", extrap=True)(log_dense)
+        for key, val in theory_cls.items()
+    }
+
+
+def _dense_theory_cls_from_models(
+    context: FitContext, models: Mapping[str, object]
+) -> Dict[str, jnp.ndarray]:
+    """extract_theory_cls_jax_from_models, interpolated back to the dense integer
+    multipole grid (a no-op when the sparse compute grid is disabled). Use this
+    everywhere C(l) feeds theory_data_vector_jax, which assumes the dense l=2..lmax
+    grid the bandpower windows are defined on."""
+    theory_cls = extract_theory_cls_jax_from_models(models)
+    lmax = int(context.config["metadata"]["lmax"])
+    return _densify_theory_cls_to_full_lmax(theory_cls, models["wl"].ell_array, lmax)
+
+
 def evaluate_sample_theory_vector(context: FitContext, sample_values: Mapping[str, object]) -> jnp.ndarray:
     models = build_models_from_sample(context, sample_values)
-    theory_cls = extract_theory_cls_jax_from_models(models)
+    theory_cls = _dense_theory_cls_from_models(context, models)
     return theory_data_vector_jax(context.likelihood, theory_cls)
 
 
@@ -1202,7 +1239,7 @@ def finite_difference_diagnostics(
     return rows
 
 
-def numpyro_model(context: FitContext) -> None:
+def numpyro_model(context: FitContext, *, remat_theory: bool = False) -> None:
     sample_values = {}
     for spec in context.parameter_specs:
         if spec.prior_kind == "normal":
@@ -1214,7 +1251,13 @@ def numpyro_model(context: FitContext) -> None:
         else:
             raise ValueError(f"Unknown prior kind {spec.prior_kind!r} for {spec.name}.")
         sample_values[spec.name] = numpyro.sample(spec.name, prior)
-    theory_vector = evaluate_sample_theory_vector(context, sample_values)
+    if remat_theory:
+        theory_vector = jax.checkpoint(
+            lambda values: evaluate_sample_theory_vector(context, values),
+            prevent_cse=False,
+        )(sample_values)
+    else:
+        theory_vector = evaluate_sample_theory_vector(context, sample_values)
     chi2 = whitened_chi2(context.likelihood, theory_vector)
     numpyro.deterministic("chi2", chi2)
     numpyro.factor("xdesi_loglike", -0.5 * chi2)
@@ -1285,7 +1328,7 @@ def static_summary(context: FitContext) -> dict:
 def compare_fiducial_windowing(context: FitContext) -> dict:
     fid = pack_fiducial_sample(context.parameter_specs)
     models = build_models_from_sample(context, fid)
-    theory_cls_jax = extract_theory_cls_jax_from_models(models)
+    theory_cls_jax = _dense_theory_cls_from_models(context, models)
     jax_vector = np.asarray(theory_data_vector_jax(context.likelihood, theory_cls_jax))
     theory_cls_np = gmt.extract_theory_cls_from_models(models, context.config["metadata"])
     ell_theory = gmt.model_ell_array(models)
@@ -1385,9 +1428,11 @@ def initialization_diagnostics(
     provided_init = init_values is not None
     init_values = dict(init_values) if provided_init else pack_fiducial_sample(context.parameter_specs)
     forward_mode = bool(settings.get("forward_mode_differentiation", False))
+    remat_theory = bool(settings.get("remat_theory", False))
     out = {
         "seed": int(settings.get("seed", 42)),
         "forward_mode_differentiation": forward_mode,
+        "remat_theory": remat_theory,
         "initial_point": "provided" if provided_init else "fiducial",
         "checks": [],
     }
@@ -1396,7 +1441,7 @@ def initialization_diagnostics(
         try:
             info = initialize_model(
                 jax.random.PRNGKey(int(settings.get("seed", 42))),
-                lambda: numpyro_model(context),
+                lambda: numpyro_model(context, remat_theory=remat_theory),
                 init_strategy=init_to_value(values=init_values),
                 forward_mode_differentiation=forward_mode,
                 validate_grad=validate_grad,
@@ -1452,6 +1497,7 @@ def _build_nuts_kernel(
     settings: Mapping[str, object],
     init_values: Mapping[str, float],
 ) -> NUTS:
+    remat_theory = bool(settings.get("remat_theory", False))
     kwargs = {
         "init_strategy": init_to_value(values=init_values),
         "dense_mass": bool(settings.get("dense_mass", True)),
@@ -1460,7 +1506,47 @@ def _build_nuts_kernel(
     }
     if settings.get("target_accept_prob") is not None:
         kwargs["target_accept_prob"] = float(settings["target_accept_prob"])
-    return NUTS(lambda: numpyro_model(context), **kwargs)
+    return NUTS(lambda: numpyro_model(context, remat_theory=remat_theory), **kwargs)
+
+
+def _build_nuts_potential_kernel(
+    context: FitContext,
+    settings: Mapping[str, object],
+    init_values: Mapping[str, float],
+) -> Tuple[NUTS, Callable[[object], object]]:
+    """Build NUTS from a preinitialized potential_fn.
+
+    NumPyro initializes model-based kernels by calling initialize_model even
+    when explicit init_params are supplied. For vectorized chains this can
+    trigger a large batched valid-init search. Preinitializing a scalar
+    potential_fn keeps the existing constrained postprocess behavior while
+    allowing MCMC.warmup to use the provided MAP-ball init_params directly.
+    """
+
+    forward_mode = bool(settings.get("forward_mode_differentiation", False))
+    remat_theory = bool(settings.get("remat_theory", False))
+    seed = int(settings.get("seed", 42))
+    log_status(
+        "[hmc] preinitializing scalar potential_fn "
+        f"seed={seed} forward_mode_differentiation={forward_mode} remat_theory={remat_theory}"
+    )
+    model_info = initialize_model(
+        jax.random.PRNGKey(seed),
+        lambda: numpyro_model(context, remat_theory=remat_theory),
+        init_strategy=init_to_value(values=init_values),
+        forward_mode_differentiation=forward_mode,
+        validate_grad=False,
+    )
+    potential_energy = float(np.asarray(model_info.param_info.potential_energy))
+    log_status(f"[hmc] scalar potential_fn ready initial_potential_energy={potential_energy:.8e}")
+    kwargs = {
+        "dense_mass": bool(settings.get("dense_mass", True)),
+        "max_tree_depth": int(settings.get("max_tree_depth", 8)),
+        "forward_mode_differentiation": forward_mode,
+    }
+    if settings.get("target_accept_prob") is not None:
+        kwargs["target_accept_prob"] = float(settings["target_accept_prob"])
+    return NUTS(potential_fn=model_info.potential_fn, **kwargs), model_info.postprocess_fn
 
 
 def _target_accept_label(settings: Mapping[str, object]) -> str:
@@ -1474,12 +1560,14 @@ def _build_mcmc(
     *,
     num_warmup: int,
     num_samples: int,
+    postprocess_fn: Optional[Callable[[object], object]] = None,
 ) -> MCMC:
     return MCMC(
         kernel,
         num_warmup=int(num_warmup),
         num_samples=int(num_samples),
         num_chains=int(settings["num_chains"]),
+        postprocess_fn=postprocess_fn,
         chain_method=str(settings.get("chain_method", "vectorized")),
         progress_bar=bool(settings.get("progress_bar", True)),
         jit_model_args=bool(settings.get("jit_model_args", True)),
@@ -1502,6 +1590,7 @@ def run_hmc_single(
         f"num_warmup={int(settings['num_warmup'])} num_samples={int(settings['num_samples'])} "
         f"max_tree_depth={int(settings.get('max_tree_depth', 8))} "
         f"target_accept_prob={_target_accept_label(settings)} "
+        f"remat_theory={bool(settings.get('remat_theory', False))} "
         f"dense_mass={bool(settings.get('dense_mass', True))} "
         f"progress_bar={bool(settings.get('progress_bar', True))}"
     )
@@ -1648,9 +1737,13 @@ def run_hmc_checkpointed(
     output_dir: Optional[str | Path] = None,
 ) -> _ArrayMCMCResult:
     total_samples = int(settings["num_samples"])
-    chunk_size = int(checkpoint_samples_every)
-    if chunk_size <= 0:
+    checkpoint_write_every = int(checkpoint_samples_every)
+    if checkpoint_write_every <= 0:
         raise ValueError("checkpoint_samples_every must be positive.")
+    # Keep the GPU collection buffer at the size that worked for the prior
+    # 4-chain run while still writing user-facing checkpoints every requested
+    # checkpoint_write_every samples.
+    sample_collection_chunk_size = min(checkpoint_write_every, 25)
     num_chains = int(settings["num_chains"])
     numpyro.set_host_device_count(max(1, num_chains))
     init_values = dict(init_values) if init_values is not None else pack_fiducial_sample(context.parameter_specs)
@@ -1660,55 +1753,75 @@ def run_hmc_checkpointed(
         "[hmc] configuring checkpointed NUTS "
         f"num_chains={num_chains} chain_method={settings.get('chain_method', 'vectorized')} "
         f"num_warmup={int(settings['num_warmup'])} num_samples={total_samples} "
-        f"checkpoint_samples_every={chunk_size} "
+        f"checkpoint_samples_every={checkpoint_write_every} "
+        f"sample_collection_chunk_size={sample_collection_chunk_size} "
         f"max_tree_depth={int(settings.get('max_tree_depth', 8))} "
         f"target_accept_prob={_target_accept_label(settings)} "
+        f"forward_mode_differentiation={bool(settings.get('forward_mode_differentiation', False))} "
+        f"remat_theory={bool(settings.get('remat_theory', False))} "
         f"dense_mass={bool(settings.get('dense_mass', True))} "
         f"progress_bar={bool(settings.get('progress_bar', True))}"
     )
-    kernel = _build_nuts_kernel(context, settings, init_values)
+    postprocess_fn = None
+    if init_params is not None:
+        log_status("[hmc] using potential_fn kernel to honor explicit vectorized init_params")
+        kernel, postprocess_fn = _build_nuts_potential_kernel(context, settings, init_values)
+    else:
+        kernel = _build_nuts_kernel(context, settings, init_values)
     mcmc = _build_mcmc(
         kernel,
         settings,
         num_warmup=int(settings["num_warmup"]),
-        num_samples=min(chunk_size, total_samples),
+        # NumPyro's warmup path uses self.num_samples as the collection
+        # buffer size even when collect_warmup=False. Keep this at one
+        # through warmup, then set the real chunk size for sampling below.
+        # A zero-sized collection triggers a JAX scatter shape error.
+        num_samples=1,
+        postprocess_fn=postprocess_fn,
     )
     rng_keys = jax.random.split(
         jax.random.PRNGKey(int(settings.get("seed", 42))),
-        int(math.ceil(total_samples / chunk_size)) + 1,
+        int(math.ceil(total_samples / sample_collection_chunk_size)) + 1,
     )
     extra_fields = ("potential_energy", "diverging", "accept_prob", "num_steps")
-    log_status("[hmc] checkpointed warmup begin")
+    log_status(f"[hmc] checkpointed warmup begin warmup_collection_num_samples={mcmc.num_samples}")
     mcmc.warmup(rng_keys[0], extra_fields=extra_fields, init_params=init_params)
     log_status("[hmc] checkpointed warmup done")
 
     sample_chunks: List[Dict[str, np.ndarray]] = []
     extra_chunks: List[Dict[str, np.ndarray]] = []
     draws_done = 0
-    chunk_index = 0
+    sample_chunk_index = 0
+    checkpoint_index = 0
     while draws_done < total_samples:
-        chunk_index += 1
-        current = min(chunk_size, total_samples - draws_done)
+        sample_chunk_index += 1
+        current = min(sample_collection_chunk_size, total_samples - draws_done)
         mcmc.num_samples = int(current)
         log_status(
-            f"[hmc] checkpointed sample chunk {chunk_index} begin "
+            f"[hmc] checkpointed sample chunk {sample_chunk_index} begin "
             f"draws={draws_done}:{draws_done + current}"
         )
-        mcmc.run(rng_keys[chunk_index], extra_fields=extra_fields)
+        mcmc.run(rng_keys[sample_chunk_index], extra_fields=extra_fields)
         sample_chunks.append({key: np.asarray(value) for key, value in mcmc.get_samples(group_by_chain=False).items()})
         extra_chunks.append(_flatten_extra_fields(mcmc.get_extra_fields(group_by_chain=False)))
         draws_done += current
-        samples = _concat_chain_dict(sample_chunks)
-        extra = _concat_chain_dict(extra_chunks)
-        _write_checkpoint_outputs(
-            context,
-            samples=samples,
-            extra=extra,
-            output_dir=output,
-            suffix=suffix,
-            chunk_index=chunk_index,
-            draws_per_worker=draws_done,
+        should_write_checkpoint = (
+            draws_done % checkpoint_write_every == 0
+            or draws_done >= total_samples
         )
+        if should_write_checkpoint:
+            checkpoint_index += 1
+            samples = _concat_chain_dict(sample_chunks)
+            extra = _concat_chain_dict(extra_chunks)
+            _write_checkpoint_outputs(
+                context,
+                samples=samples,
+                extra=extra,
+                output_dir=output,
+                suffix=suffix,
+                chunk_index=checkpoint_index,
+                draws_per_worker=draws_done,
+            )
         mcmc._warmup_state = mcmc._last_state
     log_status("[hmc] checkpointed sampling done")
     return _ArrayMCMCResult(_concat_chain_dict(sample_chunks), _concat_chain_dict(extra_chunks))
@@ -1807,7 +1920,7 @@ def save_fit_outputs(
     reduced_chi2 = float(best_chi2) / float(chi2_dof)
     chi2_per_mode = float(best_chi2) / max(float(chi2_n_modes), 1.0)
     models = build_models_from_sample(context, best_sample)
-    theory_cls = extract_theory_cls_jax_from_models(models)
+    theory_cls = _dense_theory_cls_from_models(context, models)
     best_theory = np.asarray(theory_data_vector_jax(context.likelihood, theory_cls))
     measurement = measurement_for_plots(context)
     stats = gmt.comparison_statistics(measurement, best_theory)
@@ -1955,6 +2068,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-tree-depth", type=int, default=None)
     parser.add_argument("--target-accept-prob", type=float, default=None)
     parser.add_argument(
+        "--forward-mode-differentiation",
+        action="store_true",
+        default=None,
+        help="Override sampler.forward_mode_differentiation=true.",
+    )
+    parser.add_argument(
+        "--remat-theory",
+        action="store_true",
+        default=None,
+        help="Checkpoint/rematerialize the theory-vector calculation during AD to reduce peak GPU memory.",
+    )
+    parser.add_argument(
         "--checkpoint-samples-every",
         type=int,
         default=None,
@@ -1976,6 +2101,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Seed for the per-chain initialization ball. Defaults to the sampler seed.",
+    )
+    parser.add_argument(
+        "--init-chain-values-file",
+        default=None,
+        help=(
+            "YAML file with an explicit list of per-chain initial parameter dicts (constrained "
+            "space) under key 'chain_init_values' (or a bare list). Each chain on this worker is "
+            "seeded from one entry; takes precedence over --init-params/--init-ball-scale."
+        ),
+    )
+    parser.add_argument(
+        "--init-chain-offset",
+        type=int,
+        default=0,
+        help="Row offset into --init-chain-values-file for this worker (= worker_rank * num_chains).",
     )
     parser.add_argument("--platform", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--gpu-sanity-check", action="store_true", help="Run one synchronized JAX matmul before setup.")
@@ -2006,6 +2146,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "chain_method": args.chain_method,
         "max_tree_depth": args.max_tree_depth,
         "target_accept_prob": args.target_accept_prob,
+        "forward_mode_differentiation": args.forward_mode_differentiation,
+        "remat_theory": args.remat_theory,
         "progress_bar": False if args.no_progress else None,
     }
     if args.compare_fiducial:
@@ -2019,7 +2161,51 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     init_params = None
     if args.init_params:
         print(json.dumps(gmt.to_jsonable({"init_params": args.init_params}), indent=2), flush=True)
-    if float(args.init_ball_scale) > 0.0:
+    if args.init_chain_values_file:
+        num_chains_init = int(settings_for_init["num_chains"])
+        offset = int(args.init_chain_offset)
+        raw_points = read_yaml(args.init_chain_values_file)
+        all_points = raw_points.get("chain_init_values", raw_points) if isinstance(raw_points, Mapping) else raw_points
+        all_points = list(all_points)
+        n_total = len(all_points)
+        worker_points = all_points[offset : offset + num_chains_init]
+        if len(worker_points) != num_chains_init:
+            raise ValueError(
+                f"--init-chain-values-file has {n_total} points; need {num_chains_init} at "
+                f"offset {offset} but found {len(worker_points)}."
+            )
+        values_by_chain = [
+            {spec.name: float(point[spec.name]) for spec in context.parameter_specs}
+            for point in worker_points
+        ]
+        for spec in context.parameter_specs:
+            if spec.prior_kind == "uniform":
+                for chain_index, chain_vals in enumerate(values_by_chain):
+                    value = chain_vals[spec.name]
+                    if not (float(spec.prior_min) < value < float(spec.prior_max)):
+                        raise ValueError(
+                            f"init chain {offset + chain_index} value {spec.name}={value:g} is not "
+                            f"strictly inside ({spec.prior_min:g}, {spec.prior_max:g})."
+                        )
+        init_params = constrained_values_to_init_params(context.parameter_specs, values_by_chain)
+        init_values = values_by_chain[0]
+        print(
+            json.dumps(
+                gmt.to_jsonable(
+                    {
+                        "init_chain_values": {
+                            "file": args.init_chain_values_file,
+                            "offset": offset,
+                            "num_chains": num_chains_init,
+                            "n_total_points": n_total,
+                        }
+                    }
+                ),
+                indent=2,
+            ),
+            flush=True,
+        )
+    elif float(args.init_ball_scale) > 0.0:
         if init_center_values is None:
             init_center_values = pack_fiducial_sample(context.parameter_specs)
             init_values = init_center_values

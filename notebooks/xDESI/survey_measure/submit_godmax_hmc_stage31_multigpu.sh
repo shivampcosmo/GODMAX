@@ -18,7 +18,7 @@ PYTHON="/mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python"
 RUNNER="${REPO_ROOT}/notebooks/xDESI/survey_measure/run_godmax_multiprobe_hmc_stage31.py"
 COMBINER="${REPO_ROOT}/notebooks/xDESI/survey_measure/combine_godmax_hmc_stage31_workers.py"
 CHECKPOINT_MONITOR="${REPO_ROOT}/notebooks/xDESI/survey_measure/monitor_godmax_hmc_stage31_checkpoints.py"
-GETDIST_SCRIPT="${REPO_ROOT}/notebooks/xDESI/survey_measure/plot_stage31_getdist_gas_hod_ia_checkpoint.py"
+GETDIST_SCRIPT="${GETDIST_SCRIPT:-${REPO_ROOT}/notebooks/xDESI/survey_measure/plot_stage31_getdist_gas_hod_ia_checkpoint.py}"
 CONFIG="${CONFIG:-${REPO_ROOT}/param_files/xDESI/params_multiprobe_midres2048_hmc_stage31_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_2000_60param.yaml}"
 LOG_DIR="${REPO_ROOT}/notebooks/xDESI/survey_measure/logs"
 
@@ -59,9 +59,15 @@ NUM_WARMUP="${NUM_WARMUP:-$(yaml_value "${CONFIG}" sampler.num_warmup)}"
 NUM_SAMPLES="${NUM_SAMPLES:-$(yaml_value "${CONFIG}" sampler.num_samples)}"
 MAX_TREE_DEPTH="${MAX_TREE_DEPTH:-$(yaml_value "${CONFIG}" sampler.max_tree_depth)}"
 TARGET_ACCEPT="${TARGET_ACCEPT:-$(yaml_value_optional "${CONFIG}" sampler.target_accept_prob)}"
+FORWARD_MODE_DIFFERENTIATION="${FORWARD_MODE_DIFFERENTIATION:-$(yaml_value_optional "${CONFIG}" sampler.forward_mode_differentiation)}"
+REMAT_THEORY="${REMAT_THEORY:-$(yaml_value_optional "${CONFIG}" sampler.remat_theory)}"
 BASE_SEED="${BASE_SEED:-42000}"
 INIT_BALL_SCALE="${INIT_BALL_SCALE:-0}"
 INIT_BALL_SEED_BASE="${INIT_BALL_SEED_BASE:-${BASE_SEED}}"
+# Optional explicit per-chain init: a YAML with a list (key chain_init_values) of
+# N>=N_WORKERS*CHAINS_PER_GPU constrained parameter dicts. Worker r seeds its chains
+# from rows [r*CHAINS_PER_GPU : (r+1)*CHAINS_PER_GPU]. Takes precedence over INIT_PARAMS/ball.
+INIT_CHAIN_VALUES_FILE="${INIT_CHAIN_VALUES_FILE:-}"
 GPU_SANITY_CHECK="${GPU_SANITY_CHECK:-1}"
 COMBINE_AFTER="${COMBINE_AFTER:-1}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-120}"
@@ -155,6 +161,8 @@ echo "[$(date)] num_warmup=${NUM_WARMUP}"
 echo "[$(date)] num_samples=${NUM_SAMPLES}"
 echo "[$(date)] max_tree_depth=${MAX_TREE_DEPTH}"
 echo "[$(date)] target_accept=${TARGET_ACCEPT}"
+echo "[$(date)] forward_mode_differentiation=${FORWARD_MODE_DIFFERENTIATION}"
+echo "[$(date)] remat_theory=${REMAT_THEORY}"
 echo "[$(date)] init_ball_scale=${INIT_BALL_SCALE}"
 echo "[$(date)] init_ball_seed_base=${INIT_BALL_SEED_BASE}"
 echo "[$(date)] heartbeat_seconds=${HEARTBEAT_SECONDS}"
@@ -175,6 +183,8 @@ echo "[$(date)] plot_ell_max=${PLOT_ELL_MAX}"
 echo "[$(date)] plot_xscale=${PLOT_XSCALE}"
 echo "[$(date)] plot_xlim=${PLOT_XLIM}"
 echo "[$(date)] init_params=${INIT_PARAMS:-fiducial}"
+echo "[$(date)] init_chain_values_file=${INIT_CHAIN_VALUES_FILE:-none}"
+echo "[$(date)] getdist_script=${GETDIST_SCRIPT}"
 echo "[$(date)] validate_only=${VALIDATE_ONLY}"
 echo "[$(date)] compare_fiducial=${COMPARE_FIDUCIAL}"
 echo "[$(date)] debug_init=${DEBUG_INIT}"
@@ -183,6 +193,10 @@ nvidia-smi || true
 
 if [[ -n "${INIT_PARAMS}" && ! -f "${INIT_PARAMS}" ]]; then
   echo "Requested INIT_PARAMS does not exist: ${INIT_PARAMS}" >&2
+  exit 2
+fi
+if [[ -n "${INIT_CHAIN_VALUES_FILE}" && ! -f "${INIT_CHAIN_VALUES_FILE}" ]]; then
+  echo "Requested INIT_CHAIN_VALUES_FILE does not exist: ${INIT_CHAIN_VALUES_FILE}" >&2
   exit 2
 fi
 
@@ -216,12 +230,16 @@ for rank in $(seq 0 $((N_WORKERS - 1))); do
     export WORKER_SEED="${seed}"
     export INIT_BALL_SCALE="${INIT_BALL_SCALE}"
     export INIT_BALL_SEED="$((INIT_BALL_SEED_BASE + rank))"
+    export INIT_CHAIN_VALUES_FILE="${INIT_CHAIN_VALUES_FILE}"
+    export INIT_CHAIN_OFFSET="$((rank * CHAINS_PER_GPU))"
     export WORKER_DIR="${worker_dir}"
     export NUM_WARMUP="${NUM_WARMUP}"
     export NUM_SAMPLES="${NUM_SAMPLES}"
     export CHAINS_PER_GPU="${CHAINS_PER_GPU}"
     export MAX_TREE_DEPTH="${MAX_TREE_DEPTH}"
     export TARGET_ACCEPT="${TARGET_ACCEPT}"
+    export FORWARD_MODE_DIFFERENTIATION="${FORWARD_MODE_DIFFERENTIATION}"
+    export REMAT_THEORY="${REMAT_THEORY}"
     export INIT_PARAMS="${INIT_PARAMS}"
     export GPU_SANITY_CHECK="${GPU_SANITY_CHECK}"
     export VALIDATE_ONLY="${VALIDATE_ONLY}"
@@ -279,6 +297,12 @@ for rank in $(seq 0 $((N_WORKERS - 1))); do
         if [[ -n "${TARGET_ACCEPT}" ]]; then
           args+=(--target-accept-prob "${TARGET_ACCEPT}")
         fi
+        if [[ "${FORWARD_MODE_DIFFERENTIATION}" == "1" || "${FORWARD_MODE_DIFFERENTIATION}" == "true" || "${FORWARD_MODE_DIFFERENTIATION}" == "True" ]]; then
+          args+=(--forward-mode-differentiation)
+        fi
+        if [[ "${REMAT_THEORY}" == "1" || "${REMAT_THEORY}" == "true" || "${REMAT_THEORY}" == "True" ]]; then
+          args+=(--remat-theory)
+        fi
         if [[ "${GPU_SANITY_CHECK}" == "1" ]]; then
           args+=(--gpu-sanity-check --gpu-sanity-matrix-size 2048)
         fi
@@ -294,11 +318,15 @@ for rank in $(seq 0 $((N_WORKERS - 1))); do
         if [[ "${CHECKPOINT_SAMPLES_EVERY}" != "0" ]]; then
           args+=(--checkpoint-samples-every "${CHECKPOINT_SAMPLES_EVERY}")
         fi
-        if [[ -n "${INIT_PARAMS}" ]]; then
-          args+=(--init-params "${INIT_PARAMS}")
-        fi
-        if [[ "${INIT_BALL_SCALE}" != "0" ]]; then
-          args+=(--init-ball-scale "${INIT_BALL_SCALE}" --init-ball-seed "${INIT_BALL_SEED}")
+        if [[ -n "${INIT_CHAIN_VALUES_FILE}" ]]; then
+          args+=(--init-chain-values-file "${INIT_CHAIN_VALUES_FILE}" --init-chain-offset "${INIT_CHAIN_OFFSET}")
+        else
+          if [[ -n "${INIT_PARAMS}" ]]; then
+            args+=(--init-params "${INIT_PARAMS}")
+          fi
+          if [[ "${INIT_BALL_SCALE}" != "0" ]]; then
+            args+=(--init-ball-scale "${INIT_BALL_SCALE}" --init-ball-seed "${INIT_BALL_SEED}")
+          fi
         fi
         echo "[$(date)] worker=${WORKER_RANK} starting HMC command: ${PYTHON} -u ${args[*]}"
         "${PYTHON}" -u "${args[@]}"

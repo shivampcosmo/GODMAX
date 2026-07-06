@@ -1,0 +1,87 @@
+description: >
+  Sixty-four-parameter Stage-31 GODMAX MAP/HMC prior for the xDESI midres2048
+  multi-probe fit. This extends the 60-parameter DES-Y3 nuisance setup by
+  sampling one f_cen HOD amplitude per DESI photometric tomographic bin.
+
+stage: stage31_64param_desy3_fcen
+expected_parameter_count: 64
+
+vary:
+  baryon_scalars:
+    - log10_Mstar0_theta_ej
+    - theta_ej_0
+    - nu_theta_ej_M
+    - nu_theta_ej_z
+    - log10_Mc0
+    - mu_beta
+    - alpha_nt
+    - theta_co_0
+    - delta_rhogas
+    - gamma_rhogas
+  hod_arrays:
+    - log10M1_fshmr
+    - log10M1_a_fshmr
+    - delta_fshmr
+    - gamma_fshmr
+    - siglogMstar_Ncen
+    - alphasat_Nsat
+    - beta_fshmr
+    - betasat_Nsat
+    - Bsat_Nsat
+    - Bcut_Nsat
+    - fcen
+  hod_indices:
+    - 1
+    - 2
+    - 3
+    - 4
+  other_scalars:
+    - A_IA
+    - eta_IA
+  des_source_photoz_bins:
+    - 1
+    - 2
+    - 3
+    - 4
+  des_shear_m_bins:
+    - 1
+    - 2
+    - 3
+    - 4
+
+prior_uniform:
+  log10_Mstar0_theta_ej: [14.0, 16.5]
+  theta_ej_0: [0.5, 10.0]
+  nu_theta_ej_M: [-1.0, 1.0]
+  nu_theta_ej_z: [-4.0, 4.0]
+  log10_Mc0: [12.0, 16.0]
+  mu_beta: [0.005, 3.0]
+  alpha_nt: [0.0, 0.5]
+  theta_co_0: [0.001, 0.6]
+  delta_rhogas: [4.0, 15.0]
+  gamma_rhogas: [0.2, 6.0]
+
+  log10M1_fshmr: [11.0, 15.5]
+  log10M1_a_fshmr: [-3.0, 3.0]
+  delta_fshmr: [0.001, 1.5]
+  gamma_fshmr: [0.01, 3.0]
+  siglogMstar_Ncen: [0.01, 1.0]
+  alphasat_Nsat: [0.1, 2.0]
+  beta_fshmr: [0.001, 1.5]
+  betasat_Nsat: [0.1, 1.5]
+  Bsat_Nsat: [5.0, 16.0]
+  Bcut_Nsat: [0.1, 6.0]
+  fcen: [0.1, 1.0]
+
+  A_IA: [-3.0, 3.0]
+  eta_IA: [-5.0, 5.0]
+
+prior_gaussian:
+  Delta_z_bias_bin1: [0.0, 1.8e-2]
+  Delta_z_bias_bin2: [0.0, 1.5e-2]
+  Delta_z_bias_bin3: [0.0, 1.1e-2]
+  Delta_z_bias_bin4: [0.0, 1.7e-2]
+  mult_shear_bias_bin1: [-6.0e-3, 9.0e-3]
+  mult_shear_bias_bin2: [-2.0e-2, 8.0e-3]
+  mult_shear_bias_bin3: [-2.4e-2, 8.0e-3]
+  mult_shear_bias_bin4: [-3.7e-2, 8.0e-3]

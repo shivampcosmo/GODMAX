@@ -624,7 +624,20 @@ def _params_for_model(config: Mapping[str, object], *, is_cmb_lensing: bool) -> 
     cfg = compute_desi_nbar_comoving(config)
     params = copy.deepcopy(cfg["params"])
     lmax = int(cfg["metadata"]["lmax"])
-    params["halo_params"]["ell_array"] = jnp.arange(2, lmax + 1, dtype=jnp.float64)
+    # Optional sparse compute grid: evaluate the (expensive) halo model + C(l) on a
+    # log-spaced subset of integer multipoles and interpolate back to the dense
+    # integer grid downstream (see _densify_theory_cls_to_full_lmax in the HMC
+    # driver). This slashes the reverse-mode memory of the per-leapfrog gradient
+    # (dense l=2..lmax keeps a ~60 GiB/4-chain tape) at <0.01% accuracy cost.
+    # Default (nell_compute unset) preserves the exact dense behavior.
+    nell_compute = params["halo_params"].pop("nell_compute", None)
+    if nell_compute is not None and 0 < int(nell_compute) < (lmax - 1):
+        ell_sparse = np.unique(
+            np.geomspace(2.0, float(lmax), int(nell_compute)).round().astype(np.int64)
+        ).astype(np.float64)
+        params["halo_params"]["ell_array"] = jnp.asarray(ell_sparse, dtype=jnp.float64)
+    else:
+        params["halo_params"]["ell_array"] = jnp.arange(2, lmax + 1, dtype=jnp.float64)
     params["analysis"]["is_cmb_lensing"] = bool(is_cmb_lensing)
     params["analysis"]["symbolic_pk"] = False
     params["analysis"]["symbolic_hmf"] = False
@@ -961,6 +974,19 @@ def measurement_ell_edge_slice(
     return None, None
 
 
+def _safe_family_png(output_dir, filename_prefix: str, family: str, max_basename: int = 200):
+    """Per-family PNG path whose basename stays under the filesystem limit (~255).
+    No-op for normal-length names; for very long prefixes it truncates the prefix
+    and appends a short hash of the full prefix to keep names unique."""
+    base = f"{filename_prefix}_{family}.png"
+    if len(base) <= max_basename:
+        return output_dir / base
+    import hashlib
+    h = hashlib.md5(filename_prefix.encode("utf-8")).hexdigest()[:8]
+    keep = max(max_basename - len(family) - len(h) - len(".png") - 2, 8)
+    return output_dir / f"{filename_prefix[:keep]}{h}_{family}.png"
+
+
 def plot_family_comparisons(
     measurement: MeasurementData,
     theory_vector: np.ndarray,
@@ -1192,7 +1218,7 @@ def plot_family_dell_comparisons(
                 if chi2_dof is not None:
                     title += f" ({int(chi2_dof)} dof)"
             fig.suptitle(title, fontsize=12)
-            out = output_dir / f"{filename_prefix}_{family}.png"
+            out = _safe_family_png(output_dir, filename_prefix, family)
             fig.savefig(out, dpi=180)
             outputs.append(out)
             if pdf is not None:
@@ -1341,7 +1367,7 @@ def plot_family_dell_residual_comparisons(
                 if chi2_dof is not None:
                     title += f" ({int(chi2_dof)} dof)"
             fig.suptitle(title, fontsize=12)
-            out = output_dir / f"{filename_prefix}_{family}.png"
+            out = _safe_family_png(output_dir, filename_prefix, family)
             fig.savefig(out, dpi=180)
             outputs.append(out)
             if pdf is not None:
@@ -1442,7 +1468,7 @@ def plot_measurement_dell(
             if family == "desi_pi_act_T":
                 title += " (positive kSZ convention)"
             fig.suptitle(title, fontsize=13)
-            out = output_dir / f"{filename_prefix}_{family}.png"
+            out = _safe_family_png(output_dir, filename_prefix, family)
             fig.savefig(out, dpi=180)
             outputs.append(out)
             if pdf is not None:

@@ -270,7 +270,7 @@ def combine_worker_chains(
         yaml.safe_dump(gmt.to_jsonable(best_config["params"]), handle, sort_keys=False)
 
     models = hmc31.build_models_from_sample(context, best_sample)
-    theory_cls = hmc31.extract_theory_cls_jax_from_models(models)
+    theory_cls = hmc31._dense_theory_cls_from_models(context, models)
     best_theory = np.asarray(hmc31.theory_data_vector_jax(context.likelihood, theory_cls))
     measurement = hmc31.measurement_for_plots(context)
     stats = gmt.comparison_statistics(measurement, best_theory)
