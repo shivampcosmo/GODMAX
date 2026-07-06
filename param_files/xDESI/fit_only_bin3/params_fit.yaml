@@ -1,0 +1,191 @@
+sim_params:
+  cosmo:
+    flat: True
+    H0: 67.36
+    Om0: 0.3137
+    Ob0: 0.0493
+    sigma8: 0.8079
+    ns: 0.9649
+    w0: -1.0
+    
+  log10_Mstar0_theta_ej: 15.0
+
+  theta_ej_0: 2.0
+  nu_theta_ej_M: -0.33
+  nu_theta_ej_z: -1.22
+  
+  log10_Mc0 : 13.75
+  mu_beta : 0.0762
+
+
+  Bcut_Nsat_array: 
+    - 1.69
+    - 4.3486
+    - 2.2274
+    - 2.0907
+    - 2.0907
+
+  Bsat_Nsat_array: 
+    - 9.01
+    - 6.7124
+    - 9.8093
+    - 10.7319
+    - 10.7319
+
+  alphasat_Nsat_array: 
+    - 1.19
+    - 0.9053
+    - 1.6872
+    - 1.0483
+    - 1.0483
+
+  beta_fshmr_array: 
+    - 0.4
+    - 0.4186
+    - 0.3016
+    - 0.619
+    - 0.619
+
+  betacut_Nsat_array: 
+    - 0.6
+    - 1.0425
+    - 0.9445
+    - 1.2872
+    - 1.2872
+
+  betasat_Nsat_array: 
+    - 0.3
+    - 0.6231
+    - 0.8992
+    - 0.5976
+    - 0.5976
+
+  delta_fshmr_array: 
+    - 0.37
+    - 0.5337
+    - 0.8247
+    - 0.5177
+    - 0.5177
+
+  gamma_fshmr_array: 
+    - 1.79
+    - 0.6581
+    - 1.8305
+    - 1.7547
+    - 1.7547
+
+  log10M1_a_fshmr_array: 
+    - 0.0
+    - -1.2424
+    - -0.6887
+    - -1.3134
+    - -1.3134    
+
+  log10M1_fshmr_array: 
+    - 12.55
+    - 14.5913
+    - 14.6232
+    - 14.5384
+    - 14.5384
+
+  log10Mstar0_a_fshmr_array: 
+    - 0.0
+    - -0.8895
+    - 0.3987
+    - 1.2078
+    - 1.2078
+
+  log10Mstar0_fshmr_array: 
+    - 10.72
+    - 10.7122
+    - 11.3793
+    - 10.9762
+    - 10.9762
+
+  siglogMstar_Ncen_array: 
+    - 0.7
+    - 0.2277
+    - 0.218
+    - 0.2525
+    - 0.2525
+
+  gamma_a_fshmr_array: 
+    - -0.0
+    - -0.0
+    - -0.0
+    - -0.0
+    - -0.0
+
+  beta_a_fshmr_array: 
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+
+  delta_a_fshmr_array: 
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+
+  alpha_nt : 0.05
+
+halo_params:
+
+  rmax: 12.0
+  nr: 24
+
+  zmin: 0.01
+  zmax: 1.2
+  nz: 64
+
+  lg10_Mmin: 10.5
+  lg10_Mmax: 16.0
+  nM: 24
+
+  conc_model: Diemer15
+
+other_params:
+  alpha_ky : 1.0
+  alpha_gg : 1.0
+
+  A_IA : -0.5
+  eta_IA : 0.5
+
+analysis:
+  backreaction: False
+  num_points_trapz_int: 64
+  model_galaxies: True
+  beam_fwhm_arcmin: 1.4
+  analysis_coords: fourier
+  tSZ_transition_model : response
+  gg_transition_model: response
+  hod_params_model: perbin
+
+  zmin_for_Cls: 0.01
+  zmax_for_Cls: 1.2
+  nz_for_Cls: 128
+
+  fsky_yy: 0.4
+  fsky_ky: 0.4
+  fsky_kk: 0.4
+  fsky_yg: 0.35
+  fsky_kg: 0.35
+  fsky_gg: 0.125
+
+  sigma_epsilon_SN_bins:
+    - 0.26
+    - 0.26
+    - 0.26
+    - 0.26
+    - 0.26
+  
+  neff_arcmin2_SN_bins:
+    - 4.64
+    - 4.64
+    - 4.64
+    - 4.64
+    - 4.64  
+

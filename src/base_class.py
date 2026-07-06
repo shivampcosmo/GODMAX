@@ -232,6 +232,8 @@ class base_class:
         self.fcen = sim_params_dict.get('fcen', fcen_array[0] if fcen_array is not None else 1.0)
         self.fcen_array = jnp.asarray(fcen_array if fcen_array is not None else [self.fcen])
 
+        self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
+
         # In case don't want to model proper galaxies, then can just set simple stellar profile parameters:
         self.eta_star=sim_params_dict.get('eta_star',0.3)
         self.eta_cga=sim_params_dict.get('eta_cga',0.6)
@@ -381,6 +383,7 @@ class base_class:
         except:
             self.nbins_lens = 1
             self.z_array_nz_lens = jnp.linspace(0.01, 1.5, 128)
+            self.z_edges_bins_lens = jnp.array([[0.1, 1.5]])
             self.pzs_inp_mat_inp_lens = jnp.array([jnp.ones_like(self.z_array_nz_lens)])
             self.z_edges_bins_lens = jnp.array([[self.z_array_nz_lens[0], self.z_array_nz_lens[-1]]])
 

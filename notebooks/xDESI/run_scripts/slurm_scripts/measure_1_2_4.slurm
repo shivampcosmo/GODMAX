@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=256G
+#SBATCH -C rome
+#SBATCH -p cmbas
+#SBATCH --time=01:00:00
+#SBATCH --job-name=measure_1_2_4
+#SBATCH --output=/mnt/ceph/users/spandey/paste_godmax/GODMAX/notebooks/xDESI/run_scripts/slurm_scripts/slurm_scripts/logs/%x.%j.out
+#SBATCH --error=/mnt/ceph/users/spandey/paste_godmax/GODMAX/notebooks/xDESI/run_scripts/slurm_scripts/slurm_scripts/logs/%x.%j.err
+
+echo "--- JOB DETAILS ---"
+echo "Job Name: ${SLURM_JOB_NAME} (${SLURM_JOB_ID})"
+echo "Running on: $(hostname)"
+echo "JDEVICE: 1"
+echo "I_START: 2"
+echo "I_END: 4"
+echo "-------------------"
+
+module purge
+module load openmpi/4.1.8
+module load python
+source ~/miniconda3/bin/activate ili-sbi
+
+# Loop through i values for this device
+for i in {2..3};
+do
+    echo $i;
+    cd "/mnt/ceph/users/spandey/paste_godmax/GODMAX/notebooks/xDESI";
+    echo "$PWD";
+    time srun python measure_abacus_Clgg.py $i;
+    echo "done";
+done
+
+echo "All runs complete for device 1"
