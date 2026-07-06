@@ -170,6 +170,8 @@ analysis:
   tSZ_transition_model: poweradd
   gg_transition_model: poweradd
   hod_params_model: combined
+  lowpass_Pmm1h_lowk: True
+  kthresh_lowpass_Pmm1h_lowk: 1e-3
 
   nbar_gal_comoving_zarray:
     - 0.01
@@ -178,6 +180,7 @@ analysis:
   nbar_gal_comoving_val: 
     - 5e-4
 
+  is_cmb_lensing: True
   nz_source_info_dict:
     nbins: 1
     z_array_source:

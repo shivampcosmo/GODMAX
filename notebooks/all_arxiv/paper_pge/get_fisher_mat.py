@@ -71,7 +71,7 @@ for jb in range(nbins_lens):
     nz_jb = np.zeros_like(nz_zarray)
     indsel = np.where((zarray_lens > zedges[jb]) & (zarray_lens < zedges[jb+1]))[0]
     nz_jb[indsel] = nz_zarray[indsel]
-    norm_val = np.trapz(nz_jb, zarray_lens)
+    norm_val = np.trapezoid(nz_jb, zarray_lens)
     nz_jb = nz_jb/norm_val
     nz_lens[jb] = nz_jb
 

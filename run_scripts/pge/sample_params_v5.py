@@ -184,13 +184,13 @@ if run_this_script:
     nz_comoving_interp = interp1d(zarray_comoving, nz_comoving, fill_value=1e-20, bounds_error=False)
     nz_comoving_zarray = nz_comoving_interp(zarray_lens)
     nz_zarray = nz_comoving_zarray * (chi_array**2 * dchi_dz_array)
-    nz_zarray = nz_zarray/(np.trapz(nz_zarray, zarray_lens))
+    nz_zarray = nz_zarray/(np.trapezoid(nz_zarray, zarray_lens))
     nz_lens = {}
     for jb in range(nbins_lens):
         nz_jb = np.zeros_like(nz_zarray)
         indsel = np.where((zarray_lens > zedges[jb]) & (zarray_lens < zedges[jb+1]))[0]
         nz_jb[indsel] = nz_zarray[indsel]
-        norm_val = np.trapz(nz_jb, zarray_lens)
+        norm_val = np.trapezoid(nz_jb, zarray_lens)
         nz_jb = nz_jb/norm_val
         nz_lens[jb] = nz_jb
 
@@ -238,20 +238,20 @@ if run_this_script:
         nz_jb_only = np.copy(nz_comoving_zarray)
         indsel = np.where((zarray_lens < zedges[jb]) | (zarray_lens > zedges[jb+1]))[0]
         nz_jb_only[indsel] = 0.0
-        nz_integrate = np.trapz(nz_jb_only*(chi_array**2)*dchi_dz_array, zarray_lens)
+        nz_integrate = np.trapezoid(nz_jb_only*(chi_array**2)*dchi_dz_array, zarray_lens)
 
         ntot_jb = nz_integrate*4*np.pi*fsky_DESIxDESI
         Ngals_bins.append(ntot_jb)
 
-        zmean = np.trapz(zarray_lens*nz_jb_only*(chi_array**2)*dchi_dz_array, zarray_lens)/nz_integrate
+        zmean = np.trapezoid(zarray_lens*nz_jb_only*(chi_array**2)*dchi_dz_array, zarray_lens)/nz_integrate
         z_cens.append(zmean)
 
         fsky_nz = np.ones_like(zarray_lens)
         fsky_nz[indsel] = 0.0
         fsky_nz_desi = fsky_nz * (nz_jb_only*P0/(1 + nz_jb_only*P0))**2
         h3 = (sim_params_dict['cosmo']['H0'] / 100.0)**3
-        Vol_Gpc3_comoving = 4*np.pi*fsky_DESIxDESI*np.trapz(fsky_nz * (chi_array**2)*dchi_dz_array, zarray_lens)/(h3 * 1e9)   
-        Vol_Gpc3_comoving_desi = 4*np.pi*fsky_DESIxDESI*np.trapz(fsky_nz_desi * (chi_array**2)*dchi_dz_array, zarray_lens)/(h3 * 1e9)   
+        Vol_Gpc3_comoving = 4*np.pi*fsky_DESIxDESI*np.trapezoid(fsky_nz * (chi_array**2)*dchi_dz_array, zarray_lens)/(h3 * 1e9)   
+        Vol_Gpc3_comoving_desi = 4*np.pi*fsky_DESIxDESI*np.trapezoid(fsky_nz_desi * (chi_array**2)*dchi_dz_array, zarray_lens)/(h3 * 1e9)   
 
         Vol_Gpc3.append(Vol_Gpc3_comoving_desi)
         print(zedges[jb], zedges[jb+1], 'Total galaxies = {:.2f}'.format(ntot_jb), ' Vol:', Vol_Gpc3_comoving_desi)

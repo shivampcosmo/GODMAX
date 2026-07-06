@@ -1,0 +1,73 @@
+description: >
+  Stage-31 configuration for fitting the corrected 2026-06-17 xDESI
+  midres2048 multi-probe measurement with the 64-parameter setup (60-parameter
+  DES-Y3 nuisances plus one sampled f_cen HOD amplitude per DESI photometric
+  tomographic bin). Variant of the warm100_2000 sparse-l=192 run that (a) uses
+  the v2 (wider) 64-parameter prior and (b) draws 8000 HMC samples per chain.
+  Removes low-ell cuts for shear-y, galaxy auto, galaxy-y, galaxy-kappa, and kSZ,
+  and caps galaxy auto, galaxy-shear, galaxy-y, and kSZ at ell_max=2000.
+
+comparison_config: param_files/xDESI/params_multiprobe_midres2048_true_nz_theory_abacus_cosmo_simple1h2h_lmax3000_13log_apo1deg_C2.yaml
+prior_file: param_files/xDESI/priors_multiprobe_midres2048_hmc_stage31_64param_desy3_fcen_v2.yaml
+
+stage: stage31_midres2048_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_8000_64param_fcen_relaxedmin_lmax2000_priorv2
+output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_midres2048_true_nz_hmc_stage31_abacus_cosmo_simple1h2h_lmax3000_gk1000_depth6_defaultacc_warm100_8000_64param_fcen_relaxedmin_lmax2000_priorv2
+minimum_halo_log10_m200c_hmsun: 11.147538
+force_simple_1h2h: true
+sample_des_shear_m_bias_in_model: true
+
+comparison_overrides:
+  params:
+    sim_params:
+      fcen_array:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+    halo_params:
+      # Compute the halo model + C(l) on this many log-spaced integer multipoles
+      # (2..lmax) and interpolate back to the dense integer grid before windowing.
+      # Cuts the per-leapfrog reverse-mode memory ~78->~66 GiB so 4 vectorized
+      # chains/GPU fit an 80 GB H100; validated <0.01% on the windowed data vector.
+      # Remove this key (or set 0) to restore the exact dense l=2..lmax behavior.
+      nell_compute: 192
+
+likelihood_cuts:
+  band_selection: center
+  default_ell_max: 3000
+  family_ell_max:
+    desi_g_auto: 2000
+    desi_g_des_shear_E: 2000
+    desi_g_act_y: 2000
+    desi_pi_act_T: 2000
+    desi_g_act_kappa: 1000
+
+covariance:
+  type: whitened_correlation_eigencut
+  eigenvalue_threshold: 1.0e-8
+
+sampler:
+  seed: 1062
+  num_warmup: 100
+  num_samples: 8000
+  num_chains: 4
+  chain_method: vectorized
+  dense_mass: true
+  max_tree_depth: 6
+  forward_mode_differentiation: false
+  jit_model_args: true
+  progress_bar: false
+
+smoke_sampler:
+  seed: 1063
+  num_warmup: 25
+  num_samples: 50
+  num_chains: 1
+  chain_method: sequential
+  dense_mass: true
+  max_tree_depth: 5
+  target_accept_prob: 0.9
+  forward_mode_differentiation: false
+  jit_model_args: true
+  progress_bar: true

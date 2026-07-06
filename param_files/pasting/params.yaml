@@ -1,0 +1,102 @@
+sim_params:
+  cosmo:
+    flat: True
+    H0: 67.11
+    Om0: 0.3175
+    Ob0: 0.049
+    sigma8: 0.834
+    ns: 0.9624
+    w0: -1.0
+    
+  log10_Mstar0_theta_ej: 15.0
+  theta_ej_0: 2.0
+  nu_theta_ej_M: 0.0
+  nu_theta_ej_z: 0.0
+  log10_Mc0 : 13.75
+  mu_beta : 0.5
+
+
+  # log10M1_fshmr: 12.0
+  # log10M1_a_fshmr: 0.0
+  # log10Mstar0_fshmr: 12.0
+  # log10Mstar0_a_fshmr: 0.0
+  # beta_fshmr: 0.4
+  # beta_a_fshmr: 0.0
+  # delta_fshmr: 0.4
+  # delta_a_fshmr: 0.0
+  # gamma_fshmr: 0.1
+  # gamma_a_fshmr: 0.0
+  # siglogMstar_Ncen: 0.75
+  # alphasat_Nsat: 1.0
+  # Bcut_Nsat: 1.7
+  # Bsat_Nsat: 9.0
+  # betacut_Nsat: 0.6
+  # betasat_Nsat: 0.3
+
+
+  log10M1_fshmr: 12.0
+  log10M1_a_fshmr: 0.0
+  log10Mstar0_fshmr: 12.0
+  log10Mstar0_a_fshmr: 0.0
+  beta_fshmr: 0.4
+  beta_a_fshmr: 0.0
+  delta_fshmr: 0.4
+  delta_a_fshmr: 0.0
+  gamma_fshmr: 0.1
+  gamma_a_fshmr: 0.0
+  siglogMstar_Ncen: 0.75
+  alphasat_Nsat: 0.9
+  Bcut_Nsat: 1.7
+  Bsat_Nsat: 9.0
+  betacut_Nsat: 0.6
+  betasat_Nsat: 0.3
+
+  alpha_nt : 0.05
+
+halo_params:
+
+  rmax: 16.0
+  nr: 64
+
+
+  conc_model: Diemer15
+
+other_params:
+  alpha_ky : 1.0
+  A_IA : -0.5
+  eta_IA : 0.5
+
+analysis:
+  num_points_trapz_int: 64
+  model_galaxies: True
+  beam_fwhm_arcmin: 6.87
+  analysis_coords: fourier
+  tSZ_transition_model : poweradd
+  lowpass_Pmm1h_lowk: True
+  kthresh_lowpass_Pmm1h_lowk: 1e-2
+
+  zmin_for_Cls: 0.01
+  zmax_for_Cls: 0.799
+  nz_for_Cls: 128
+
+  fsky_yy: 0.4
+  fsky_ky: 0.4
+  fsky_kk: 0.4
+  fsky_yg: 0.35
+  fsky_kg: 0.35
+  fsky_gg: 0.4
+
+  sigma_epsilon_SN_bins:
+    - 0.26
+    - 0.26
+    - 0.26
+    - 0.26
+    - 0.26
+  
+  neff_arcmin2_SN_bins:
+    - 4.64
+    - 4.64
+    - 4.64
+    - 4.64
+    - 4.64  
+

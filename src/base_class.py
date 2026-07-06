@@ -146,6 +146,7 @@ class base_class:
             )
         self.h = cosmo_params['H0'] / 100.
         self.Om0 = cosmo_params['Om0']
+        self.Ob0 = cosmo_params['Ob0']
         self.H0 = 100. * (u.km / (u.s * u.Mpc))
         self.rho_m_bar = self.cosmo_params['Om0'] * ((3 * (self.H0**2) / (8 * jnp.pi * G_new_rhom)).to(u.M_sun / (u.Mpc**3))).value
         self.init_power = sim_params_dict.get('init_power', True)
@@ -193,44 +194,45 @@ class base_class:
         self.n_nt = sim_params_dict.get('n_nt',0.3)
 
 
-        # Stellar profile parameters. Basically these are the parameters for the HOD of galaxies as well. See Leauthaud et al. 2011 for more details.
-        # The parameters control the amplitude and redshift evolution of the stellar profile.
-        # self.log10M1_fshmr = sim_params_dict.get('log10M1_fshmr', 12.35)
-        # self.log10M1_a_fshmr = sim_params_dict.get('log10M1_a_fshmr', 0.28)        
-        # self.log10Mstar0_fshmr = sim_params_dict.get('log10Mstar0_fshmr', 10.72)
-        # self.log10Mstar0_a_fshmr = sim_params_dict.get('log10Mstar0_a_fshmr', 0.55)        
-        # self.beta_fshmr = sim_params_dict.get('beta_fshmr', 0.44)        
-        # self.beta_a_fshmr = sim_params_dict.get('beta_a_fshmr', 0.18)        
-        # self.delta_fshmr = sim_params_dict.get('delta_fshmr', 0.57)        
-        # self.delta_a_fshmr = sim_params_dict.get('delta_a_fshmr', 0.17)                
-        # self.gamma_fshmr = sim_params_dict.get('gamma_fshmr', 1.56)        
-        # self.gamma_a_fshmr = sim_params_dict.get('gamma_a_fshmr', 2.51)                
-        # self.siglogMstar_Ncen = sim_params_dict.get('siglogMstar_Ncen', 0.25)                
-        # self.alphasat_Nsat = sim_params_dict.get('alphasat_Nsat', 1.0)                
-        # self.Bcut_Nsat = sim_params_dict.get('Bcut_Nsat', 1.69)                        
-        # self.Bsat_Nsat = sim_params_dict.get('Bsat_Nsat', 9.01)                                
-        # self.betacut_Nsat = sim_params_dict.get('betacut_Nsat', 0.6)                                
-        # self.betasat_Nsat = sim_params_dict.get('betasat_Nsat', 0.74)    
+        # Stellar profile parameters. These are also the galaxy HOD parameters.
+        # Keep scalar attributes for older configs and array attributes for per-bin HOD configs.
+        def set_hod_param(name, default):
+            array_name = f'{name}_array'
+            array_val = sim_params_dict.get(array_name, None)
+            scalar_val = sim_params_dict.get(name, None)
+            if array_val is not None:
+                array_val = jnp.atleast_1d(jnp.asarray(array_val))
+            if scalar_val is None:
+                scalar_val = array_val[0] if array_val is not None else default
+            if array_val is None:
+                array_val = jnp.atleast_1d(jnp.asarray(scalar_val))
+            setattr(self, name, scalar_val)
+            setattr(self, array_name, jnp.asarray(array_val))
 
-        self.log10M1_fshmr_array = jnp.array(sim_params_dict.get('log10M1_fshmr_array', [12.35]))
-        self.log10M1_a_fshmr_array = jnp.array(sim_params_dict.get('log10M1_a_fshmr_array', [0.28]))        
-        self.log10Mstar0_fshmr_array = jnp.array(sim_params_dict.get('log10Mstar0_fshmr_array', [10.72]))
-        self.log10Mstar0_a_fshmr_array = jnp.array(sim_params_dict.get('log10Mstar0_a_fshmr_array', [0.55]))        
-        self.beta_fshmr_array = jnp.array(sim_params_dict.get('beta_fshmr_array', [0.44]))        
-        self.beta_a_fshmr_array = jnp.array(sim_params_dict.get('beta_a_fshmr_array', [0.18]))        
-        self.delta_fshmr_array = jnp.array(sim_params_dict.get('delta_fshmr_array', [0.57]))        
-        self.delta_a_fshmr_array = jnp.array(sim_params_dict.get('delta_a_fshmr_array', [0.17]))                
-        self.gamma_fshmr_array = jnp.array(sim_params_dict.get('gamma_fshmr_array', [1.56]))        
-        self.gamma_a_fshmr_array = jnp.array(sim_params_dict.get('gamma_a_fshmr_array', [2.51]))                
-        self.siglogMstar_Ncen_array = jnp.array(sim_params_dict.get('siglogMstar_Ncen_array', [0.25]))                
-        self.alphasat_Nsat_array = jnp.array(sim_params_dict.get('alphasat_Nsat_array', [1.0]))                
-        self.Bcut_Nsat_array = jnp.array(sim_params_dict.get('Bcut_Nsat_array', [1.69]))                        
-        self.Bsat_Nsat_array = jnp.array(sim_params_dict.get('Bsat_Nsat_array', [9.01]))                                
-        self.betacut_Nsat_array = jnp.array(sim_params_dict.get('betacut_Nsat_array', [0.6]))                                
-        self.betasat_Nsat_array = jnp.array(sim_params_dict.get('betasat_Nsat_array', [0.74]))    
+        set_hod_param('log10M1_fshmr', 12.35)
+        set_hod_param('log10M1_a_fshmr', 0.28)
+        set_hod_param('log10Mstar0_fshmr', 10.72)
+        set_hod_param('log10Mstar0_a_fshmr', 0.55)
+        set_hod_param('beta_fshmr', 0.44)
+        set_hod_param('beta_a_fshmr', 0.18)
+        set_hod_param('delta_fshmr', 0.57)
+        set_hod_param('delta_a_fshmr', 0.17)
+        set_hod_param('gamma_fshmr', 1.56)
+        set_hod_param('gamma_a_fshmr', 2.51)
+        set_hod_param('siglogMstar_Ncen', 0.25)
+        set_hod_param('alphasat_Nsat', 1.0)
+        set_hod_param('Bcut_Nsat', 1.69)
+        set_hod_param('Bsat_Nsat', 9.01)
+        set_hod_param('betacut_Nsat', 0.6)
+        set_hod_param('betasat_Nsat', 0.74)
+
+        fcen_array = sim_params_dict.get('fcen_array', None)
+        if fcen_array is not None:
+            fcen_array = jnp.atleast_1d(jnp.asarray(fcen_array))
+        self.fcen = sim_params_dict.get('fcen', fcen_array[0] if fcen_array is not None else 1.0)
+        self.fcen_array = jnp.asarray(fcen_array if fcen_array is not None else [self.fcen])
 
         self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
-
 
         # In case don't want to model proper galaxies, then can just set simple stellar profile parameters:
         self.eta_star=sim_params_dict.get('eta_star',0.3)
@@ -283,6 +285,10 @@ class base_class:
         self.model_tSZ = analysis_dict.get('model_tSZ',True)
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
+        self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
+
+        self.lowpass_Pmm1h_lowk = analysis_dict.get('lowpass_Pmm1h_lowk', True)
+        self.kthresh_lowpass_Pmm1h_lowk = float(analysis_dict.get('kthresh_lowpass_Pmm1h_lowk', 1e-2))
 
         # Weather to use symbolic regression for Pk and HMF:
         self.symbolic_hmf = analysis_dict.get('symbolic_hmf', False)
@@ -292,8 +298,37 @@ class base_class:
         self.nt_out = len(self.angles_data_array)
 
         # Comoving number density of the galaxies. This can be an array of redshifts and values. Basically M_star_threshold (mininum stellar mass) is obtained from this.
-        self.nbar_gal_comoving_z_array = analysis_dict.get('nbar_gal_comoving_zarray', jnp.linspace(0.01, 2.0, 64))                            
-        self.nbar_gal_comoving_val_array = analysis_dict.get('nbar_gal_comoving_val', jnp.zeros(64))                            
+        #self.nbar_gal_comoving_z_array = analysis_dict.get('nbar_gal_comoving_zarray', jnp.linspace(0.01, 2.0, 64))                            
+        #self.nbar_gal_comoving_val_array = analysis_dict.get('nbar_gal_comoving_val', jnp.zeros(64))
+
+        ###FIX: for passing nbar_gal_comoving_z_array as an array OR as start, stop and interpolation steps
+        # 1. Read Inputs
+        z_info = analysis_dict.get('nbar_gal_comoving_zarray', [0.01, 2.0, 64])
+        nbar_val_raw = analysis_dict.get('nbar_gal_comoving_val', 0.0)
+        nbar_val = float(nbar_val_raw) if isinstance(nbar_val_raw, (str, float, int)) else nbar_val_raw
+        # 2. Build the Redshift Grid (z_grid)
+        # We check if it's exactly 3 elements, AND the last element is strictly an integer > 3
+        if isinstance(z_info, list) and len(z_info) == 3 and isinstance(z_info[2], int) and z_info[2] > 3:
+            z_grid = jnp.linspace(z_info[0], z_info[1], z_info[2])
+        else:
+            # If it's like [0.5, 1.5, 2.5] or a list of 50 explicit redshifts, use it exactly as is
+            z_grid = jnp.array(z_info)
+
+        # 3. Build the Density Grid (nbar_grid) to perfectly match z_grid
+        if isinstance(nbar_val, float):
+            # If a single scalar was provided, stretch it to match z_grid's length
+            nbar_grid = jnp.full(len(z_grid), nbar_val)
+        else:
+            # If an actual list of densities (e.g. [5e-4, 4e-4, ...]) exists, use it
+            nbar_grid = jnp.array(nbar_val)
+        # 4. Save and Interpolate
+        self.nbar_gal_comoving_z_array = z_grid
+        self.nbar_gal_comoving_val_array = nbar_grid
+        # Now interpolation will work because len(z_grid) == len(nbar_grid)
+        self.nbar_gal_comoving_array = jnp.interp(self.z_array, self.nbar_gal_comoving_z_array,
+            self.nbar_gal_comoving_val_array)
+        #####END OF FIX####ANSHUMAN#####
+
         # Get the comoving number density of galaxies at these redshifts.
         try:
             self.nbar_gal_comoving_array = jnp.interp(self.z_array, self.nbar_gal_comoving_z_array, self.nbar_gal_comoving_val_array)
@@ -316,6 +351,9 @@ class base_class:
         self.z_array_for_Cls = jnp.linspace(self.zmin_for_Cls, self.zmax_for_Cls, self.nz_for_Cls)
         self.scale_fac_a_array_for_Cls = 1./(1. + self.z_array_for_Cls)
 
+        self.is_cmb_lensing = analysis_dict.get('is_cmb_lensing', False)
+        a_CMB = 1/(1 + 1100)
+        self.chi_CMB = radial_comoving_distance(self.cosmo_jax, a_CMB)
         nz_info_dict = analysis_dict.get('nz_source_info_dict', None)
         try:
             self.nbins = nz_info_dict['nbins']
@@ -328,6 +366,7 @@ class base_class:
             self.nbins = 1
             self.z_array_nz = jnp.linspace(0.01, 1.5, 128)
             self.pzs_inp_mat_inp = jnp.array([jnp.ones_like(self.z_array_nz)])
+        self.chi_array_nz = radial_comoving_distance(self.cosmo_jax, 1.0 / (1.0 + self.z_array_nz))
 
         nz_info_dict = analysis_dict.get('nz_lens_info_dict', None)
         try:
@@ -338,12 +377,15 @@ class base_class:
             for jb in range(self.nbins_lens):
                 pzs_inp_mat[jb, :] = nz_info_dict['nz' + str(jb)]
             self.pzs_inp_mat_inp_lens = jnp.array(pzs_inp_mat)
-            self.z_edges_bins_lens = nz_info_dict['z_edges_bins_lens']
+            self.z_edges_bins_lens = jnp.array(
+                nz_info_dict.get('z_edges_bins_lens', [[self.z_array_nz_lens[0], self.z_array_nz_lens[-1]]])
+            )
         except:
             self.nbins_lens = 1
             self.z_array_nz_lens = jnp.linspace(0.01, 1.5, 128)
             self.z_edges_bins_lens = jnp.array([[0.1, 1.5]])
             self.pzs_inp_mat_inp_lens = jnp.array([jnp.ones_like(self.z_array_nz_lens)])
+            self.z_edges_bins_lens = jnp.array([[self.z_array_nz_lens[0], self.z_array_nz_lens[-1]]])
 
 
         self.zmax = self.z_array_nz[-1]
@@ -357,9 +399,19 @@ class base_class:
 
         self.tSZ_transition_model = analysis_dict.get('tSZ_transition_model', 'poweradd')
         self.gg_transition_model = analysis_dict.get('gg_transition_model', 'poweradd')
+        self.galaxy_matter_transition_model = analysis_dict.get(
+            'galaxy_matter_transition_model',
+            analysis_dict.get('gm_transition_model', 'poweradd'),
+        )
+        self.galaxy_electron_transition_model = analysis_dict.get(
+            'galaxy_electron_transition_model',
+            analysis_dict.get('ge_transition_model', 'poweradd'),
+        )
         self.alpha_ky = other_params_dict.get('alpha_ky', 1.0)
         self.alpha_gy = other_params_dict.get('alpha_gy', 1.0)
         self.alpha_gg = other_params_dict.get('alpha_gg', 1.0)
+        self.alpha_gm = other_params_dict.get('alpha_gm', 1.0)
+        self.alpha_ge = other_params_dict.get('alpha_ge', 1.0)
 
     @timing_decorator
     def get_power_spectra_cosmo(self):

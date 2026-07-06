@@ -1,0 +1,44 @@
+description: >
+  Wide uniform priors for the xDESI fast1024 GODMAX stage-31 HMC fit.
+  Cosmology, DES calibration, IA, kSZ velocity calibration, fixed-zero HOD
+  evolution arrays, and omitted HOD arrays are fixed by the comparison config.
+
+stage: stage31_legacy_core
+
+vary:
+  baryon_scalars:
+    - log10_Mstar0_theta_ej
+    - theta_ej_0
+    - nu_theta_ej_M
+    - nu_theta_ej_z
+    - log10_Mc0
+    - mu_beta
+    - alpha_nt
+  hod_arrays:
+    - log10M1_fshmr
+    - log10M1_a_fshmr
+    - delta_fshmr
+    - gamma_fshmr
+    - siglogMstar_Ncen
+    - alphasat_Nsat
+  hod_indices:
+    - 1
+    - 2
+    - 3
+    - 4
+
+prior_uniform:
+  log10_Mstar0_theta_ej: [14.0, 16.5]
+  theta_ej_0: [0.5, 8.0]
+  nu_theta_ej_M: [-1.0, 1.0]
+  nu_theta_ej_z: [-2.0, 2.0]
+  log10_Mc0: [13.0, 16.0]
+  mu_beta: [0.005, 1.5]
+  alpha_nt: [0.0, 0.5]
+
+  log10M1_fshmr: [11.0, 15.5]
+  log10M1_a_fshmr: [-3.0, 3.0]
+  delta_fshmr: [0.001, 1.5]
+  gamma_fshmr: [0.01, 3.0]
+  siglogMstar_Ncen: [0.05, 1.0]
+  alphasat_Nsat: [0.4, 2.2]

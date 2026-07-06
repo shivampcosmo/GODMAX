@@ -20,6 +20,13 @@ class get_Pkz(Profiles):
     Returns:
         None
     """    
+    @staticmethod
+    def _combine_1h2h_poweradd(p1, p2, alpha):
+        alpha = float(alpha)
+        if alpha == 1.0:
+            return p1 + p2
+        return (jnp.clip(p1, 1e-60, jnp.inf) ** alpha + jnp.clip(p2, 1e-60, jnp.inf) ** alpha) ** (1.0 / alpha)
+
     def __init__(
                 self,
                 sim_params_dict: dict,
@@ -48,6 +55,7 @@ class get_Pkz(Profiles):
         if self.model_galaxies:
             self.k_mcfit, uk_clm = xi2P_obj(self.rho_clm_mat / self.Mclm_mat[-1, :, :][None, :, :], axis=0, extrap=False)
             self.uk_clm_tointp = jnp.array(uk_clm)
+            # Use the electron profile shape here; physical n_e units enter the tau map/projection separately.
             self.k_mcfit, uk_ne = xi2P_obj(self.ne_mat / self.ne_mat_norm[-1, :, :][None, :, :], axis=0, extrap=False)
             self.uk_ne_tointp = jnp.array(uk_ne)
         else: self.uk_clm_tointp, self.uk_ne_tointp = jnp.zeros((1,1,1)), jnp.zeros((1,1,1))
@@ -68,9 +76,18 @@ class get_Pkz(Profiles):
         else: self.uk_y = jnp.zeros((1,1,1))
         if self.model_galaxies:
             self.uk_clm = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 2).T
-            self.nbarz = jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen_mat + self.Nsat_mat), jnp.log(self.M_array), axis=-1)
-            self.ukg_cross = (self.Ncen_mat[None,:,:] + self.Nsat_mat[None,:,:] * self.uk_clm)/self.nbarz[None,:,None]
-            ukg_auto_arg = jnp.clip(jnp.nan_to_num(2 * self.Ncen_mat[None,:,:] * self.Nsat_mat[None,:,:] * self.uk_clm + (self.Nsat_mat[None,:,:] * self.uk_clm)**2), 1e-10, 2e4)
+            self.nbarz = jnp.maximum(jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen_mat + self.Nsat_mat), jnp.log(self.M_array), axis=-1), 1e-10)
+            self.ukg_cross = jnp.maximum((self.Ncen_mat[None,:,:] + self.Nsat_mat[None,:,:] * self.uk_clm)/self.nbarz[None,:,None], 1e-10)
+            ukg_auto_arg = jnp.maximum(
+                jnp.nan_to_num(
+                    2 * self.Ncen_mat[None,:,:] * self.Nsat_mat[None,:,:] * self.uk_clm
+                    + (self.Nsat_mat[None,:,:] * self.uk_clm)**2,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                ),
+                1e-10,
+            )
             self.ukg_auto_sqr = (ukg_auto_arg)/(self.nbarz[None,:,None] ** 2)
             self.uk_ne = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 4).T
         # else: self.uk_clm, self.ukg_cross, self.ukg_auto_sqr, self.uk_ne = jnp.zeros((self.nk, self.nz, self.nM)), jnp.zeros((self.nk, self.nz, self.nM)), jnp.zeros((self.nk, self.nz, self.nM)), jnp.zeros((self.nk, self.nz, self.nM))
@@ -128,6 +145,13 @@ class get_Pkz(Profiles):
         vmapped_func = get_vmapped_func_warg(self.get_P_1h, 2, 4)
         self.Pmm_dmb_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0, 0).T
         self.Pmm_nfw_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 1, 1).T
+
+        if self.lowpass_Pmm1h_lowk:
+            k_lowpass = self.kthresh_lowpass_Pmm1h_lowk
+            self.lowpass_filter = 1 / (1 + (k_lowpass / self.kPk_array[:, None])**4)
+            self.Pmm_nfw_1h_kz_mat = self.Pmm_nfw_1h_kz_mat * self.lowpass_filter
+            self.Pmm_dmb_1h_kz_mat = self.Pmm_dmb_1h_kz_mat * self.lowpass_filter
+
         if self.model_tSZ:
             self.Pym_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0, 3).T
         if self.model_galaxies:
@@ -146,17 +170,23 @@ class get_Pkz(Profiles):
         else:
             self.Pmm_tot_mat = (self.Pmm_dmb_tot_mat) * self.Pmm_sup_tot_mat
         if self.model_tSZ:
-            self.Pym_tot_mat = ((self.Pym_1h_kz_mat)**(self.alpha_ky) + (self.Pym_2h_kz_mat)**(self.alpha_ky))**(1/self.alpha_ky)
+            self.Pym_tot_mat = self._combine_1h2h_poweradd(self.Pym_1h_kz_mat, self.Pym_2h_kz_mat, self.alpha_ky)
             if self.tSZ_transition_model == 'response':
                 self.Pym_tot_mat = self.Pym_tot_mat * self.Pmm_sup_tot_mat
         if self.model_galaxies:
-            self.Pge_tot_mat = (self.Pge_1h_kz_mat + self.Pge_2h_kz_mat) * self.Pmm_sup_tot_mat
-            self.Pgm_tot_mat = (self.Pgm_1h_kz_mat + self.Pgm_2h_kz_mat) * self.Pmm_sup_tot_mat
-            self.Pgm_nfw_tot_mat = (self.Pgm_nfw_1h_kz_mat + self.Pgm_nfw_2h_kz_mat) * self.Pmm_sup_tot_mat
-            self.Pgy_tot_mat = ((self.Pgy_1h_kz_mat)**(self.alpha_gy) + (self.Pgy_2h_kz_mat)**(self.alpha_gy))**(1/self.alpha_gy)
+            self.Pge_tot_mat = self._combine_1h2h_poweradd(self.Pge_1h_kz_mat, self.Pge_2h_kz_mat, self.alpha_ge)
+            if self.galaxy_electron_transition_model == 'response':
+                self.Pge_tot_mat = self.Pge_tot_mat * self.Pmm_sup_tot_mat
+            self.Pgm_tot_mat = self._combine_1h2h_poweradd(self.Pgm_1h_kz_mat, self.Pgm_2h_kz_mat, self.alpha_gm)
+            if self.galaxy_matter_transition_model == 'response':
+                self.Pgm_tot_mat = self.Pgm_tot_mat * self.Pmm_sup_tot_mat
+            self.Pgm_nfw_tot_mat = self._combine_1h2h_poweradd(self.Pgm_nfw_1h_kz_mat, self.Pgm_nfw_2h_kz_mat, self.alpha_gm)
+            if self.galaxy_matter_transition_model == 'response':
+                self.Pgm_nfw_tot_mat = self.Pgm_nfw_tot_mat * self.Pmm_sup_tot_mat
+            self.Pgy_tot_mat = self._combine_1h2h_poweradd(self.Pgy_1h_kz_mat, self.Pgy_2h_kz_mat, self.alpha_gy)
             if self.tSZ_transition_model == 'response':
                 self.Pgy_tot_mat = self.Pgy_tot_mat * self.Pmm_sup_tot_mat
-            self.Pgg_tot_mat = ((self.Pgg_1h_kz_mat)**(self.alpha_gg) + (self.Pgg_2h_kz_mat)**(self.alpha_gg))**(1/self.alpha_gg)
+            self.Pgg_tot_mat = self._combine_1h2h_poweradd(self.Pgg_1h_kz_mat, self.Pgg_2h_kz_mat, self.alpha_gg)
             if self.gg_transition_model == 'response':
                 self.Pgg_tot_mat = (self.Pgg_1h_kz_mat + self.Pgg_2h_kz_mat) * self.Pmm_sup_tot_mat
 

@@ -1,0 +1,81 @@
+description: >
+  Path-backed GODMAX analytic theory configuration for comparing to the
+  xDESI fast1024 multi-probe NaMaster measurement built with calibrated
+  DESI true-redshift n(z) kernels for the full valid_for_cl DR9 Extended LRG
+  photometric catalog. This variant uses the fixed Abacus/Backlight-like
+  cosmology requested for the next Stage-31 HMC run.
+
+base_params: param_files/params_default.yaml
+xdesi_params: param_files/xDESI/params_fit_abacus.yaml
+
+measurement_h5: data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_cls_cov_nside1024_lmax1024_nbin10_linear.h5
+map_h5: data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_maps_nside1024_lmax1024_nbin10_linear.h5
+
+stage: fast1024_true_nz_abacus_cosmo
+output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_fast1024_true_nz_abacus_cosmo
+minimum_halo_log10_m200c_hmsun: 11.147538
+
+cosmology:
+  flat: true
+  H0: 67.11
+  Om0: 0.3175
+  Ob0: 0.049
+  sigma8: 0.834
+  ns: 0.9624
+  w0: -1.0
+  wa: 0.0
+
+datasets:
+  des_source_nz:
+    file: measurement_h5
+    z_mid: nz/des_shear/z_mid
+    dndz_by_bin: nz/des_shear/dndz_by_bin
+  desi_lens_nz:
+    file: map_h5
+    z_mid: nz/desi/z_mid
+    z_edges: nz/desi/z_edges
+    dndz_by_pz: nz/desi/nz_dndz_by_pz
+    required_redshift_kind: spectroscopic_calibrated_true_redshift
+  theory_interface:
+    file: measurement_h5
+    group: theory_interface
+  field_metadata:
+    file: measurement_h5
+    group: fields
+
+nbar:
+  floor_comoving_hmpc3: 1.0e-10
+  source: measured_nbar_per_sr_times_calibrated_true_dndz_over_chi2_dchidz
+
+overrides:
+  halo_params:
+    # Backlight-compatible M200c floor: log10(M / [Msun/h]) = 11.147538.
+    lg10_Mmin: 11.147538
+    zmin: 0.005
+    zmax: 3.0
+    nz: 96
+  analysis:
+    hod_params_model: perbin
+    gg_transition_model: poweradd
+    beam_fwhm_arcmin: 0.0
+    zmin_for_Cls: 0.005
+    zmax_for_Cls: 3.0
+    nz_for_Cls: 192
+  other_params:
+    mult_shear_bias_array:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+
+theory_to_data_vector:
+  include_default_pixel_windows: true
+  include_default_act_beams: true
+  theory_shear_e_is_positive_kappa: true
+  ksz_velocity_correlation: 0.3
+
+plotting:
+  use_cl_for_families:
+    - desi_g_auto
+  use_dell_for_other_families: true
+  ksz_positive_convention: "-D_ell^{pi,T}"

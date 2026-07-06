@@ -1,0 +1,166 @@
+project:
+  name: stage31_fullsky_logMgt13p8
+  xdesi_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI
+  output_root: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/abacus_backlight/stage31_fullsky_logMgt13p8
+  catalog_subdir: halos
+  map_subdir: maps
+  measurement_subdir: measurements
+  theory_subdir: theory
+  plot_subdir: plots
+abacus:
+  input_root: /mnt/ceph/users/backlight/AbacusBacklight_base_c9999_ph9999/lightcone_halos
+  sim_name: AbacusBacklight_base_c9999_ph9999
+  read_only: true
+  redshift_dir_padding: 0.08
+catalogs:
+  pz1fullsky_z0p3_0p62_logMgt13p8:
+    output_name: abacus_c9999_ph9999_pz1fullsky_z0p3_0p62_logMgt13p8_halos.h5
+    z_min: 0.3
+    z_max: 0.62
+    log10_m_min_hmsun: 13.8
+    metadata:
+      desi_pz_bin: 1
+      redshift_kind: spectroscopic_calibrated_true_redshift
+      selection_note: pz1 is a photometric tracer label; full-sky halos are selected
+        by true redshift and high mass only. No photo-z assignment is applied.
+      pz1_true_nz_retained_fraction: 0.9905739901982026
+      analytic_hod_log10_m_floor: 10.5
+      resolved_catalog_log10_m_min_hmsun: 13.8
+      fullsky_mass_cut_reason: Chosen from 2026-06-08 count and pixel-pair scans to
+        keep the four-bin full-sky diagnostic paste close to a 30 minute total budget
+        with current healpy settings.
+      pz1_true_nz_target_surface_density_per_deg2: 167.866089696
+      pz1_true_nz_central99_z_min: 0.29560290047792287
+      pz1_true_nz_central99_z_max: 0.6165910586223279
+  pz2fullsky_z0p431_0p804_logMgt13p8:
+    output_name: abacus_c9999_ph9999_pz2fullsky_z0p431_0p804_logMgt13p8_halos.h5
+    z_min: 0.43110627652982897
+    z_max: 0.8035931265106552
+    log10_m_min_hmsun: 13.8
+    metadata:
+      desi_pz_bin: 2
+      redshift_kind: spectroscopic_calibrated_true_redshift
+      selection_note: pz2 is a photometric tracer label; full-sky halos are selected
+        by true redshift and high mass only. No photo-z assignment is applied.
+      pz2_true_nz_retained_fraction: 0.9901655519259698
+      analytic_hod_log10_m_floor: 10.5
+      resolved_catalog_log10_m_min_hmsun: 13.8
+      fullsky_mass_cut_reason: Chosen from 2026-06-08 count and pixel-pair scans to
+        keep the four-bin full-sky diagnostic paste close to a 30 minute total budget
+        with current healpy settings.
+      pz2_true_nz_target_surface_density_per_deg2: 284.753817344
+      pz2_true_nz_central99_z_min: 0.43110627652982897
+      pz2_true_nz_central99_z_max: 0.8035931265106552
+  pz3fullsky_z0p63_0p98_logMgt13p8:
+    output_name: abacus_c9999_ph9999_pz3fullsky_z0p63_0p98_logMgt13p8_halos.h5
+    z_min: 0.63
+    z_max: 0.98
+    log10_m_min_hmsun: 13.8
+    metadata:
+      desi_pz_bin: 3
+      redshift_kind: spectroscopic_calibrated_true_redshift
+      selection_note: pz3 is a photometric tracer label; full-sky halos are selected
+        by true redshift and high mass only. No photo-z assignment is applied.
+      pz3_true_nz_retained_fraction: 0.9814082135162306
+      analytic_hod_log10_m_floor: 10.5
+      resolved_catalog_log10_m_min_hmsun: 13.8
+      fullsky_mass_cut_reason: Chosen from 2026-06-08 count and pixel-pair scans to
+        keep the four-bin full-sky diagnostic paste close to a 30 minute total budget
+        with current healpy settings.
+      pz3_true_nz_target_surface_density_per_deg2: 334.86400893955306
+      pz3_true_nz_central98_z_min: 0.6294281441841235
+      pz3_true_nz_central98_z_max: 0.9748499080501475
+      pz3_true_nz_stage31_map_h5_surface_density_per_deg2: 372.777282547
+  pz4fullsky_z0p713_1p19_logMgt13p8:
+    output_name: abacus_c9999_ph9999_pz4fullsky_z0p713_1p19_logMgt13p8_halos.h5
+    z_min: 0.7131674616590881
+    z_max: 1.1898555882069786
+    log10_m_min_hmsun: 13.8
+    metadata:
+      desi_pz_bin: 4
+      redshift_kind: spectroscopic_calibrated_true_redshift
+      selection_note: pz4 is a photometric tracer label; full-sky halos are selected
+        by true redshift and high mass only. No photo-z assignment is applied.
+      pz4_true_nz_retained_fraction: 0.9900608345851288
+      analytic_hod_log10_m_floor: 10.5
+      resolved_catalog_log10_m_min_hmsun: 13.8
+      fullsky_mass_cut_reason: Chosen from 2026-06-08 count and pixel-pair scans to
+        keep the four-bin full-sky diagnostic paste close to a 30 minute total budget
+        with current healpy settings.
+      pz4_true_nz_target_surface_density_per_deg2: 341.297435565
+      pz4_true_nz_central99_z_min: 0.7131674616590881
+      pz4_true_nz_central99_z_max: 1.1898555882069786
+godmax:
+  comparison_config: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/xDESI/params_multiprobe_fast1024_true_nz_theory.yaml
+  bestfit_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_fast1024_true_nz_hmc_stage31_multigpu/stage31_hmc_8000x16_v2/combined/bestfit_params_stage31_multigpu_v2.yaml
+  measurement_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_cls_cov_nside1024_lmax1024_nbin10_linear.h5
+  map_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_maps_nside1024_lmax1024_nbin10_linear.h5
+  analytic_hod_log10_m_floor: 10.5
+  resolved_catalog_log10_m_min_hmsun: 13.8
+  override_cosmology_from_catalog: true
+pasting:
+  run_name: stage31_fullsky_pz3_logMgt13p8
+  catalog_key: pz3fullsky_z0p63_0p98_logMgt13p8
+  measurement_tag_base: pz3_fullsky_logMgt13p8
+  pz_bin: 3
+  nside: 1024
+  lmax: 1024
+  ell_min: 8
+  n_bins: 10
+  binning: linear
+  random_seed: 42
+  verbose: true
+  pixel_log_batches: false
+  pixel_backend: healpy
+  pixel_workers: 16
+  pixel_start_method: fork
+  persistent_pixel_pool: true
+  pixel_pool_warmup: true
+  split_strategy: block_striped
+  split_block_halos: 50000
+  jax:
+    preallocate: true
+    memory_fraction: 0.95
+    platforms: cuda
+  max_paint_R200c_factor: 5.0
+  smooth_profiles: true
+  profile_timing: false
+  use_fused_profile_maps: true
+  use_multi_kappa_maps: true
+  return_sparse_maps: true
+  store_projected_matter_maps: false
+  get_baryonifiedmap: false
+  include_legacy_pixel_arrays: false
+  galaxy_population_chunk_size: 20000
+  galaxy_max_gals_round_to: 16
+  galaxy_population_backend: padded_precomputed
+  galaxy_compact_max_satellite_groups: 8
+  galaxy_population_group_by_max_gals: false
+  pixel_batch_size: 1000000
+  pixel_gc_collect_every_n_batches: 0
+  pixel_pool_chunksize: 32
+  pixel_prefetch_next_chunk: false
+  single_pixel_angle_factor: 0.5
+  jax_clear_caches_every_n_chunks: 1
+  compute_covariance: false
+  include_diagnostic_gtau: true
+  source_bins_for_galaxy_cross:
+  - 1
+  - 2
+  - 3
+  - 4
+  chunk_halos_by_nside:
+    128: 50000
+    512: 50000
+    1024: 50000
+    2048: 25000
+  num_splits_by_nside:
+    128: 1
+    512: 4
+    1024: 4
+    2048: 4
+validation:
+  smoke_nside: 128
+  production_nside: 1024
+  target_pz3_surface_density_per_deg2: 334.86400893955306
+  pz3_true_nz_retained_fraction: 0.9814082135162306

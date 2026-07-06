@@ -8,6 +8,9 @@ from astropy import constants as const
 import interpax
 from jax_cosmo.scipy.integrate import simps
 import time
+from astropy import constants as const
+import astropy.units as u
+
 
 class get_Cl(get_Pkz):
     """
@@ -57,7 +60,7 @@ class get_Cl(get_Pkz):
             self.Pkgg_lz_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nz), self.Pgg_tot_mat).T
 
         # Get the interpolators:
-        self.cached_power_spectra = jnp.zeros((4, 4, self.nell, self.nz_for_Cls))
+        self.cached_power_spectra = jnp.zeros((5, 5, self.nell, self.nz_for_Cls))
         log_ell = jnp.log(self.ell_array)
         self.logPkmmlz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkmm_lz_mat), extrap=True)        
         self.cached_power_spectra = self.cached_power_spectra.at[0,0].set(vmap(lambda l: jnp.exp(self.logPkmmlz_2d_interp(l, self.z_array_for_Cls)))(log_ell))
@@ -80,14 +83,26 @@ class get_Cl(get_Pkz):
             self.logPkgm_nfw_lz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkgm_nfw_lz_mat), extrap=True)        
             self.cached_power_spectra = self.cached_power_spectra.at[2,1].set(vmap(lambda l: jnp.exp(self.logPkgm_nfw_lz_2d_interp(l, self.z_array_for_Cls)))(log_ell))
             self.cached_power_spectra = self.cached_power_spectra.at[1,2].set(self.cached_power_spectra[2,1])
-        else: self.logPkgmlz_2d_interp, self.logPkgglz_2d_interp, self.logPkgylz_2d_interp, self.logPkgm_nfw_lz_2d_interp = EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable()
+
+            self.logPkge_lz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkge_lz_mat), extrap=True)        
+            self.cached_power_spectra = self.cached_power_spectra.at[2,4].set(vmap(lambda l: jnp.exp(self.logPkge_lz_2d_interp(l, self.z_array_for_Cls)))(log_ell))
+            self.cached_power_spectra = self.cached_power_spectra.at[4,2].set(self.cached_power_spectra[2,4])
+
+        else: self.logPkgmlz_2d_interp, self.logPkgglz_2d_interp, self.logPkgylz_2d_interp, self.logPkgm_nfw_lz_2d_interp, self.logPkge_lz_2d_interp = EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable()
 
         # Get the window functions for different probes:
-        self.pzs_inp_mat = vmap(self.get_photoz_biased_nz)(jnp.arange(self.nbins))
-        self.Wk_gravonly_mat = get_vmapped_func(self.get_weak_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
-        self.nla_mat = get_vmapped_func(self.get_nla_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T        
-        self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
+        if self.is_cmb_lensing:
+            self.Wk_mat = get_vmapped_func(self.get_cmb_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
+        else:
+            self.pzs_inp_mat = vmap(self.get_photoz_biased_nz)(jnp.arange(self.nbins))
+            self.Wk_gravonly_mat = get_vmapped_func(self.get_weak_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
+            self.nla_mat = get_vmapped_func(self.get_nla_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T        
+            self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
         self.Wy_array = (1.0 / (1.0 + self.z_array_for_Cls))
+        oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
+        self.const_coeff_tau = (((const.sigma_T * oneMpc).to(u.cm ** 3)).value)/(self.cosmo_params['H0']/100.)
+        self.Wtau_array = self.const_coeff_tau * (1.0 / (1.0 + self.z_array_for_Cls))
+
         if self.model_galaxies:
             self.Wg_mat = vmap(self.get_nz_lens_interp)(jnp.arange(self.nbins_lens))
         else: self.Wg_mat = jnp.zeros((1,1))
@@ -123,6 +138,9 @@ class get_Cl(get_Pkz):
             # Get the Pge in the given k-array:
             self.Pge_zarray = vmap(self.get_Pge_interpz)(jnp.arange(self.nk))
             self.Pge_tot_mat = vmap(self.get_Pge_tot_ks)(jnp.arange(self.nbins_lens))
+
+            
+
             if self.ENABLE_TIMING:
                 print("Time to compute the Pge in the k-array: ", time.time() - ti)
                 ti = time.time()
@@ -138,11 +156,14 @@ class get_Cl(get_Pkz):
             if self.model_galaxies:
                 # self.Cl_gal_y_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins_lens), 0, 2, 3).T        
                 self.Cl_gal_y_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), 0, 2, 3).T
+
+                self.Cl_gal_tau_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), 0, 2, 4).T
+
                 if self.ENABLE_TIMING:
                     print("Time to compute the gal y: ", time.time() - ti)
-        # if self.ENABLE_TIMING:
-        #     print("Time to compute the angular power spectra: ", time.time() - ti)
-        #     ti = time.time()
+            if self.ENABLE_TIMING:
+                print("Time to compute SZ angular power spectra: ", time.time() - ti)
+                ti = time.time()
 
     @partial(jit, static_argnums=(0,))
     def get_P_lz(self, jl, jz, Pk_mat):
@@ -174,7 +195,6 @@ class get_Cl(get_Pkz):
         value = jnp.exp(Pk_interp_obj(jnp.log(self.ell_array[jl]), self.z_array_for_Cls[jz]))        
         return value 
     
-
     @partial(jit, static_argnums=(0,))
     def get_photoz_biased_nz(self, jb):
         """
@@ -184,13 +204,27 @@ class get_Cl(get_Pkz):
         norm_val = jsi.trapezoid(val_biased, x=self.z_array_nz)
         return val_biased / norm_val
 
-
     @partial(jit, static_argnums=(0,))
     def get_nz_lens_interp(self, jb):
         nz_jb = self.pzs_inp_mat_inp_lens[jb,:]
         nz_interp = jnp.interp(self.z_array_for_Cls, self.z_array_nz_lens, nz_jb)
         norm_val = jsi.trapezoid(nz_interp, x=self.z_array_for_Cls)
         return nz_interp / norm_val
+
+    @partial(jit, static_argnums=(0,))
+    def get_cmb_lensing_kernel(self, jb, jz):
+        """
+        Returns a weak lensing kernel
+
+        Note: this function handles differently nzs that correspond to extended redshift
+        distribution, and delta functions.
+        """
+        z = self.z_array_for_Cls[jz]
+        chi = self.chi_array_for_Cls[jz]
+
+        radial_kernel_cmb = jnp.clip(self.chi_CMB - chi, 0) / jnp.clip(self.chi_CMB, 0.1)
+        constant_factor_cmb = 3.0 * (100.)**2 * self.cosmo_jax.Omega_m / (2.0 * ((const.c.value * 1e-3)**2))
+        return constant_factor_cmb * radial_kernel_cmb * (1.0 + z) * chi
 
 
     @partial(jit, static_argnums=(0,))
@@ -206,7 +240,7 @@ class get_Cl(get_Pkz):
 
         @vmap
         def integrand(z_prime):
-            chi_prime = jnp.exp(jnp.interp(z_prime, self.z_array, jnp.log(self.chi_array)))
+            chi_prime = jnp.interp(z_prime, self.z_array_nz, self.chi_array_nz)
             dndz = (jnp.interp(z_prime, self.z_array_nz, self.pzs_inp_mat[jb, :]))
             return dndz * jnp.clip(chi_prime - chi, 0) / jnp.clip(chi_prime, 0.1)
 
@@ -259,6 +293,7 @@ class get_Cl(get_Pkz):
                 (probe == 1, (1. + self.mult_shear_bias_array[jb]) * (self.Wk_mat[jb] / (self.chi_array_for_Cls**2))),
                 (probe == 2, self.Wg_mat[jb] / (self.dchi_dz_array_for_Cls * self.chi_array_for_Cls**2)),
                 (probe == 3, self.Wy_array / (self.chi_array_for_Cls**2)),
+                (probe == 4, self.Wtau_array / (self.chi_array_for_Cls**2))
             ]
             
             # Default value if no condition matches
@@ -271,25 +306,6 @@ class get_Cl(get_Pkz):
         prefac_for_uk1 = compute_prefac(probe1, jb1)
         prefac_for_uk2 = compute_prefac(probe2, jb2)        
 
-        # Define the conditions and corresponding functions
-        # conditions = [
-        #     (jnp.logical_and(probe1 == 0, probe2 == 0), self.logPkmmlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 1, probe2 == 1), self.logPkmm_nfw_lz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 2), self.logPkgglz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 0), self.logPkgmlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 0, probe2 == 2), self.logPkgmlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 1), self.logPkgm_nfw_lz_2d_interp),
-        #     (jnp.logical_and(probe1 == 1, probe2 == 2), self.logPkgm_nfw_lz_2d_interp),
-        #     (jnp.logical_and(probe1 == 2, probe2 == 3), self.logPkgylz_2d_interp),
-        #     (jnp.logical_and(probe1 == 3, probe2 == 2), self.logPkgylz_2d_interp),
-        #     (jnp.logical_and(probe1 == 0, probe2 == 3), self.logPkymlz_2d_interp),
-        #     (jnp.logical_and(probe1 == 3, probe2 == 0), self.logPkymlz_2d_interp),
-        # ]
-
-        # Compute Pk
-        # Pk = jnp.nan  # Default value if no condition matches
-        # for condition, func in conditions:
-        #     Pk = jnp.where(condition, jnp.exp(func(jnp.log(self.ell_array[jl]), self.z_array_for_Cls)), Pk)
         Pk = self.cached_power_spectra[probe1, probe2]
         fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array_for_Cls ** 2) * self.dchi_dz_array_for_Cls * Pk
         return jsi.trapezoid(fx, x=self.z_array_for_Cls)     

@@ -2,10 +2,17 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+sbi-logs/
+outputs/
 data/
 logs/
+papers/
+summary/
 results/
+slurm-logs/
+.claude/
+.codex/
+*.slurm
 *.npy
 *.pdf
 *.pkl
@@ -19,6 +26,9 @@ results/
 *.fits
 *.h5
 *.hdf5
+
+summary/
+context/
 
 # C extensions
 *.so
@@ -144,3 +154,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Ignore images
+*.png
+*.jpg
+*.jpeg
+
+# Ignore any directory with 'logs' in its name
+**/*logs*/
+
