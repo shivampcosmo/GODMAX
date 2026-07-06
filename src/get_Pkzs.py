@@ -33,11 +33,16 @@ class get_Pkz(Profiles):
         else:
             self.__dict__.update(Profiles_obj.__dict__)
 
-        # Do the FFTlog transform of the real-space profiles:
+        # Do the FFTlog transform of the real-space profiles. Normalize each
+        # profile by the mass represented on this same radial grid so u(k->0)=1.
         xi2P_obj = (xi2P(self.r_array, nx=self.nr,lowring=True))
-        self.k_mcfit, uk_dmb = xi2P_obj(self.rho_dmb_mat / self.Mtot_mat[None, :, :], axis=0, extrap=False)
+        mass_shell_prefac = 4.0 * jnp.pi * self.r_array[:, None, None]**2
+        self.Mdmb_grid_mat = jsi.trapezoid(mass_shell_prefac * self.rho_dmb_mat, x=self.r_array, axis=0)
+        self.Mnfw_grid_mat = jsi.trapezoid(mass_shell_prefac * self.rho_nfw_mat, x=self.r_array, axis=0)
+
+        self.k_mcfit, uk_dmb = xi2P_obj(self.rho_dmb_mat / jnp.clip(self.Mdmb_grid_mat[None, :, :], 1e-30), axis=0, extrap=False)
         self.uk_dmb_tointp = jnp.array(uk_dmb)
-        self.k_mcfit, uk_nfw = xi2P_obj(self.rho_nfw_mat / self.Mtot_mat[None, :, :], axis=0, extrap=False)
+        self.k_mcfit, uk_nfw = xi2P_obj(self.rho_nfw_mat / jnp.clip(self.Mnfw_grid_mat[None, :, :], 1e-30), axis=0, extrap=False)
         self.uk_nfw_tointp = jnp.array(uk_nfw)
 
         if self.model_galaxies:

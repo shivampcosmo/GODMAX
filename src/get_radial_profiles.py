@@ -14,7 +14,7 @@ import interpax
 from base_class import base_class, get_vmapped_func, get_vmapped_func_warg
 from hmf_symbolic import *
 
-
+RMAX_R200c = 8.
 # Define constants once at module level
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
@@ -513,7 +513,7 @@ class Profiles(base_class):
         return prefac * rho_nfw
     
     @partial(jit, static_argnums=(0,))
-    def get_Mtot(self, jz, jM, rmax_r200c=16):
+    def get_Mtot(self, jz, jM, rmax_r200c=RMAX_R200c):
         '''This is the total mass of all matter '''
         r200c = self.r200c_mat[jz, jM]
         logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
@@ -704,7 +704,7 @@ class Profiles(base_class):
         return rho_gas_unnorm    
 
     @partial(jit, static_argnums=(0,))
-    def get_rho_gas_norm(self, jz, jM, rmax_r200c=16):
+    def get_rho_gas_norm(self, jz, jM, rmax_r200c=RMAX_R200c):
         '''This is the normalization of the gas profile'''
         r200c = self.r200c_mat[jz, jM]
         logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
@@ -843,7 +843,7 @@ class Profiles(base_class):
 
 
     @partial(jit, static_argnums=(0,))
-    def get_Ptot(self, jr, jz, jM, r_array_here=None, rmax_r200c=6):
+    def get_Ptot(self, jr, jz, jM, r_array_here=None, rmax_r200c=RMAX_R200c):
         '''This is the total pressure profile, assuming HSE'''
         if r_array_here is None:
             r = self.r_array[jr]
@@ -860,7 +860,7 @@ class Profiles(base_class):
         return Ptot
     
     @partial(jit, static_argnums=(0,))
-    def get_fz_Pnt(self, jz, rmax_r200c=6):
+    def get_fz_Pnt(self, jz, rmax_r200c=RMAX_R200c):
         '''This is the evolution of non-thermal pressure with redshift'''
         fmax = (rmax_r200c)**(-1 * self.n_nt) / self.alpha_nt
         fz = jnp.minimum((1 + self.z_array[jz])**self.beta_nt, (fmax - 1) * jnp.tanh(self.beta_nt * self.z_array[jz]) + 1)
