@@ -19,6 +19,7 @@ LTU_ILI_PATH = '/work/hdd/bdne/aacharya2/ltu-ili'
 sys.path.append(LTU_ILI_PATH)
 
 from ili.dataloaders import StaticNumpyLoader
+from ili.inference import InferenceRunner
 from ili.validation import ValidationRunner, PosteriorCoverage
 from ili.utils import load_nde_sbi
 
@@ -44,8 +45,7 @@ def set_seeds(seed=42):
 
 set_seeds(111)
 
-# Third element: True = drawn from prior, False = drawn from posterior proposal.
-# This controls how append_simulations() is called in the multiround loop.
+# Third element: True = prior round, False = proposal round.
 CSV_FILES = [
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/lhs_samples.csv',    0,    True),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round2_samples.csv', 500,  False),
@@ -70,7 +70,7 @@ VAL_FRACTION  = 0.10
 PCA_VARIANCE_THRESHOLD = 0.99
 
 # =============================================================================
-# ELL BINNING  (unchanged)
+# ELL BINNING
 # =============================================================================
 
 def make_ell_bins(lmin=LMIN, lmax=LMAX, n_bins=N_ELL_BINS):
@@ -108,7 +108,7 @@ def bin_cl(cl_full):
     ], dtype=np.float32)
 
 # =============================================================================
-# CL SPECS AND STAT MAP  (unchanged)
+# CL SPECS AND STAT MAP
 # =============================================================================
 
 CL_SPECS = [
@@ -189,7 +189,7 @@ def load_optuna_hyperparams(model_dir, study_name='study'):
     }
 
 # =============================================================================
-# NOISE UTILITIES  (unchanged)
+# NOISE UTILITIES
 # =============================================================================
 
 _NOISE_PKG_CACHE = None
@@ -245,16 +245,17 @@ def _add_noise_to_maps(ymap, tmap, kmap, path: str) -> tuple:
     return ymap + _draw('nl_yy'), tmap + _draw('nl_tautau'), kmap + _draw('nl_kk')
 
 # =============================================================================
-# SAMPLING UTILITIES  (unchanged)
+# SAMPLING UTILITIES
 # =============================================================================
 
 def _sample_member_thread(member, x_t, n_samples, result, exception):
     try:
+        # Move x_t to the same device as the member posterior
+        x_t = torch.as_tensor(x_t, dtype=torch.float32).to(member._device)
         s = member.sample((n_samples,), x=x_t, show_progress_bars=False)
         result[0] = s.detach().cpu().numpy()
     except Exception as e:
         exception[0] = e
-
 
 def sample_ensemble_direct(posterior, x_obs_norm, n_samples=500,
                             timeout_per_member=45):
@@ -314,7 +315,7 @@ def sample_ensemble_direct(posterior, x_obs_norm, n_samples=500,
     return combined[idx]
 
 # =============================================================================
-# SUMMARY STATISTIC EXTRACTION  (unchanged)
+# SUMMARY STATISTIC EXTRACTION
 # =============================================================================
 
 def extract_Cls(path, add_noise=ADD_SURVEY_NOISE):
@@ -397,7 +398,7 @@ def extract_Cls(path, add_noise=ADD_SURVEY_NOISE):
     return np.concatenate(vec).astype(np.float32)
 
 # =============================================================================
-# PCA HELPER  (unchanged)
+# PCA HELPER
 # =============================================================================
 
 def fit_pca(x_norm, variance_threshold=PCA_VARIANCE_THRESHOLD):
@@ -414,132 +415,23 @@ def fit_pca(x_norm, variance_threshold=PCA_VARIANCE_THRESHOLD):
     return pca, n_comp
 
 # =============================================================================
-# MOVE POSTERIOR TO CPU  (robust recursive walker)
-# =============================================================================
-
-def move_posterior_to_cpu(post):
-    """
-    Recursively move every tensor in a (possibly ensemble) sbi posterior to CPU.
-    Explicitly handles BoxUniform's nested constraint tensors which the generic
-    walker misses.
-    """
-    def _move_prior_to_cpu(prior):
-        """Explicitly move BoxUniform prior bounds to CPU."""
-        # top-level low/high
-        for attr in ('low', 'high'):
-            try:
-                val = getattr(prior, attr)
-                if isinstance(val, torch.Tensor):
-                    setattr(prior, attr, val.cpu())
-            except AttributeError:
-                pass
-
-        # constraint lower_bound / upper_bound (where the crash comes from)
-        for constraint_attr in ('_validate_sample', 'support', '_support'):
-            try:
-                constraint = getattr(prior, constraint_attr)
-                for bound_attr in ('lower_bound', 'upper_bound',
-                                   'base_constraint'):
-                    try:
-                        val = getattr(constraint, bound_attr)
-                        if isinstance(val, torch.Tensor):
-                            setattr(constraint, bound_attr, val.cpu())
-                        # base_constraint itself may have lower/upper bound
-                        elif hasattr(val, 'lower_bound'):
-                            if isinstance(val.lower_bound, torch.Tensor):
-                                val.lower_bound = val.lower_bound.cpu()
-                            if isinstance(val.upper_bound, torch.Tensor):
-                                val.upper_bound = val.upper_bound.cpu()
-                    except AttributeError:
-                        pass
-            except AttributeError:
-                pass
-
-    def _move_member_to_cpu(member):
-        # move neural net
-        try:
-            member._neural_net = member._neural_net.to('cpu')
-        except AttributeError:
-            pass
-
-        # move prior and its constraints
-        for prior_attr in ('_prior', 'prior'):
-            try:
-                prior = getattr(member, prior_attr)
-                _move_prior_to_cpu(prior)
-            except AttributeError:
-                pass
-
-        # move potential_fn's prior and its constraints
-        try:
-            pot = member.potential_fn
-            for prior_attr in ('prior', '_prior'):
-                try:
-                    prior = getattr(pot, prior_attr)
-                    _move_prior_to_cpu(prior)
-                except AttributeError:
-                    pass
-            # also move any tensors directly on potential_fn
-            for attr, val in list(vars(pot).items()):
-                if isinstance(val, torch.Tensor):
-                    setattr(pot, attr, val.cpu())
-        except AttributeError:
-            pass
-
-        # move any remaining tensors directly on the member
-        for attr, val in list(vars(member).items()):
-            if isinstance(val, torch.Tensor):
-                setattr(member, attr, val.cpu())
-
-        return member
-
-    # handle EnsemblePosterior
-    try:
-        for i, member in enumerate(post.posteriors):
-            post.posteriors[i] = _move_member_to_cpu(member)
-        # also move ensemble-level prior
-        for prior_attr in ('_prior', 'prior'):
-            try:
-                prior = getattr(post, prior_attr)
-                _move_prior_to_cpu(prior)
-            except AttributeError:
-                pass
-        # move ensemble-level potential_fn priors
-        try:
-            for pot in post.potential_fns:
-                for prior_attr in ('prior', '_prior'):
-                    try:
-                        _move_prior_to_cpu(getattr(pot, prior_attr))
-                    except AttributeError:
-                        pass
-        except AttributeError:
-            pass
-    except AttributeError:
-        # single posterior
-        post = _move_member_to_cpu(post)
-
-    return post
-# =============================================================================
-# SEQUENTIAL SBI TRAINING  — one statistic, GPU
+# SEQUENTIAL MULTIROUND TRAINING  — one statistic, via ltu-ili SBIRunner
 # =============================================================================
 
 def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
                              work_dir, device, blocks, opt_hps):
     """
-    Train one MDN posterior using sbi's native multiround NPE loop.
+    Train one MDN ensemble posterior using ltu-ili's SBIRunner._train_round()
+    called once per round, accumulating data and updating the proposal after
+    each round — mirroring how the active learning rounds were actually generated.
 
-    x_rounds     : list of np.ndarray (n_r, N_SUMMARY), one per CSV round
-    theta_rounds : list of np.ndarray (n_r, N_PARAMS),  one per CSV round
-    CSV_FILES[r][2] (is_prior_round) drives whether proposal=prior or
-    proposal=posterior for each round's append_simulations() call.
+    Round 1 (prior round):   proposal = BoxUniform prior
+    Round R (R > 1):         proposal = EnsemblePosterior from rounds 1..R-1
     """
     import joblib
-    from sbi.inference import NPE
     from sbi.utils import BoxUniform
-    from sbi.inference.posteriors.ensemble_posterior import EnsemblePosterior
-    from ili.utils import load_nde_sbi
+    from ili.inference.runner_sbi import SBIRunner
 
-    # sbi wants the string 'cuda' not 'cuda:0'
     sbi_device = 'cuda' if device.startswith('cuda') else 'cpu'
 
     def fpath(fname):
@@ -551,8 +443,8 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
         n_train  = sum(len(t) for t in theta_rounds)
 
         # ── z-score using round-1 (prior) data only ───────────────────────────
-        x_r1 = x_rounds[0][:, idx].astype(np.float32)
-        xo   = x_obs[idx].astype(np.float32)
+        x_r1   = x_rounds[0][:, idx].astype(np.float32)
+        xo_raw = x_obs[idx].astype(np.float32)
 
         if blocks is None:
             x_mean = np.mean(x_r1, axis=0)
@@ -570,7 +462,6 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
                 x_std[blk]  = s
 
         def normalise(x_slice):
-            """Apply round-1 z-score to a raw Cl slice (n, n_stats)."""
             if blocks is None:
                 return ((x_slice - x_mean) / x_std).astype(np.float32)
             out = np.empty_like(x_slice)
@@ -587,8 +478,8 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
         pca, n_comp_var = fit_pca(x_r1_norm)
 
         # signal-based component selection using nu parameter
-        x_r1_pca = pca.transform(x_r1_norm)
-        r2_nu = np.array([
+        x_r1_pca  = pca.transform(x_r1_norm)
+        r2_nu     = np.array([
             np.corrcoef(x_r1_pca[:, i], theta_rounds[0][:, 1])[0, 1] ** 2
             for i in range(pca.n_components_)
         ])
@@ -608,10 +499,11 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             )[:, :n_comp].astype(np.float32)
 
         # compressed observed data vector
-        xo_norm   = normalise(xo.reshape(1, -1))           # (1, n_stats)
-        xo_comp   = pca.transform(xo_norm)[:, :n_comp][0]  # (n_comp,)
-        xo_comp   = xo_comp.astype(np.float32)
+        xo_norm = normalise(xo_raw.reshape(1, -1))
+        xo_comp = pca.transform(xo_norm)[:, :n_comp][0].astype(np.float32)
         np.save(fpath(f'xobs_{name}.npy'), xo_comp)
+
+        xo_tensor = torch.tensor(xo_comp, dtype=torch.float32).to(sbi_device)
 
         # ── Architecture ──────────────────────────────────────────────────────
         if FORCE_EQUAL_ARCH:
@@ -649,82 +541,78 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             stop_after_epochs=50,
             clip_max_norm=5.0,
             validation_fraction=VAL_FRACTION,
-            show_train_summary=False,
         )
 
-        # prior on sbi_device with clean device string
+        # ── Prior ─────────────────────────────────────────────────────────────
         prior = BoxUniform(
             low =torch.tensor(PRIOR_LOW,  dtype=torch.float32).to(sbi_device),
             high=torch.tensor(PRIOR_HIGH, dtype=torch.float32).to(sbi_device),
         )
 
-        # x_obs tensor for setting default x on the posterior
-        xo_tensor = torch.tensor(xo_comp, dtype=torch.float32).to(sbi_device)
+        # ── Build one SBIRunner per ensemble member, all sharing same nets ────
+        # load_nde_sbi returns a list of nets; one per repeat
+        nets = load_nde_sbi(
+            engine='NPE', model='mdn',
+            repeats=repeats,
+            hidden_features=hfs,
+            num_components=num_components,
+        )
 
-        # ── Ensemble loop — one NPE per repeat ────────────────────────────────
-        member_posteriors = []
+        # SBIRunner wraps the ensemble and exposes _train_round()
+        runner = InferenceRunner.load(
+            backend='sbi',
+            engine='NPE',
+            prior=prior,
+            nets=nets,
+            out_dir=Path(fpath(f'sbi_logs_{name}')),
+            device=sbi_device,
+            train_args=train_args,
+        )
+        # _setup_engine() creates one sbi SNPE inference object per net
+        models = [runner._setup_engine(net) for net in runner.nets]
 
-        for rep in range(repeats):
-            set_seeds(111 + rep)
+        # ── Multiround loop ───────────────────────────────────────────────────
+        # proposal starts as prior; after each round it becomes the posterior
+        # trained on all data seen so far — matching how rounds were generated.
+        proposal        = prior
+        posterior_ensemble = None
 
-            # one density estimator net per ensemble member
-            nets = load_nde_sbi(
-                engine='NPE', model='mdn',
-                repeats=1,
-                hidden_features=hfs,
-                num_components=num_components,
+        for r_idx, (csv_path, offset, is_prior_round) in enumerate(CSV_FILES):
+            # compress this round's data
+            x_comp_r  = compress(x_rounds[r_idx])           # (n_r, n_comp)
+            theta_r   = theta_rounds[r_idx].astype(np.float32)  # (n_r, N_PARAMS)
+
+            x_tensor     = torch.tensor(x_comp_r, dtype=torch.float32).to(sbi_device)
+            theta_tensor = torch.tensor(theta_r,  dtype=torch.float32).to(sbi_device)
+
+            # append_simulations is called inside _train_round with the
+            # correct proposal: prior for round 1, posterior for rounds 2+
+            round_proposal = prior if is_prior_round else proposal
+
+            print(f'  [{name}] round={r_idx+1}/{n_rounds}  '
+                  f'n={len(theta_r)}  '
+                  f'{"(prior)" if is_prior_round else "(proposal)"}',
+                  flush=True)
+
+            # _train_round accumulates data internally across calls via sbi's
+            # append_simulations, then trains all ensemble members together
+            posterior_ensemble, summaries = runner._train_round(
+                models=models,
+                x=x_tensor,
+                theta=theta_tensor,
+                proposal=round_proposal,
             )
-            density_estimator_net = nets[0]
 
-            inference = NPE(
-                prior=prior,
-                density_estimator=density_estimator_net,
-                device=sbi_device,
-            )
+            # set observed data on ensemble and use as proposal for next round
+            proposal = posterior_ensemble.set_default_x(xo_tensor)
 
-            # feed each round with the correct proposal
-            proposal = prior
-            for r_idx, (csv_path, offset, is_prior_round) in enumerate(CSV_FILES):
-                x_comp_r  = compress(x_rounds[r_idx])    # (n_r, n_comp) numpy
-                theta_r   = theta_rounds[r_idx]           # (n_r, N_PARAMS) numpy
+            print(f'  [{name}] round={r_idx+1} complete  '
+                  f'val_loss={summaries[0]["best_validation_loss"][-1]:.4f}',
+                  flush=True)
 
-                theta_tensor = torch.tensor(theta_r,   dtype=torch.float32).to(sbi_device)
-                x_tensor     = torch.tensor(x_comp_r,  dtype=torch.float32).to(sbi_device)
-
-                if is_prior_round:
-                    inference.append_simulations(theta_tensor, x_tensor,
-                                                 proposal=prior)
-                else:
-                    inference.append_simulations(theta_tensor, x_tensor,
-                                                 proposal=proposal)
-
-                print(f'  [{name}] rep={rep+1}/{repeats}  '
-                      f'round={r_idx+1}/{n_rounds}  '
-                      f'n={len(theta_r)}  '
-                      f'{"(prior)" if is_prior_round else "(proposal)"}',
-                      flush=True)
-
-            # train on all accumulated rounds for this member
-            trained_estimator = inference.train(**train_args)
-
-            # build posterior and set observed data
-            member_posterior = inference.build_posterior(trained_estimator)
-            member_posterior.set_default_x(xo_tensor)
-
-            # use this member's posterior as the proposal label for the next rep
-            # (not strictly necessary since reps are independent, but consistent)
-            proposal = member_posterior
-
-            member_posteriors.append(member_posterior)
-
-        # ── Wrap members into ensemble ─────────────────────────────────────────
-        if len(member_posteriors) == 1:
-            final_posterior = member_posteriors[0]
-        else:
-            final_posterior = EnsemblePosterior(member_posteriors)
-
+        # ── Save final posterior ───────────────────────────────────────────────
         with open(fpath(f'ili_posterior_{name}.pkl'), 'wb') as f:
-            pk.dump(final_posterior, f)
+            pk.dump(posterior_ensemble, f)
 
         msg = (f'[{name}] DONE  n_pca={n_comp}  n_train={n_train}  '
                f'n_rounds={n_rounds}  hfs={hfs}  '
@@ -734,6 +622,7 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
     except Exception:
         import traceback
         return name, False, f'[{name}] FAILED: {traceback.format_exc()}'
+
 
 # =============================================================================
 # MAIN
@@ -750,8 +639,8 @@ if __name__ == '__main__':
     os.makedirs(CACHE_DIR,     exist_ok=True)
     os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
-    device    = 'cuda' if torch.cuda.is_available() else 'cpu'
-    sbi_device = device  # already 'cuda' not 'cuda:0', so warnings stop
+    device     = 'cuda' if torch.cuda.is_available() else 'cpu'
+    sbi_device = 'cuda' if device.startswith('cuda') else 'cpu'
     print(f'Device: {device}')
     print(f'Next round:            {NEXT_ROUND}')
     print(f'ADD_SURVEY_NOISE     = {ADD_SURVEY_NOISE}')
@@ -776,28 +665,21 @@ if __name__ == '__main__':
               f'range=[{x_obs[sl].min():.4e}, {x_obs[sl].max():.4e}]')
     np.save(os.path.join(WORK_DIR, 'x_obs.npy'), x_obs)
 
-    # ── Training data — flat + per-round ──────────────────────────────────────
-    x_train_path      = os.path.join(WORK_DIR, f'x_train_full{_CACHE_SUFFIX}.npy')
-    theta_train_path  = os.path.join(WORK_DIR, 'theta_train_full.npy')
+    # ── Training data — per-round ──────────────────────────────────────────────
     x_rounds_path     = os.path.join(WORK_DIR, f'x_rounds{_CACHE_SUFFIX}.npy')
     theta_rounds_path = os.path.join(WORK_DIR, 'theta_rounds.npy')
 
     need_rebuild = (
         args.force_reload
-        or not os.path.exists(x_train_path)
-        or not os.path.exists(theta_train_path)
         or not os.path.exists(x_rounds_path)
         or not os.path.exists(theta_rounds_path)
     )
 
     if not need_rebuild:
-        print('\nLoading cached Cl training arrays...')
-        x_train      = np.load(x_train_path)
-        theta_train  = np.load(theta_train_path)
+        print('\nLoading cached per-round Cl arrays...')
         x_rounds     = list(np.load(x_rounds_path,     allow_pickle=True))
         theta_rounds = list(np.load(theta_rounds_path, allow_pickle=True))
     else:
-        theta_list, x_list     = [], []
         x_rounds, theta_rounds = [], []
 
         for csv_path, offset, is_prior_round in CSV_FILES:
@@ -815,11 +697,8 @@ if __name__ == '__main__':
                     if v is not None:
                         np.save(cache_file, v)
                 if v is not None:
-                    t_row = [row['theta_ej_0'], row['nu_theta_ej_M']]
-                    theta_list.append(t_row)
-                    x_list.append(v)
                     x_r.append(v)
-                    theta_r.append(t_row)
+                    theta_r.append([row['theta_ej_0'], row['nu_theta_ej_M']])
 
             if x_r:
                 x_rounds.append(np.array(x_r,     dtype=np.float32))
@@ -827,26 +706,25 @@ if __name__ == '__main__':
                 label = 'prior' if is_prior_round else 'proposal'
                 print(f'  Round {len(x_rounds)} ({label}): {len(x_r)} sims')
 
-        x_train     = np.array(x_list,     dtype=np.float32)
-        theta_train = np.array(theta_list, dtype=np.float32)
-        np.save(x_train_path,      x_train)
-        np.save(theta_train_path,  theta_train)
         np.save(x_rounds_path,     np.array(x_rounds,     dtype=object))
         np.save(theta_rounds_path, np.array(theta_rounds, dtype=object))
 
-    print(f'Loaded {len(theta_train)} simulations across {len(x_rounds)} rounds.')
+    total_sims = sum(len(t) for t in theta_rounds)
+    print(f'Loaded {total_sims} simulations across {len(x_rounds)} rounds.')
     for r_idx, (xr, tr) in enumerate(zip(x_rounds, theta_rounds)):
         label = 'prior' if CSV_FILES[r_idx][2] else 'proposal'
         print(f'  Round {r_idx+1} ({label}): {len(tr)} sims')
 
     # ── Per-spectrum Fisher correlation diagnostic ─────────────────────────────
+    x_train_all = np.concatenate(x_rounds,     axis=0)
+    theta_all   = np.concatenate(theta_rounds, axis=0)
     print('\nPer-spectrum Fisher correlations with parameters:')
     for i, (label, _, _) in enumerate(CL_SPECS):
         sl       = slice(i * N_ELL_BINS_ACTUAL, (i + 1) * N_ELL_BINS_ACTUAL)
-        cl_block = x_train[:, sl]
+        cl_block = x_train_all[:, sl]
         for p, pname in enumerate(PARAM_NAMES):
             r = np.array([
-                np.corrcoef(cl_block[:, j], theta_train[:, p])[0, 1]
+                np.corrcoef(cl_block[:, j], theta_all[:, p])[0, 1]
                 for j in range(N_ELL_BINS_ACTUAL)
             ])
             print(f'  {label:8s}  {pname}: '
@@ -880,135 +758,148 @@ if __name__ == '__main__':
         status = 'OK  ' if success else 'FAIL'
         print(f'  [{status}] {msg}')
 
-    # ── Validation ────────────────────────────────────────────────────────────
-    if not os.path.exists(VALIDATION_CSV):
-        print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
-    else:
-        print('\nLoading held-out validation set...')
-        os.makedirs(VAL_CACHE_DIR, exist_ok=True)
+    # ═══════════════════════════════════════════════════════════════════════
+# Validation  (runs entirely on CPU to avoid device-mismatch issues)
+# ═══════════════════════════════════════════════════════════════════════
+if not os.path.exists(VALIDATION_CSV):
+    print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
+else:
+    print('\nLoading held-out validation set...')
+    os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
-        val_df      = pd.read_csv(VALIDATION_CSV)
-        theta_val   = val_df[PARAM_NAMES].values.astype(np.float32)
-        x_val_list  = []
-        missing_val = []
+    val_df    = pd.read_csv(VALIDATION_CSV)
+    theta_val = val_df[PARAM_NAMES].values.astype(np.float32)
+    x_val_list, missing_val = [], []
 
-        for i, row in tqdm(val_df.iterrows(), total=len(val_df),
-                           desc='Extracting validation Cls'):
-            sid        = int(row['sample_id'])
-            cache_file = os.path.join(VAL_CACHE_DIR, f'x_val_{sid}.npy')
-            if os.path.exists(cache_file):
-                v = np.load(cache_file)
-            else:
-                v = extract_Cls(os.path.join(BASE_DIR, f'validation_{sid}'))
-                if v is not None:
-                    np.save(cache_file, v)
-            if v is not None:
-                x_val_list.append(v)
-            else:
-                missing_val.append(sid)
-                print(f'  [WARN] No data for validation_{sid}, skipping.')
-
-        if missing_val:
-            keep      = [i for i, row in val_df.iterrows()
-                         if int(row['sample_id']) not in missing_val]
-            theta_val = theta_val[keep]
-
-        if len(x_val_list) < 10:
-            print('[SKIP] Fewer than 10 valid validation points, skipping.')
+    for i, row in tqdm(val_df.iterrows(), total=len(val_df),
+                       desc='Extracting validation Cls'):
+        sid        = int(row['sample_id'])
+        cache_file = os.path.join(VAL_CACHE_DIR, f'x_val_{sid}.npy')
+        if os.path.exists(cache_file):
+            v = np.load(cache_file)
         else:
-            import joblib
-            x_val_full = np.array(x_val_list, dtype=np.float32)
-            print(f'  Validation set: {len(theta_val)} points  '
-                  f'x_val: {x_val_full.shape}')
+            v = extract_Cls(os.path.join(BASE_DIR, f'validation_{sid}'))
+            if v is not None:
+                np.save(cache_file, v)
+        if v is not None:
+            x_val_list.append(v)
+        else:
+            missing_val.append(sid)
+            print(f'  [WARN] No data for validation_{sid}, skipping.')
 
-            np.save(os.path.join(WORK_DIR, 'x_val_full.npy'),     x_val_full)
-            np.save(os.path.join(WORK_DIR, 'theta_val_full.npy'), theta_val)
+    if missing_val:
+        keep      = [i for i, row in val_df.iterrows()
+                     if int(row['sample_id']) not in missing_val]
+        theta_val = theta_val[keep]
 
-            val_ok, val_failed = [], []
+    if len(x_val_list) < 10:
+        print('[SKIP] Fewer than 10 valid validation points, skipping.')
+    else:
+        import joblib
+        x_val_full = np.array(x_val_list, dtype=np.float32)
+        print(f'  Validation set: {len(theta_val)} points  '
+              f'x_val: {x_val_full.shape}')
 
-            for name, idx in STAT_MAP.items():
-                posterior_path = os.path.join(WORK_DIR, f'ili_posterior_{name}.pkl')
-                if not os.path.exists(posterior_path):
-                    print(f'  [SKIP] No saved posterior for {name}.')
-                    continue
+        np.save(os.path.join(WORK_DIR, 'x_val_full.npy'),     x_val_full)
+        np.save(os.path.join(WORK_DIR, 'theta_val_full.npy'), theta_val)
 
-                print(f'\n  === Validating {name} ===')
-                with open(posterior_path, 'rb') as f:
-                    post = pk.load(f)
+        val_ok, val_failed = [], []
 
-                # move all tensors to CPU before emcee
-                post = move_posterior_to_cpu(post)
-                print(f'  [{name}] Posterior moved to CPU.')
+        for name, idx in STAT_MAP.items():
+            posterior_path = os.path.join(WORK_DIR, f'ili_posterior_{name}.pkl')
+            if not os.path.exists(posterior_path):
+                print(f'  [SKIP] No saved posterior for {name}.')
+                continue
 
-                # load round-1 scalers
-                x_mean = np.load(os.path.join(WORK_DIR, f'scaler_{name}_mean.npy'))
-                x_std  = np.load(os.path.join(WORK_DIR, f'scaler_{name}_std.npy'))
+            print(f'\n  === Validating {name} ===')
 
-                # normalise with round-1 scaler
-                x_val_slice = x_val_full[:, idx].astype(np.float32)
-                xt_val_norm = ((x_val_slice - x_mean) / x_std).astype(np.float32)
+            # ── 1. Load posterior and move entirely to CPU ──────────────
+            with open(posterior_path, 'rb') as f:
+                post = pk.load(f)
 
-                # apply saved PCA
-                pca_path   = os.path.join(WORK_DIR, f'pca_{name}.pkl')
-                ncomp_path = os.path.join(WORK_DIR, f'pca_{name}_n_comp.npy')
-                if os.path.exists(pca_path) and os.path.exists(ncomp_path):
-                    pca    = joblib.load(pca_path)
-                    n_comp = int(np.load(ncomp_path))
-                    xt_val = pca.transform(xt_val_norm)[:, :n_comp].astype(np.float32)
-                    print(f'  [{name}] Applied PCA: '
-                          f'{xt_val_norm.shape[1]} -> {n_comp}')
-                else:
-                    print(f'  [WARN] No PCA found for {name}, using z-scored data.')
-                    xt_val = xt_val_norm
+            # Move every sub-posterior's network to CPU so prior bounds,
+            # theta, and network weights all live on the same device.
+            members = post.posteriors if hasattr(post, 'posteriors') else [post]
+            for member in members:
+                for attr in ('posterior_estimator', '_neural_net',
+                             '_posterior_estimator', '_likelihood_estimator',
+                             '_ratio_estimator'):
+                    net = getattr(member, attr, None)
+                    if net is not None:
+                        net.to('cpu')
+                # Move the prior's parameter tensors to CPU if possible
+                prior = getattr(member, '_prior', None)
+                if prior is not None:
+                    for buf_attr in ('low', 'high', 'loc', 'scale'):
+                        buf = getattr(prior, buf_attr, None)
+                        if isinstance(buf, torch.Tensor):
+                            setattr(prior, buf_attr, buf.to('cpu'))
 
-                val_dir = Path(WORK_DIR) / f'validation_{name}'
-                val_dir.mkdir(exist_ok=True, parents=True)
-                np.save(val_dir / 'x_val.npy',     xt_val)
-                np.save(val_dir / 'theta_val.npy', theta_val)
+            # ── 2. Preprocessing: z-score + PCA ────────────────────────
+            x_mean = np.load(os.path.join(WORK_DIR, f'scaler_{name}_mean.npy'))
+            x_std  = np.load(os.path.join(WORK_DIR, f'scaler_{name}_std.npy'))
 
-                loader = StaticNumpyLoader(
-                    in_dir=str(val_dir),
-                    x_file='x_val.npy',
-                    theta_file='theta_val.npy',
-                )
+            x_val_slice = x_val_full[:, idx].astype(np.float32)
+            xt_val_norm = ((x_val_slice - x_mean) / x_std).astype(np.float32)
 
-                try:
-                    metrics = {
-                        'coverage': PosteriorCoverage(
-                            num_samples=200,
-                            sample_method='emcee',
-                            sample_params={
-                                'num_chains': 8,
-                                'thin':       2,
-                                'burn_in':    50,
-                            },
-                            labels=PARAM_LABELS,
-                            out_dir=val_dir,
-                            plot_list=['coverage', 'histogram',
-                                       'tarp', 'predictions'],
-                        )
-                    }
-                    val_runner = ValidationRunner(
-                        posterior=post,
-                        metrics=metrics,
-                        out_dir=val_dir,
+            pca_path   = os.path.join(WORK_DIR, f'pca_{name}.pkl')
+            ncomp_path = os.path.join(WORK_DIR, f'pca_{name}_n_comp.npy')
+            if os.path.exists(pca_path) and os.path.exists(ncomp_path):
+                pca    = joblib.load(pca_path)
+                n_comp = int(np.load(ncomp_path))
+                xt_val = pca.transform(xt_val_norm)[:, :n_comp].astype(np.float32)
+                print(f'  [{name}] Applied PCA: '
+                      f'{xt_val_norm.shape[1]} -> {n_comp}')
+            else:
+                print(f'  [WARN] No PCA found for {name}, using z-scored data.')
+                xt_val = xt_val_norm
+
+            # ── 3. Write data for StaticNumpyLoader ────────────────────
+            val_dir = Path(WORK_DIR) / f'validation_{name}'
+            val_dir.mkdir(exist_ok=True, parents=True)
+            np.save(val_dir / 'x_val.npy',     xt_val)
+            np.save(val_dir / 'theta_val.npy', theta_val)
+
+            loader = StaticNumpyLoader(
+                in_dir=str(val_dir),
+                x_file='x_val.npy',
+                theta_file='theta_val.npy',
+            )
+
+            # ── 4. ltu-ili ValidationRunner + PosteriorCoverage ────────
+            try:
+                metrics = {
+                    'coverage': PosteriorCoverage(
+                        num_samples=200,
+                        sample_method='emcee',
+                        sample_params={
+                            'num_chains': 8,
+                            'thin':       2,
+                            'burn_in':    50,
+                        },
+                        labels=PARAM_LABELS,
+                        out_dir=str(val_dir),
+                        plot_list=['coverage', 'histogram',
+                                   'tarp', 'predictions'],
                     )
-                    val_runner(loader)
-                    print(f'  [{name}] Plots saved to {val_dir}')
-                    val_ok.append(name)
-                except Exception:
-                    import traceback
-                    print(f'  [FAIL] {name}: {traceback.format_exc()}')
-                    val_failed.append(name)
+                }
+                val_runner = ValidationRunner(
+                    posterior=post,          # plain post — now on CPU
+                    metrics=metrics,
+                    out_dir=str(val_dir),
+                )
+                val_runner(loader)
+                print(f'  [{name}] Plots saved to {val_dir}')
+                val_ok.append(name)
+            except Exception:
+                import traceback
+                print(f'  [FAIL] {name}: {traceback.format_exc()}')
+                val_failed.append(name)
 
-                if device == 'cuda':
-                    torch.cuda.empty_cache()
-
-            print('\n--- Validation Summary ---')
-            print(f'  OK:     {val_ok}')
-            if val_failed:
-                print(f'  Failed: {val_failed}')
-
+        print('\n--- Validation Summary ---')
+        print(f'  OK:     {val_ok}')
+        if val_failed:
+            print(f'  Failed: {val_failed}')
     # ── Active learning proposal ───────────────────────────────────────────────
     print(f'\nGenerating round {NEXT_ROUND} proposals from '
           f'{PROPOSAL_STAT} posterior...')
