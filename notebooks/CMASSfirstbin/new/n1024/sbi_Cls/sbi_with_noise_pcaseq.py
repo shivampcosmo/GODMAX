@@ -10,6 +10,7 @@ import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
 import random
+import multiprocessing as mp
 from scipy.interpolate import interp1d as _interp1d
 
 # =============================================================================
@@ -45,7 +46,6 @@ def set_seeds(seed=42):
 
 set_seeds(111)
 
-# Third element: True = prior round, False = proposal round.
 CSV_FILES = [
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/lhs_samples.csv',    0,    True),
     ('/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/round2_samples.csv', 500,  False),
@@ -67,7 +67,32 @@ PARAM_NAMES  = ['theta_ej_0', 'nu_theta_ej_M']
 PROPOSAL_STAT = 'JOINT'
 VAL_FRACTION  = 0.10
 
-PCA_VARIANCE_THRESHOLD = 0.99
+# ── PCA controls ──────────────────────────────────────────────────────────────
+PCA_VARIANCE_THRESHOLD = 0.999   # tighter: keep more components by default
+
+# Absolute per-component R² floor with nu parameter.
+# Components whose R²(component, nu) < this are still kept if they pass the
+# variance threshold, but this floor ensures we never drop genuinely informative
+# directions just because they carry little total variance.
+PCA_NU_R2_FLOOR = 0.005          # keep any component with R²>=0.5% with nu
+
+# Hard minimum number of PCA components per statistic.
+# Weak-signal statistics (gy, g2y, gtau, g2tau) need more components because
+# the nu signal is spectrally diffuse; PCA variance ordering alone discards it.
+PCA_MIN_COMPONENTS = {
+    'gy':         8,
+    'g2y':        6,
+    'gtau':       6,
+    'g2tau':      6,
+    'gkappa':     4,
+    'g2kappa':    4,
+    'y_total':    8,
+    'tau_total':  6,
+    'kappa_total':4,
+    'all_3pt':    6,
+    'all_2pt':    8,
+    'JOINT':      6,
+}
 
 # =============================================================================
 # ELL BINNING
@@ -250,7 +275,6 @@ def _add_noise_to_maps(ymap, tmap, kmap, path: str) -> tuple:
 
 def _sample_member_thread(member, x_t, n_samples, result, exception):
     try:
-        # Move x_t to the same device as the member posterior
         x_t = torch.as_tensor(x_t, dtype=torch.float32).to(member._device)
         s = member.sample((n_samples,), x=x_t, show_progress_bars=False)
         result[0] = s.detach().cpu().numpy()
@@ -398,41 +422,89 @@ def extract_Cls(path, add_noise=ADD_SURVEY_NOISE):
     return np.concatenate(vec).astype(np.float32)
 
 # =============================================================================
-# PCA HELPER
+# PCA HELPER  (fixed: variance + absolute R² floor + hard minimum)
 # =============================================================================
 
-def fit_pca(x_norm, variance_threshold=PCA_VARIANCE_THRESHOLD):
+def fit_pca_informed(x_norm, theta_r1, stat_name,
+                     variance_threshold=PCA_VARIANCE_THRESHOLD,
+                     nu_r2_floor=PCA_NU_R2_FLOOR):
+    """
+    Fit PCA and select the number of components using three criteria:
+      1. Variance threshold  — keep enough components to explain
+                               `variance_threshold` of total variance.
+      2. Absolute R² floor   — also keep any component whose squared
+                               correlation with the nu parameter exceeds
+                               `nu_r2_floor`, even if it carries little
+                               variance. This prevents PCA from discarding
+                               diffuse but real nu signal (the gy bug).
+      3. Hard minimum        — enforce PCA_MIN_COMPONENTS[stat_name] so
+                               weak-signal statistics always have enough
+                               dimensions for the MDN to work with.
+
+    Returns (pca, n_comp, diagnostics_dict).
+    """
     from sklearn.decomposition import PCA
+
     n_samples, n_features = x_norm.shape
     max_comp = min(n_samples - 1, n_features)
     pca = PCA(n_components=max_comp, svd_solver='full')
     pca.fit(x_norm)
+
     cumvar = np.cumsum(pca.explained_variance_ratio_)
-    n_comp = int(np.searchsorted(cumvar, variance_threshold) + 1)
-    n_comp = max(1, min(n_comp, max_comp))
-    print(f'  [PCA] kept {n_comp}/{max_comp} components '
-          f'({cumvar[n_comp-1]*100:.1f}% variance)', flush=True)
-    return pca, n_comp
+
+    # criterion 1: variance
+    n_comp_var = int(np.searchsorted(cumvar, variance_threshold) + 1)
+    n_comp_var = max(1, min(n_comp_var, max_comp))
+
+    # criterion 2: absolute R² with nu on every component
+    x_pca   = pca.transform(x_norm)
+    nu_vals = theta_r1[:, 1]   # nu_theta_ej_M is parameter index 1
+    r2_nu   = np.array([
+        np.corrcoef(x_pca[:, i], nu_vals)[0, 1] ** 2
+        for i in range(max_comp)
+    ])
+    # keep all components up to the last one that clears the floor
+    informative = np.where(r2_nu >= nu_r2_floor)[0]
+    n_comp_nu   = int(informative[-1] + 1) if len(informative) > 0 else 1
+
+    # criterion 3: hard minimum
+    n_comp_min = PCA_MIN_COMPONENTS.get(stat_name, 1)
+
+    n_comp = max(n_comp_var, n_comp_nu, n_comp_min)
+    n_comp = min(n_comp, max_comp)
+
+    diag = dict(
+        n_comp_var=n_comp_var,
+        n_comp_nu=n_comp_nu,
+        n_comp_min=n_comp_min,
+        n_comp_final=n_comp,
+        variance_explained=float(cumvar[n_comp - 1]),
+        r2_nu_top10=r2_nu[:10].tolist(),
+    )
+
+    print(
+        f'  [PCA/{stat_name}] var-based={n_comp_var}  '
+        f'nu-R²-based={n_comp_nu}  min={n_comp_min}  '
+        f'→ final={n_comp}/{max_comp}  '
+        f'({cumvar[n_comp-1]*100:.1f}% var)  '
+        f'R²(nu)[:5]={[f"{v:.3f}" for v in r2_nu[:5]]}',
+        flush=True,
+    )
+    return pca, n_comp, diag
 
 # =============================================================================
-# SEQUENTIAL MULTIROUND TRAINING  — one statistic, via ltu-ili SBIRunner
+# SEQUENTIAL MULTIROUND TRAINING  — one statistic, via sbi directly
 # =============================================================================
-
-def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
-                             work_dir, device, blocks, opt_hps):
-    """
-    Train one MDN ensemble posterior using ltu-ili's SBIRunner._train_round()
-    called once per round, accumulating data and updating the proposal after
-    each round — mirroring how the active learning rounds were actually generated.
-
-    Round 1 (prior round):   proposal = BoxUniform prior
-    Round R (R > 1):         proposal = EnsemblePosterior from rounds 1..R-1
-    """
+def train_one_statistic(args):
+    (name, idx, x_rounds, theta_rounds, x_obs,
+     work_dir, device, blocks, opt_hps) = args
+    torch.set_num_threads(1)  # prevent each worker from spawning many threads
+    
     import joblib
     from sbi.utils import BoxUniform
     from ili.inference.runner_sbi import SBIRunner
 
-    sbi_device = 'cuda' if device.startswith('cuda') else 'cpu'
+    sbi_device = 'cpu'#'cuda' if device.startswith('cuda') else 'cpu'
 
     def fpath(fname):
         return os.path.join(work_dir, fname)
@@ -442,7 +514,7 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
         n_rounds = len(x_rounds)
         n_train  = sum(len(t) for t in theta_rounds)
 
-        # ── z-score using round-1 (prior) data only ───────────────────────────
+        # ── z-score: fit on round-1 (prior) data only, reuse for all rounds ──
         x_r1   = x_rounds[0][:, idx].astype(np.float32)
         xo_raw = x_obs[idx].astype(np.float32)
 
@@ -455,11 +527,11 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             x_std  = np.empty(n_stats, dtype=np.float32)
             for blk in blocks:
                 blk = np.asarray(blk)
-                m = np.mean(x_r1[:, blk], axis=0)
-                s = np.std( x_r1[:, blk], axis=0)
+                m   = np.mean(x_r1[:, blk], axis=0)
+                s   = np.std( x_r1[:, blk], axis=0)
                 s[s < 1e-10] = 1.0
-                x_mean[blk] = m
-                x_std[blk]  = s
+                x_mean[blk]  = m
+                x_std[blk]   = s
 
         def normalise(x_slice):
             if blocks is None:
@@ -473,32 +545,21 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
         np.save(fpath(f'scaler_{name}_mean.npy'), x_mean)
         np.save(fpath(f'scaler_{name}_std.npy'),  x_std)
 
-        # ── PCA fit on round-1 normalised data only ───────────────────────────
+        # ── PCA: informed selection (variance + R²(nu) floor + hard min) ──────
         x_r1_norm = normalise(x_r1)
-        pca, n_comp_var = fit_pca(x_r1_norm)
-
-        # signal-based component selection using nu parameter
-        x_r1_pca  = pca.transform(x_r1_norm)
-        r2_nu     = np.array([
-            np.corrcoef(x_r1_pca[:, i], theta_rounds[0][:, 1])[0, 1] ** 2
-            for i in range(pca.n_components_)
-        ])
-        cumr2_nu  = np.cumsum(r2_nu)
-        n_comp_nu = int(np.searchsorted(cumr2_nu, 0.80 * cumr2_nu[-1]) + 1)
-        n_comp    = max(n_comp_var, n_comp_nu)
-        print(f'  [{name}] PCA: variance-based={n_comp_var}  '
-              f'nu-signal-based={n_comp_nu}  final={n_comp}', flush=True)
+        pca, n_comp, pca_diag = fit_pca_informed(
+            x_r1_norm, theta_rounds[0], name,
+        )
 
         joblib.dump(pca, fpath(f'pca_{name}.pkl'))
         np.save(fpath(f'pca_{name}_n_comp.npy'), np.array(n_comp))
+        np.save(fpath(f'pca_{name}_diag.npy'),   np.array([pca_diag], dtype=object))
 
         def compress(x_full_slice):
-            """Normalise then PCA-compress a raw Cl block (n, N_SUMMARY)."""
             return pca.transform(
                 normalise(x_full_slice[:, idx])
             )[:, :n_comp].astype(np.float32)
 
-        # compressed observed data vector
         xo_norm = normalise(xo_raw.reshape(1, -1))
         xo_comp = pca.transform(xo_norm)[:, :n_comp][0].astype(np.float32)
         np.save(fpath(f'xobs_{name}.npy'), xo_comp)
@@ -529,6 +590,15 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             max_epochs     = 500
             repeats        = 6
 
+        # FIX: cap MDN components relative to PCA dimensionality.
+        # e.g. 13 Gaussians in a 2D PCA space (gy) causes mode collapse.
+        max_safe_components = max(2, n_comp // 2)
+        if num_components > max_safe_components:
+            print(f'  [{name}] MDN components capped: '
+                  f'{num_components} → {max_safe_components} (n_pca={n_comp})',
+                  flush=True)
+            num_components = max_safe_components
+
         print(f'  [{name}] hfs={hfs}  num_components={num_components}  '
               f'lr={lr:.2e}  batch={batch_size}  epochs={max_epochs}  '
               f'repeats={repeats}  n_rounds={n_rounds}  '
@@ -549,8 +619,7 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             high=torch.tensor(PRIOR_HIGH, dtype=torch.float32).to(sbi_device),
         )
 
-        # ── Build one SBIRunner per ensemble member, all sharing same nets ────
-        # load_nde_sbi returns a list of nets; one per repeat
+        # ── ltu-ili InferenceRunner + nets ────────────────────────────────────
         nets = load_nde_sbi(
             engine='NPE', model='mdn',
             repeats=repeats,
@@ -558,7 +627,6 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             num_components=num_components,
         )
 
-        # SBIRunner wraps the ensemble and exposes _train_round()
         runner = InferenceRunner.load(
             backend='sbi',
             engine='NPE',
@@ -568,25 +636,19 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             device=sbi_device,
             train_args=train_args,
         )
-        # _setup_engine() creates one sbi SNPE inference object per net
         models = [runner._setup_engine(net) for net in runner.nets]
 
         # ── Multiround loop ───────────────────────────────────────────────────
-        # proposal starts as prior; after each round it becomes the posterior
-        # trained on all data seen so far — matching how rounds were generated.
-        proposal        = prior
+        proposal           = prior
         posterior_ensemble = None
 
         for r_idx, (csv_path, offset, is_prior_round) in enumerate(CSV_FILES):
-            # compress this round's data
-            x_comp_r  = compress(x_rounds[r_idx])           # (n_r, n_comp)
-            theta_r   = theta_rounds[r_idx].astype(np.float32)  # (n_r, N_PARAMS)
+            x_comp_r  = compress(x_rounds[r_idx])
+            theta_r   = theta_rounds[r_idx].astype(np.float32)
 
             x_tensor     = torch.tensor(x_comp_r, dtype=torch.float32).to(sbi_device)
             theta_tensor = torch.tensor(theta_r,  dtype=torch.float32).to(sbi_device)
 
-            # append_simulations is called inside _train_round with the
-            # correct proposal: prior for round 1, posterior for rounds 2+
             round_proposal = prior if is_prior_round else proposal
 
             print(f'  [{name}] round={r_idx+1}/{n_rounds}  '
@@ -594,8 +656,6 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
                   f'{"(prior)" if is_prior_round else "(proposal)"}',
                   flush=True)
 
-            # _train_round accumulates data internally across calls via sbi's
-            # append_simulations, then trains all ensemble members together
             posterior_ensemble, summaries = runner._train_round(
                 models=models,
                 x=x_tensor,
@@ -603,7 +663,6 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
                 proposal=round_proposal,
             )
 
-            # set observed data on ensemble and use as proposal for next round
             proposal = posterior_ensemble.set_default_x(xo_tensor)
 
             print(f'  [{name}] round={r_idx+1} complete  '
@@ -615,14 +674,13 @@ def train_one_statistic_gpu(name, idx, x_rounds, theta_rounds, x_obs,
             pk.dump(posterior_ensemble, f)
 
         msg = (f'[{name}] DONE  n_pca={n_comp}  n_train={n_train}  '
-               f'n_rounds={n_rounds}  hfs={hfs}  '
+               f'n_rounds={n_rounds}  hfs={hfs}  num_components={num_components}  '
                f'repeats={repeats}  device={sbi_device}')
         return name, True, msg
 
     except Exception:
         import traceback
         return name, False, f'[{name}] FAILED: {traceback.format_exc()}'
-
 
 # =============================================================================
 # MAIN
@@ -646,9 +704,11 @@ if __name__ == '__main__':
     print(f'ADD_SURVEY_NOISE     = {ADD_SURVEY_NOISE}')
     print(f'FORCE_EQUAL_ARCH     = {FORCE_EQUAL_ARCH}')
     print(f'PCA_VARIANCE_THRESH  = {PCA_VARIANCE_THRESHOLD}')
+    print(f'PCA_NU_R2_FLOOR      = {PCA_NU_R2_FLOOR}')
     print(f'Cl settings: LMIN={LMIN}  LMAX={LMAX}  '
           f'N_ELL_BINS={N_ELL_BINS_ACTUAL}  N_SUMMARY={N_SUMMARY}')
     print(f'ELL_CENTRES: {np.round(ELL_CENTRES).astype(int).tolist()}')
+    print(f'PCA_MIN_COMPONENTS: {PCA_MIN_COMPONENTS}')
 
     if ADD_SURVEY_NOISE:
         _get_noise_pkg()
@@ -732,6 +792,28 @@ if __name__ == '__main__':
                   f'mean|r|={np.abs(r).mean():.3f}  '
                   f'best_ell={int(ELL_CENTRES[np.abs(r).argmax()])}')
 
+    # ── Parallel CPU training ─────────────────────────────────────────────────
+    n_cpus = min(N_STATISTICS,
+                 int(os.environ.get('SLURM_CPUS_PER_TASK', mp.cpu_count())))
+    print(f'\nTraining {N_STATISTICS} posteriors in parallel '
+          f'({n_cpus} processes)...')
+
+    worker_args = []
+    for name, idx in STAT_MAP.items():
+        blocks  = None if name in INDIVIDUAL_STATS else make_blocks(len(idx))
+        opt_hps = None
+        if not FORCE_EQUAL_ARCH:
+            opt_hps = load_optuna_hyperparams(OPTUNA_STUDY_DIRS.get(name, ''))
+            if opt_hps is None:
+                print(f'  [{name}] No Optuna study found, using adaptive defaults.')
+        worker_args.append(
+            (name, idx, x_rounds, theta_rounds, x_obs, WORK_DIR,
+             'cpu', blocks, opt_hps))
+
+    ctx = mp.get_context('spawn')
+    with ctx.Pool(processes=n_cpus) as pool:
+        results = pool.map(train_one_statistic, worker_args)
+
     # ── Sequential GPU SBI training ────────────────────────────────────────────
     print(f'\nTraining {N_STATISTICS} posteriors sequentially on {device}...')
 
@@ -744,8 +826,8 @@ if __name__ == '__main__':
             opt_hps = load_optuna_hyperparams(OPTUNA_STUDY_DIRS.get(name, ''))
             if opt_hps is None:
                 print(f'  [{name}] No Optuna study found, using adaptive defaults.')
-
-        result = train_one_statistic_gpu(
+        
+        result = train_one_statistic(
             name, idx, x_rounds, theta_rounds, x_obs,
             WORK_DIR, device, blocks, opt_hps)
         results.append(result)
@@ -758,148 +840,145 @@ if __name__ == '__main__':
         status = 'OK  ' if success else 'FAIL'
         print(f'  [{status}] {msg}')
 
-    # ═══════════════════════════════════════════════════════════════════════
-# Validation  (runs entirely on CPU to avoid device-mismatch issues)
-# ═══════════════════════════════════════════════════════════════════════
-if not os.path.exists(VALIDATION_CSV):
-    print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
-else:
-    print('\nLoading held-out validation set...')
-    os.makedirs(VAL_CACHE_DIR, exist_ok=True)
-
-    val_df    = pd.read_csv(VALIDATION_CSV)
-    theta_val = val_df[PARAM_NAMES].values.astype(np.float32)
-    x_val_list, missing_val = [], []
-
-    for i, row in tqdm(val_df.iterrows(), total=len(val_df),
-                       desc='Extracting validation Cls'):
-        sid        = int(row['sample_id'])
-        cache_file = os.path.join(VAL_CACHE_DIR, f'x_val_{sid}.npy')
-        if os.path.exists(cache_file):
-            v = np.load(cache_file)
-        else:
-            v = extract_Cls(os.path.join(BASE_DIR, f'validation_{sid}'))
-            if v is not None:
-                np.save(cache_file, v)
-        if v is not None:
-            x_val_list.append(v)
-        else:
-            missing_val.append(sid)
-            print(f'  [WARN] No data for validation_{sid}, skipping.')
-
-    if missing_val:
-        keep      = [i for i, row in val_df.iterrows()
-                     if int(row['sample_id']) not in missing_val]
-        theta_val = theta_val[keep]
-
-    if len(x_val_list) < 10:
-        print('[SKIP] Fewer than 10 valid validation points, skipping.')
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Validation  (runs entirely on CPU to avoid device-mismatch issues)
+    # ═══════════════════════════════════════════════════════════════════════════
+    if not os.path.exists(VALIDATION_CSV):
+        print(f'\n[Validation] {VALIDATION_CSV} not found — skipping.')
     else:
-        import joblib
-        x_val_full = np.array(x_val_list, dtype=np.float32)
-        print(f'  Validation set: {len(theta_val)} points  '
-              f'x_val: {x_val_full.shape}')
+        print('\nLoading held-out validation set...')
+        os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
-        np.save(os.path.join(WORK_DIR, 'x_val_full.npy'),     x_val_full)
-        np.save(os.path.join(WORK_DIR, 'theta_val_full.npy'), theta_val)
+        val_df    = pd.read_csv(VALIDATION_CSV)
+        theta_val = val_df[PARAM_NAMES].values.astype(np.float32)
+        x_val_list, missing_val = [], []
 
-        val_ok, val_failed = [], []
-
-        for name, idx in STAT_MAP.items():
-            posterior_path = os.path.join(WORK_DIR, f'ili_posterior_{name}.pkl')
-            if not os.path.exists(posterior_path):
-                print(f'  [SKIP] No saved posterior for {name}.')
-                continue
-
-            print(f'\n  === Validating {name} ===')
-
-            # ── 1. Load posterior and move entirely to CPU ──────────────
-            with open(posterior_path, 'rb') as f:
-                post = pk.load(f)
-
-            # Move every sub-posterior's network to CPU so prior bounds,
-            # theta, and network weights all live on the same device.
-            members = post.posteriors if hasattr(post, 'posteriors') else [post]
-            for member in members:
-                for attr in ('posterior_estimator', '_neural_net',
-                             '_posterior_estimator', '_likelihood_estimator',
-                             '_ratio_estimator'):
-                    net = getattr(member, attr, None)
-                    if net is not None:
-                        net.to('cpu')
-                # Move the prior's parameter tensors to CPU if possible
-                prior = getattr(member, '_prior', None)
-                if prior is not None:
-                    for buf_attr in ('low', 'high', 'loc', 'scale'):
-                        buf = getattr(prior, buf_attr, None)
-                        if isinstance(buf, torch.Tensor):
-                            setattr(prior, buf_attr, buf.to('cpu'))
-
-            # ── 2. Preprocessing: z-score + PCA ────────────────────────
-            x_mean = np.load(os.path.join(WORK_DIR, f'scaler_{name}_mean.npy'))
-            x_std  = np.load(os.path.join(WORK_DIR, f'scaler_{name}_std.npy'))
-
-            x_val_slice = x_val_full[:, idx].astype(np.float32)
-            xt_val_norm = ((x_val_slice - x_mean) / x_std).astype(np.float32)
-
-            pca_path   = os.path.join(WORK_DIR, f'pca_{name}.pkl')
-            ncomp_path = os.path.join(WORK_DIR, f'pca_{name}_n_comp.npy')
-            if os.path.exists(pca_path) and os.path.exists(ncomp_path):
-                pca    = joblib.load(pca_path)
-                n_comp = int(np.load(ncomp_path))
-                xt_val = pca.transform(xt_val_norm)[:, :n_comp].astype(np.float32)
-                print(f'  [{name}] Applied PCA: '
-                      f'{xt_val_norm.shape[1]} -> {n_comp}')
+        for i, row in tqdm(val_df.iterrows(), total=len(val_df),
+                           desc='Extracting validation Cls'):
+            sid        = int(row['sample_id'])
+            cache_file = os.path.join(VAL_CACHE_DIR, f'x_val_{sid}.npy')
+            if os.path.exists(cache_file):
+                v = np.load(cache_file)
             else:
-                print(f'  [WARN] No PCA found for {name}, using z-scored data.')
-                xt_val = xt_val_norm
+                v = extract_Cls(os.path.join(BASE_DIR, f'validation_{sid}'))
+                if v is not None:
+                    np.save(cache_file, v)
+            if v is not None:
+                x_val_list.append(v)
+            else:
+                missing_val.append(sid)
+                print(f'  [WARN] No data for validation_{sid}, skipping.')
 
-            # ── 3. Write data for StaticNumpyLoader ────────────────────
-            val_dir = Path(WORK_DIR) / f'validation_{name}'
-            val_dir.mkdir(exist_ok=True, parents=True)
-            np.save(val_dir / 'x_val.npy',     xt_val)
-            np.save(val_dir / 'theta_val.npy', theta_val)
+        if missing_val:
+            keep      = [i for i, row in val_df.iterrows()
+                         if int(row['sample_id']) not in missing_val]
+            theta_val = theta_val[keep]
 
-            loader = StaticNumpyLoader(
-                in_dir=str(val_dir),
-                x_file='x_val.npy',
-                theta_file='theta_val.npy',
-            )
+        if len(x_val_list) < 10:
+            print('[SKIP] Fewer than 10 valid validation points, skipping.')
+        else:
+            import joblib
+            x_val_full = np.array(x_val_list, dtype=np.float32)
+            print(f'  Validation set: {len(theta_val)} points  '
+                  f'x_val: {x_val_full.shape}')
 
-            # ── 4. ltu-ili ValidationRunner + PosteriorCoverage ────────
-            try:
-                metrics = {
-                    'coverage': PosteriorCoverage(
-                        num_samples=200,
-                        sample_method='emcee',
-                        sample_params={
-                            'num_chains': 8,
-                            'thin':       2,
-                            'burn_in':    50,
-                        },
-                        labels=PARAM_LABELS,
-                        out_dir=str(val_dir),
-                        plot_list=['coverage', 'histogram',
-                                   'tarp', 'predictions'],
-                    )
-                }
-                val_runner = ValidationRunner(
-                    posterior=post,          # plain post — now on CPU
-                    metrics=metrics,
-                    out_dir=str(val_dir),
+            np.save(os.path.join(WORK_DIR, 'x_val_full.npy'),     x_val_full)
+            np.save(os.path.join(WORK_DIR, 'theta_val_full.npy'), theta_val)
+
+            val_ok, val_failed = [], []
+
+            for name, idx in STAT_MAP.items():
+                posterior_path = os.path.join(WORK_DIR, f'ili_posterior_{name}.pkl')
+                if not os.path.exists(posterior_path):
+                    print(f'  [SKIP] No saved posterior for {name}.')
+                    continue
+
+                print(f'\n  === Validating {name} ===')
+
+                # ── Load posterior and move entirely to CPU ──────────────────
+                with open(posterior_path, 'rb') as f:
+                    post = pk.load(f)
+
+                members = post.posteriors if hasattr(post, 'posteriors') else [post]
+                for member in members:
+                    for attr in ('posterior_estimator', '_neural_net',
+                                 '_posterior_estimator', '_likelihood_estimator',
+                                 '_ratio_estimator'):
+                        net = getattr(member, attr, None)
+                        if net is not None:
+                            net.to('cpu')
+                    prior_obj = getattr(member, '_prior', None)
+                    if prior_obj is not None:
+                        for buf_attr in ('low', 'high', 'loc', 'scale'):
+                            buf = getattr(prior_obj, buf_attr, None)
+                            if isinstance(buf, torch.Tensor):
+                                setattr(prior_obj, buf_attr, buf.to('cpu'))
+
+                # ── Preprocessing: z-score + PCA ────────────────────────────
+                x_mean = np.load(os.path.join(WORK_DIR, f'scaler_{name}_mean.npy'))
+                x_std  = np.load(os.path.join(WORK_DIR, f'scaler_{name}_std.npy'))
+
+                x_val_slice = x_val_full[:, idx].astype(np.float32)
+                xt_val_norm = ((x_val_slice - x_mean) / x_std).astype(np.float32)
+
+                pca_path   = os.path.join(WORK_DIR, f'pca_{name}.pkl')
+                ncomp_path = os.path.join(WORK_DIR, f'pca_{name}_n_comp.npy')
+                if os.path.exists(pca_path) and os.path.exists(ncomp_path):
+                    pca    = joblib.load(pca_path)
+                    n_comp = int(np.load(ncomp_path))
+                    xt_val = pca.transform(xt_val_norm)[:, :n_comp].astype(np.float32)
+                    print(f'  [{name}] Applied PCA: '
+                          f'{xt_val_norm.shape[1]} → {n_comp}')
+                else:
+                    print(f'  [WARN] No PCA found for {name}, using z-scored data.')
+                    xt_val = xt_val_norm
+
+                # ── Write data for StaticNumpyLoader ────────────────────────
+                val_dir = Path(WORK_DIR) / f'validation_{name}'
+                val_dir.mkdir(exist_ok=True, parents=True)
+                np.save(val_dir / 'x_val.npy',     xt_val)
+                np.save(val_dir / 'theta_val.npy', theta_val)
+
+                loader = StaticNumpyLoader(
+                    in_dir=str(val_dir),
+                    x_file='x_val.npy',
+                    theta_file='theta_val.npy',
                 )
-                val_runner(loader)
-                print(f'  [{name}] Plots saved to {val_dir}')
-                val_ok.append(name)
-            except Exception:
-                import traceback
-                print(f'  [FAIL] {name}: {traceback.format_exc()}')
-                val_failed.append(name)
 
-        print('\n--- Validation Summary ---')
-        print(f'  OK:     {val_ok}')
-        if val_failed:
-            print(f'  Failed: {val_failed}')
+                # ── ltu-ili ValidationRunner + PosteriorCoverage ─────────────
+                try:
+                    metrics = {
+                        'coverage': PosteriorCoverage(
+                            num_samples=200,
+                            sample_method='emcee',
+                            sample_params={
+                                'num_chains': 8,
+                                'thin':       2,
+                                'burn_in':    50,
+                            },
+                            labels=PARAM_LABELS,
+                            out_dir=str(val_dir),
+                            plot_list=['coverage', 'histogram',
+                                       'tarp', 'predictions'],
+                        )
+                    }
+                    val_runner = ValidationRunner(
+                        posterior=post,
+                        metrics=metrics,
+                        out_dir=str(val_dir),
+                    )
+                    val_runner(loader)
+                    print(f'  [{name}] Plots saved to {val_dir}')
+                    val_ok.append(name)
+                except Exception:
+                    import traceback
+                    print(f'  [FAIL] {name}: {traceback.format_exc()}')
+                    val_failed.append(name)
+
+            print('\n--- Validation Summary ---')
+            print(f'  OK:     {val_ok}')
+            if val_failed:
+                print(f'  Failed: {val_failed}')
     # ── Active learning proposal ───────────────────────────────────────────────
     print(f'\nGenerating round {NEXT_ROUND} proposals from '
           f'{PROPOSAL_STAT} posterior...')
