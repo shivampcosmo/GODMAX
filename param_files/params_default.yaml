@@ -173,6 +173,8 @@ analysis:
   lowpass_Pmm1h_lowk: True
   kthresh_lowpass_Pmm1h_lowk: 1e-3
 
+  split_cga_fftlog: True
+
   nbar_gal_comoving_zarray:
     - 0.01
     - 2.0

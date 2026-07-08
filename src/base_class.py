@@ -269,7 +269,7 @@ class base_class:
 
 
         self.conc_model = halo_params_dict.get('conc_model','Duffy08')
-        self.hmf_model = halo_params_dict.get('hmf_model', 'tinker08')
+        self.hmf_model = halo_params_dict.get('hmf_model', 'T08')
 
         self.ell_array = halo_params_dict.get('ell_array',None)
         if self.ell_array is None:
@@ -285,7 +285,6 @@ class base_class:
         self.model_tSZ = analysis_dict.get('model_tSZ',True)
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
-        self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
 
         self.lowpass_Pmm1h_lowk = analysis_dict.get('lowpass_Pmm1h_lowk', True)
         self.kthresh_lowpass_Pmm1h_lowk = float(analysis_dict.get('kthresh_lowpass_Pmm1h_lowk', 1e-2))

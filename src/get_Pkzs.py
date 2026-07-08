@@ -1,7 +1,7 @@
 from get_radial_profiles import Profiles
 from base_class import get_vmapped_func, get_vmapped_func_warg
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit, vmap, lax
 from functools import partial
 from helpers.jax_cosmo_power import halofit_parameters, nonlinear_matter_power
 import jax.scipy.integrate as jsi
@@ -27,6 +27,20 @@ class get_Pkz(Profiles):
             return p1 + p2
         return (jnp.clip(p1, 1e-60, jnp.inf) ** alpha + jnp.clip(p2, 1e-60, jnp.inf) ** alpha) ** (1.0 / alpha)
 
+    @staticmethod
+    def _profile_grid_mass(r_array, rho_mat):
+        mass_shell_prefac = 4.0 * jnp.pi * r_array[:, None, None]**2
+        return jsi.trapezoid(mass_shell_prefac * rho_mat, x=r_array, axis=0)
+
+    @staticmethod
+    def _u_cga_analytic(k_array, Rh_mat):
+        x = k_array[:, None, None] * Rh_mat[None, :, :]
+        x2 = x**2
+        u_small_x = 1.0 - x2 / 3.0 + (x2**2) / 10.0
+        x_safe = jnp.clip(x, 1e-30, jnp.inf)
+        u_closed = jnp.sqrt(jnp.pi) * lax.erf(x_safe) / (2.0 * x_safe)
+        return jnp.where(x < 1e-2, u_small_x, u_closed)
+
     def __init__(
                 self,
                 sim_params_dict: dict,
@@ -35,21 +49,56 @@ class get_Pkz(Profiles):
                 other_params_dict: dict,
                 Profiles_obj=None,
             ):   
+        if analysis_dict is None:
+            analysis_dict = {}
+
         if Profiles_obj is None:
             super().__init__(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
         else:
             self.__dict__.update(Profiles_obj.__dict__)
 
+        self.split_cga_fftlog = bool(analysis_dict.get('split_cga_fftlog', False))
+
         # Do the FFTlog transform of the real-space profiles. Normalize each
         # profile by the mass represented on this same radial grid so u(k->0)=1.
         xi2P_obj = (xi2P(self.r_array, nx=self.nr,lowring=True))
-        mass_shell_prefac = 4.0 * jnp.pi * self.r_array[:, None, None]**2
-        self.Mdmb_grid_mat = jsi.trapezoid(mass_shell_prefac * self.rho_dmb_mat, x=self.r_array, axis=0)
-        self.Mnfw_grid_mat = jsi.trapezoid(mass_shell_prefac * self.rho_nfw_mat, x=self.r_array, axis=0)
+        self.Mdmb_grid_mat = self._profile_grid_mass(self.r_array, self.rho_dmb_mat)
+        self.Mnfw_grid_mat = self._profile_grid_mass(self.r_array, self.rho_nfw_mat)
 
-        self.k_mcfit, uk_dmb = xi2P_obj(self.rho_dmb_mat / jnp.clip(self.Mdmb_grid_mat[None, :, :], 1e-30), axis=0, extrap=False)
+        if self.split_cga_fftlog:
+            rho_smooth_mat = self.rho_dmb_mat - self.rho_cga_mat
+            self.Msmooth_grid_mat = self._profile_grid_mass(self.r_array, rho_smooth_mat)
+            self.Mcga_target_mat = self.fstar_cen_mat * self.Mtot_mat
+            self.Msmooth_target_mat = self.Mtot_mat - self.Mcga_target_mat
+
+            self.k_mcfit, uk_smooth = xi2P_obj(
+                rho_smooth_mat / jnp.clip(self.Msmooth_grid_mat[None, :, :], 1e-30, jnp.inf),
+                axis=0,
+                extrap=False,
+            )
+            self.uk_dmb_smooth_tointp = jnp.array(uk_smooth)
+            self.uk_cga_tointp = self._u_cga_analytic(self.k_mcfit, self.Rh_mat)
+
+            Mtot_safe = jnp.clip(self.Mtot_mat[None, :, :], 1e-30, jnp.inf)
+            w_smooth = self.Msmooth_target_mat[None, :, :] / Mtot_safe
+            w_cga = self.Mcga_target_mat[None, :, :] / Mtot_safe
+            self.Msmooth_grid_over_target_mat = self.Msmooth_grid_mat / jnp.clip(
+                self.Msmooth_target_mat, 1e-30, jnp.inf
+            )
+            uk_dmb = w_smooth * self.uk_dmb_smooth_tointp + w_cga * self.uk_cga_tointp
+        else:
+            self.k_mcfit, uk_dmb = xi2P_obj(
+                self.rho_dmb_mat / jnp.clip(self.Mdmb_grid_mat[None, :, :], 1e-30, jnp.inf),
+                axis=0,
+                extrap=False,
+            )
+
         self.uk_dmb_tointp = jnp.array(uk_dmb)
-        self.k_mcfit, uk_nfw = xi2P_obj(self.rho_nfw_mat / jnp.clip(self.Mnfw_grid_mat[None, :, :], 1e-30), axis=0, extrap=False)
+        self.k_mcfit, uk_nfw = xi2P_obj(
+            self.rho_nfw_mat / jnp.clip(self.Mnfw_grid_mat[None, :, :], 1e-30, jnp.inf),
+            axis=0,
+            extrap=False,
+        )
         self.uk_nfw_tointp = jnp.array(uk_nfw)
 
         if self.model_galaxies:
@@ -116,8 +165,8 @@ class get_Pkz(Profiles):
             bm_nfw_2h = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 1).T
             self.bm_nfw_kz_mat = bm_nfw_2h + self.bm_largescales_2h_mat_lt_Mmin   
         else:
-            self.bm_dmb_kz_mat = jnp.ones((len(self.nk), self.nz))
-            self.bm_nfw_kz_mat = jnp.ones((len(self.nk), self.nz))
+            self.bm_dmb_kz_mat = jnp.ones((self.nk, self.nz))
+            self.bm_nfw_kz_mat = jnp.ones((self.nk, self.nz))
 
         if self.model_tSZ:
             self.by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
