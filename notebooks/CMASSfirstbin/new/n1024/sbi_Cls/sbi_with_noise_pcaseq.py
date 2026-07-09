@@ -813,7 +813,7 @@ if __name__ == '__main__':
     ctx = mp.get_context('spawn')
     with ctx.Pool(processes=n_cpus) as pool:
         results = pool.map(train_one_statistic, worker_args)
-
+    '''
     # ── Sequential GPU SBI training ────────────────────────────────────────────
     print(f'\nTraining {N_STATISTICS} posteriors sequentially on {device}...')
 
@@ -828,18 +828,17 @@ if __name__ == '__main__':
                 print(f'  [{name}] No Optuna study found, using adaptive defaults.')
         
         result = train_one_statistic(
-            name, idx, x_rounds, theta_rounds, x_obs,
-            WORK_DIR, device, blocks, opt_hps)
+            (name, idx, x_rounds, theta_rounds, x_obs,
+            WORK_DIR, device, blocks, opt_hps))
         results.append(result)
 
         if device == 'cuda':
             torch.cuda.empty_cache()
-
+    '''
     print('\n--- Training Summary ---')
     for name, success, msg in results:
         status = 'OK  ' if success else 'FAIL'
         print(f'  [{status}] {msg}')
-
     # ═══════════════════════════════════════════════════════════════════════════
     # Validation  (runs entirely on CPU to avoid device-mismatch issues)
     # ═══════════════════════════════════════════════════════════════════════════
