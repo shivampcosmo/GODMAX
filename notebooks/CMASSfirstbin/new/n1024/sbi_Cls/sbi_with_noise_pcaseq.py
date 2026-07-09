@@ -668,7 +668,11 @@ def train_one_statistic(args):
             print(f'  [{name}] round={r_idx+1} complete  '
                   f'val_loss={summaries[0]["best_validation_loss"][-1]:.4f}',
                   flush=True)
-
+            # ── Save round-1 posterior for active-learning comparison ─────────
+            if r_idx == 0:
+                with open(fpath(f'ili_posterior_{name}_round1.pkl'), 'wb') as f:
+                    pk.dump(posterior_ensemble, f)
+                print(f'  [{name}] Round-1 posterior saved.', flush=True)
         # ── Save final posterior ───────────────────────────────────────────────
         with open(fpath(f'ili_posterior_{name}.pkl'), 'wb') as f:
             pk.dump(posterior_ensemble, f)
@@ -931,48 +935,113 @@ if __name__ == '__main__':
                 else:
                     print(f'  [WARN] No PCA found for {name}, using z-scored data.')
                     xt_val = xt_val_norm
+                
+# ── Load x_obs compressed vector for this statistic ──────────
+                xo_comp_path = os.path.join(WORK_DIR, f'xobs_{name}.npy')
+                if not os.path.exists(xo_comp_path):
+                    print(f'  [WARN] No xobs_{name}.npy found, skipping local filter.')
+                    xo_comp_val = None
+                else:
+                    xo_comp_val = np.load(xo_comp_path)   # shape (n_comp,)
 
-                # ── Write data for StaticNumpyLoader ────────────────────────
-                val_dir = Path(WORK_DIR) / f'validation_{name}'
-                val_dir.mkdir(exist_ok=True, parents=True)
-                np.save(val_dir / 'x_val.npy',     xt_val)
-                np.save(val_dir / 'theta_val.npy', theta_val)
+                # ── Local coverage filter: keep only validation points near x_obs ──
+                if xo_comp_val is not None:
+                    dists     = np.linalg.norm(xt_val - xo_comp_val[None, :], axis=1)
+                    threshold = np.percentile(dists, 30)   # closest 30%
+                    local_mask = dists <= threshold
+                    xt_val_local    = xt_val[local_mask]
+                    theta_val_local = theta_val[local_mask]
+                    print(f'  [{name}] Local validation: '
+                          f'{local_mask.sum()}/{len(local_mask)} points '
+                          f'within distance {threshold:.3f} of x_obs')
+                else:
+                    xt_val_local    = xt_val
+                    theta_val_local = theta_val
+                    print(f'  [{name}] No x_obs filter applied.')
 
-                loader = StaticNumpyLoader(
-                    in_dir=str(val_dir),
-                    x_file='x_val.npy',
-                    theta_file='theta_val.npy',
-                )
-
-                # ── ltu-ili ValidationRunner + PosteriorCoverage ─────────────
-                try:
-                    metrics = {
-                        'coverage': PosteriorCoverage(
-                            num_samples=200,
-                            sample_method='emcee',
-                            sample_params={
-                                'num_chains': 8,
-                                'thin':       2,
-                                'burn_in':    50,
-                            },
-                            labels=PARAM_LABELS,
-                            out_dir=str(val_dir),
-                            plot_list=['coverage', 'histogram',
-                                       'tarp', 'predictions'],
-                        )
-                    }
-                    val_runner = ValidationRunner(
-                        posterior=post,
-                        metrics=metrics,
-                        out_dir=str(val_dir),
-                    )
-                    val_runner(loader)
-                    print(f'  [{name}] Plots saved to {val_dir}')
-                    val_ok.append(name)
-                except Exception:
-                    import traceback
-                    print(f'  [FAIL] {name}: {traceback.format_exc()}')
+                if len(theta_val_local) < 10:
+                    print(f'  [SKIP] {name}: fewer than 10 local validation '
+                          f'points after filtering.')
                     val_failed.append(name)
+                    continue
+
+                # ── Run coverage for round-1 AND final posterior ──────────────
+                for round_label, post_path in [
+                    ('round1', os.path.join(WORK_DIR,
+                                            f'ili_posterior_{name}_round1.pkl')),
+                    ('final',  os.path.join(WORK_DIR,
+                                            f'ili_posterior_{name}.pkl')),
+                ]:
+                    if not os.path.exists(post_path):
+                        print(f'  [SKIP] {name}/{round_label}: '
+                              f'no posterior at {post_path}')
+                        continue
+
+                    with open(post_path, 'rb') as f:
+                        post = pk.load(f)
+
+                    # Move to CPU
+                    members = (post.posteriors
+                               if hasattr(post, 'posteriors') else [post])
+                    for member in members:
+                        for attr in ('posterior_estimator', '_neural_net',
+                                     '_posterior_estimator',
+                                     '_likelihood_estimator',
+                                     '_ratio_estimator'):
+                            net = getattr(member, attr, None)
+                            if net is not None:
+                                net.to('cpu')
+                        prior_obj = getattr(member, '_prior', None)
+                        if prior_obj is not None:
+                            for buf_attr in ('low', 'high', 'loc', 'scale'):
+                                buf = getattr(prior_obj, buf_attr, None)
+                                if isinstance(buf, torch.Tensor):
+                                    setattr(prior_obj, buf_attr,
+                                            buf.to('cpu'))
+
+                    val_dir = Path(WORK_DIR) / f'validation_{name}_{round_label}'
+                    val_dir.mkdir(exist_ok=True, parents=True)
+                    np.save(val_dir / 'x_val.npy',     xt_val_local)
+                    np.save(val_dir / 'theta_val.npy', theta_val_local)
+
+                    loader = StaticNumpyLoader(
+                        in_dir=str(val_dir),
+                        x_file='x_val.npy',
+                        theta_file='theta_val.npy',
+                    )
+
+                    try:
+                        metrics = {
+                            'coverage': PosteriorCoverage(
+                                num_samples=200,
+                                sample_method='emcee',
+                                sample_params={
+                                    'num_chains': 8,
+                                    'thin':       2,
+                                    'burn_in':    50,
+                                },
+                                labels=PARAM_LABELS,
+                                out_dir=str(val_dir),
+                                plot_list=['coverage', 'histogram',
+                                           'tarp', 'predictions'],
+                            )
+                        }
+                        val_runner = ValidationRunner(
+                            posterior=post,
+                            metrics=metrics,
+                            out_dir=str(val_dir),
+                        )
+                        val_runner(loader)
+                        print(f'  [{name}/{round_label}] '
+                              f'Plots saved to {val_dir}')
+                        if round_label == 'final':
+                            val_ok.append(name)
+                    except Exception:
+                        import traceback
+                        print(f'  [FAIL] {name}/{round_label}: '
+                              f'{traceback.format_exc()}')
+                        if round_label == 'final':
+                            val_failed.append(name)
 
             print('\n--- Validation Summary ---')
             print(f'  OK:     {val_ok}')
