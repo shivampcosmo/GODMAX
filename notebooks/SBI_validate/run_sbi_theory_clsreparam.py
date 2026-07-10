@@ -35,6 +35,8 @@ from theory_sbi_utils import (
     save_pickle,
     selected_product_arrays,
     validate_theory_vector,
+    phi_parameter_specs,
+    phi_theta_transform,
 )
 
 
@@ -588,19 +590,33 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=5.0e-4)
     parser.add_argument("--parameter-transform", choices=("none", "fisher"), default="none",
                         help="Train SNPE in raw parameters or in a Fisher-whitened linear parameter basis.")
+    parser.add_argument("--reparameterize-phi", action="store_true",
+    help="Sample (theta_ej_0, phi) with a uniform prior instead of "
+         "(theta_ej_0, nu_theta_ej_M); phi is converted back to nu "
+         "before being handed to the simulator.",)
     args = parser.parse_args()
 
-    param_specs = parse_param_specs(args.param_spec)
-    fiducial_path = ensure_default_fiducial_product(
-        args.fiducial_path,
-        param_specs=param_specs,
-        force=args.force_fiducial,
-    )
+    base_param_specs = parse_param_specs(args.param_spec)  # physical: theta_ej_0, nu_theta_ej_M
+
+    # Fiducial product MUST be built from physical specs, before any phi swap.
+    fiducial_path = ensure_default_fiducial_product(args.fiducial_path,
+    param_specs=base_param_specs,force=args.force_fiducial,)
+
+    param_specs = base_param_specs
+    theory_param_specs = None
+    theta_transform = None
+    if args.reparameterize_phi:
+        theory_param_specs = base_param_specs
+        param_specs = phi_parameter_specs(base_param_specs)
+        theta_transform = phi_theta_transform
+    
     result = run_sbi(
         fiducial_path=pathlib.Path(fiducial_path),
         output_dir=pathlib.Path(args.output_dir),
         probes=parse_probe_list(args.probes),
         param_specs=param_specs,
+        theory_param_specs=theory_param_specs,
+        theta_transform=theta_transform,
         ell_min=args.ell_min,
         ell_max=args.ell_max,
         simulations_per_round=_parse_rounds(args.simulations_per_round),

@@ -32,6 +32,8 @@ from theory_sbi_utils import (
     prior_bounds,
     selected_product_arrays,
     validate_theory_vector,
+    phi_parameter_specs,
+    phi_theta_transform,
 )
 
 
@@ -239,19 +241,32 @@ def main() -> None:
                         help="Disable the constant numerical offset that aligns the JAX evaluator to the saved fiducial product.")
     parser.add_argument("--theory-backend", choices=("linearized", "direct"),
                         default="linearized")
+    parser.add_argument(
+    "--reparameterize-phi", action="store_true",
+    help="Sample (theta_ej_0, phi) with a uniform prior instead of "
+         "(theta_ej_0, nu_theta_ej_M); phi is converted back to nu "
+         "before being handed to the simulator.",)
     args = parser.parse_args()
+    
+    base_param_specs = parse_param_specs(args.param_spec)  # physical: theta_ej_0, nu_theta_ej_M
+    # Fiducial product MUST be built from physical specs, before any phi swap.
+    fiducial_path = ensure_default_fiducial_product(args.fiducial_path,param_specs=base_param_specs,
+                    force=args.force_fiducial,)
+    param_specs = base_param_specs
+    theory_param_specs = None
+    theta_transform = None
+    if args.reparameterize_phi:
+        theory_param_specs = base_param_specs
+        param_specs = phi_parameter_specs(base_param_specs)
+        theta_transform = phi_theta_transform
 
-    param_specs = parse_param_specs(args.param_spec)
-    fiducial_path = ensure_default_fiducial_product(
-        args.fiducial_path,
-        param_specs=param_specs,
-        force=args.force_fiducial,
-    )
     result = run_hmc(
         fiducial_path=pathlib.Path(fiducial_path),
         output_dir=pathlib.Path(args.output_dir),
         probes=parse_probe_list(args.probes),
         param_specs=param_specs,
+        theory_param_specs=theory_param_specs,
+        theta_transform=theta_transform,
         ell_min=args.ell_min,
         ell_max=args.ell_max,
         num_warmup=args.num_warmup,
