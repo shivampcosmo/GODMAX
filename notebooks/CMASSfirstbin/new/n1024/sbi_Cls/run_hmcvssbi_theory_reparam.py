@@ -41,7 +41,9 @@ from theory_sbi_utils import (
     parse_probe_list,
     selected_product_arrays,
     validate_theory_vector,
-)
+    phi_support_mask,          # <-- add
+    phi_to_original,           # <-- add, for reporting nu directly
+    )
 from run_hmc_theory_clsreparam import run_hmc
 from run_sbi_theory_clsreparam import run_sbi
 
@@ -57,9 +59,11 @@ plt.rcParams.update({"figure.dpi": 130})
 # sample, plot, and save. theta_transform below converts phi -> nu.
 THEORY_PARAM_SPECS      = default_parameter_specs()
 PARAM_SPECS              = phi_parameter_specs(THEORY_PARAM_SPECS)
+T_MIN, T_MAX = THEORY_PARAM_SPECS[0].prior_min, THEORY_PARAM_SPECS[0].prior_max
+NU_MIN, NU_MAX = THEORY_PARAM_SPECS[1].prior_min, THEORY_PARAM_SPECS[1].prior_max
 ELL_MIN                 = 100.0
 ELL_MAX                 = 1500.0
-THEORY_BACKEND          = "linearized"
+THEORY_BACKEND          = "direct" #"linearized"
 FIDUCIAL_OFFSET         = True
 SBI_SUMMARY_COMPRESSION = "score"
 
@@ -316,6 +320,19 @@ for probe_name in PROBES_TO_RUN:
 
     print(f"\n  HMC available : {hmc is not None}  ({hmc_path})")
     print(f"  SBI available : {sbi is not None}  ({sbi_path})")
+    if hmc is not None and sbi is not None:
+        hmc_samples_all = _hmc_sample_array(hmc)
+        sbi_samples_all_raw = np.asarray(sbi["samples"], dtype=float)
+        sbi_samples_prior_ok, _ = _filter_prior(sbi_samples_all_raw)
+
+        hmc_phys_mask = phi_support_mask(
+            hmc_samples_all[:, 0], hmc_samples_all[:, 1], T_MIN, T_MAX, NU_MIN, NU_MAX)
+        sbi_phys_mask = phi_support_mask(
+            sbi_samples_prior_ok[:, 0], sbi_samples_prior_ok[:, 1], T_MIN, T_MAX, NU_MIN, NU_MAX)
+        print(f"  HMC samples with physical nu: {hmc_phys_mask.mean():.1%}")
+        print(f"  SBI samples with physical nu: {sbi_phys_mask.mean():.1%}")
+        hmc_samples_phys = hmc_samples_all[hmc_mask]
+        sbi_samples_phys = sbi_samples_prior_ok[sbi_mask]
 
     diag_hmc = hmc_run_dir / "hmc_diagnostics.json"
     if diag_hmc.exists():
@@ -331,9 +348,9 @@ for probe_name in PROBES_TO_RUN:
     if hmc is not None and sbi is not None:
         from getdist import MCSamples, plots
 
-        hmc_samples     = _hmc_sample_array(hmc)
-        sbi_samples_all = np.asarray(sbi["samples"], dtype=float)
-        sbi_samples, _  = _filter_prior(sbi_samples_all)
+        hmc_samples     = hmc_samples_phys #_hmc_sample_array(hmc)
+        #sbi_samples_all = np.asarray(sbi["samples"], dtype=float)
+        sbi_samples = sbi_samples_phys#, _  = _filter_prior(sbi_samples_all)
 
         print(f"\n  GetDist: HMC {hmc_samples.shape}  "
               f"SBI {sbi_samples.shape} "
@@ -366,8 +383,8 @@ for probe_name in PROBES_TO_RUN:
 
     # ── 1-D marginal comparison ───────────────────────────────────────────────
     if hmc is not None and sbi is not None:
-        hmc_samples    = _hmc_sample_array(hmc)
-        sbi_samples, _ = _filter_prior(np.asarray(sbi["samples"], dtype=float))
+        hmc_samples    = hmc_samples_phys#_hmc_sample_array(hmc)
+        sbi_samples = sbi_samples_phys#, _ = _filter_prior(np.asarray(sbi["samples"], dtype=float))
 
         n_params = len(names)
         ncols    = min(n_params, 4)
@@ -413,8 +430,8 @@ for probe_name in PROBES_TO_RUN:
 
     # ── Numerical summary table ───────────────────────────────────────────────
     if hmc is not None and sbi is not None:
-        hmc_samples    = _hmc_sample_array(hmc)
-        sbi_samples, _ = _filter_prior(np.asarray(sbi["samples"], dtype=float))
+        hmc_samples    = hmc_samples_phys#_hmc_sample_array(hmc)
+        sbi_samples = sbi_samples_phys#, _ = _filter_prior(np.asarray(sbi["samples"], dtype=float))
 
         summary_rows = []
         header = (
