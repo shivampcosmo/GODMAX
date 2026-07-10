@@ -331,8 +331,8 @@ for probe_name in PROBES_TO_RUN:
             sbi_samples_prior_ok[:, 0], sbi_samples_prior_ok[:, 1], T_MIN, T_MAX, NU_MIN, NU_MAX)
         print(f"  HMC samples with physical nu: {hmc_phys_mask.mean():.1%}")
         print(f"  SBI samples with physical nu: {sbi_phys_mask.mean():.1%}")
-        hmc_samples_phys = hmc_samples_all[hmc_mask]
-        sbi_samples_phys = sbi_samples_prior_ok[sbi_mask]
+        hmc_samples_phys = hmc_samples_all[hmc_phys_mask]
+        sbi_samples_phys = sbi_samples_prior_ok[sbi_phys_mask]
 
     diag_hmc = hmc_run_dir / "hmc_diagnostics.json"
     if diag_hmc.exists():
@@ -354,7 +354,7 @@ for probe_name in PROBES_TO_RUN:
 
         print(f"\n  GetDist: HMC {hmc_samples.shape}  "
               f"SBI {sbi_samples.shape} "
-              f"(from {len(sbi_samples_all)} raw samples)")
+              f"(from {len(sbi_samples_all_raw)} raw samples)")
 
         mc_hmc = MCSamples(
             samples=hmc_samples,
