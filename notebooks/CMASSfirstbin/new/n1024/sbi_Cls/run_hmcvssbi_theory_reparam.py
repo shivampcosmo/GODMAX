@@ -32,10 +32,11 @@ for p in [str(SBI_VALIDATE_DIR), str(SBI_CLS_DIR)]:
 # IMPORTS
 # =============================================================================
 
-from theory_sbi_utils import (
+from theory_sbi_utilsreparam import (
     DEFAULT_FIDUCIAL_PATH,
     default_parameter_specs,
     phi_parameter_specs,
+    phi_theta_transform,
     ensure_default_fiducial_product,
     make_inference_theory_vector_function,
     parse_probe_list,
@@ -49,7 +50,7 @@ from run_sbi_theory_clsreparam import run_sbi
 
 plt.rcParams.update({"figure.dpi": 130})
 
-# =============================================================================
+# ======================
 # GLOBAL CONFIGURATION
 # =============================================================================
 
@@ -78,19 +79,10 @@ print("sbi_Cls dir      :", SBI_CLS_DIR)
 print("Output root      :", OUTPUT_DIR)
 
 
-def theta_transform(theta):
-    """(theta_ej_0, phi) -> (theta_ej_0, nu), phi = theta_ej_0 * nu**(1/3).
-
-    Acts on the last axis, so it works both on a single (2,) vector
-    (HMC / jax.grad) and a batch (N, 2) array (SBI simulation batches).
-    """
-    theta = jnp.asarray(theta)
-    t = theta[..., 0]
-    phi = theta[..., 1]
-    nu = (phi / t) ** 3
-    return jnp.stack([t, nu], axis=-1)
-
-
+# theta_transform: (theta_ej_0, phi) -> (theta_ej_0, nu), phi = nu - 0.15*theta_ej_0 + 0.4.
+# Imported directly from theory_sbi_utils so this script can never drift out
+# of sync with the linear map used to build PARAM_SPECS / phi_support_mask.
+theta_transform = phi_theta_transform
 # =============================================================================
 # PER-PROBE PROBE-LIST MAPPING
 # =============================================================================
