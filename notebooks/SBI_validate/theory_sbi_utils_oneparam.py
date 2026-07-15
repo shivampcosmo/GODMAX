@@ -530,8 +530,6 @@ def make_theory_vector_function(
             context,
             paint_r200c_factor=paint_r200c_factor,
         )
-        print(build_notebook_matched_config(gal_zmin=0.3, gal_zmax=0.5,
-      nbar_comoving=1.0e-4, kappa_source="cmb")[0].get("nu_theta_ej_M"))
         full_vector = jnp.concatenate([cls_signal[spec] for spec in target_spectra])
         
         return full_vector[selected_indices]
