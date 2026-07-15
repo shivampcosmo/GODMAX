@@ -1,0 +1,52 @@
+{
+  "arviz_summary": {
+    "ess_bulk": {
+      "theta_ej_0": 5434.0
+    },
+    "ess_tail": {
+      "theta_ej_0": 5577.0
+    },
+    "hdi_3%": {
+      "theta_ej_0": 1.106
+    },
+    "hdi_97%": {
+      "theta_ej_0": 5.761
+    },
+    "mcse_mean": {
+      "theta_ej_0": 0.019
+    },
+    "mcse_sd": {
+      "theta_ej_0": 0.009
+    },
+    "mean": {
+      "theta_ej_0": 3.481
+    },
+    "r_hat": {
+      "theta_ej_0": 1.0
+    },
+    "sd": {
+      "theta_ej_0": 1.43
+    }
+  },
+  "chain_method": "vectorized",
+  "dense_mass": true,
+  "fiducial_offset_correction": true,
+  "fiducial_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate/outputs/theory_sbi/fiducial_thetaej2_nuejm_minus0p1.npz",
+  "max_rhat": 1.0,
+  "max_tree_depth": 6,
+  "min_ess_bulk": 5434.0,
+  "num_chains": 4,
+  "num_samples": 4000,
+  "num_warmup": 2000,
+  "runtime_sec": 3.9875595569610596,
+  "target_accept_prob": 0.9,
+  "theory_backend": "linearized",
+  "validation": {
+    "finite_gradient": true,
+    "finite_prediction": true,
+    "gradient_norm": 0.0,
+    "max_abs_diff": 0.0,
+    "max_rel_diff": 0.0,
+    "median_rel_diff": 0.0
+  }
+}
