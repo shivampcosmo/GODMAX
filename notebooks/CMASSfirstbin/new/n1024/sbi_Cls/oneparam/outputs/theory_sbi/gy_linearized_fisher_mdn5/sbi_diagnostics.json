@@ -3,7 +3,7 @@
   "device": "cpu",
   "discard_prior_samples": true,
   "fiducial_offset_correction": true,
-  "fiducial_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate/outputs/theory_sbi/fiducial_thetaej2_nuejm_minus0p1.npz",
+  "fiducial_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate/outputs/theory_sbi/fiducial_thetaej2.npz",
   "force_first_round_loss": false,
   "hidden_features": 64,
   "learning_rate": 0.0005,
@@ -21,7 +21,7 @@
     "/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/oneparam/outputs/theory_sbi/gy_linearized_fisher_mdn5/sbi_round1_simulations.npz",
     "/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/oneparam/outputs/theory_sbi/gy_linearized_fisher_mdn5/sbi_round2_simulations.npz"
   ],
-  "runtime_sec": 137.3488118648529,
+  "runtime_sec": 82.96575856208801,
   "samples_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi_Cls/oneparam/outputs/theory_sbi/gy_linearized_fisher_mdn5/sbi_posterior_samples.npz",
   "simulations_per_round": [
     2000,

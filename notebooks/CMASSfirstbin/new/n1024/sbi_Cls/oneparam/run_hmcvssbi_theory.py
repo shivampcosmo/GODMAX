@@ -198,6 +198,23 @@ for probe_name in PROBES_TO_RUN:
     print(f"  Fiducial vector norm     : {np.linalg.norm(fid_vec):.4e}")
     print()
 
+    #################CHECK######################
+    diag_cov = np.diag(selected["cov"])
+    print("\n  ell            :", selected["product"]["ell"][selected["selection"].ell_indices])
+    print("  data_vector     :", selected["data_vector"])
+    print("  diag(cov)       :", diag_cov)
+    print("  sqrt(diag(cov)) :", np.sqrt(diag_cov))
+    print("  signal/noise    :", selected["data_vector"] / np.sqrt(diag_cov))
+
+    chi2_vs_null = selected["data_vector"] @ selected["precision"] @ selected["data_vector"]
+    print(f"  Total chi^2 (signal vs. null, i.e. detection significance^2): {chi2_vs_null:.4e}")
+
+    J = theory_info["jacobian"]
+    fisher = J.T @ selected["precision"] @ J
+    sigma_fisher = 1.0 / np.sqrt(fisher[0, 0])
+    print(f"  Fisher-forecast sigma_theta_ej_0: {sigma_fisher:.4f}")
+    ###########################################
+
     for i, spec in enumerate(PARAM_SPECS):
         step     = abs(spec.fiducial) * 0.1 if abs(spec.fiducial) > 1e-10 else 0.01
         theta_p  = fiducial.copy(); theta_p[i] += step

@@ -1,44 +1,44 @@
 {
   "arviz_summary": {
     "ess_bulk": {
-      "theta_ej_0": 5587.0
+      "theta_ej_0": 5215.0
     },
     "ess_tail": {
-      "theta_ej_0": 5515.0
+      "theta_ej_0": 4560.0
     },
     "hdi_3%": {
-      "theta_ej_0": 1.201
+      "theta_ej_0": 1.238
     },
     "hdi_97%": {
-      "theta_ej_0": 5.867
+      "theta_ej_0": 5.902
     },
     "mcse_mean": {
       "theta_ej_0": 0.019
     },
     "mcse_sd": {
-      "theta_ej_0": 0.009
+      "theta_ej_0": 0.01
     },
     "mean": {
-      "theta_ej_0": 3.49
+      "theta_ej_0": 3.486
     },
     "r_hat": {
       "theta_ej_0": 1.0
     },
     "sd": {
-      "theta_ej_0": 1.435
+      "theta_ej_0": 1.432
     }
   },
   "chain_method": "vectorized",
   "dense_mass": true,
   "fiducial_offset_correction": true,
-  "fiducial_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate/outputs/theory_sbi/fiducial_thetaej2_nuejm_minus0p1.npz",
+  "fiducial_path": "/work/hdd/bdne/aacharya2/GODMAX/notebooks/SBI_validate/outputs/theory_sbi/fiducial_thetaej2.npz",
   "max_rhat": 1.0,
   "max_tree_depth": 6,
-  "min_ess_bulk": 5587.0,
+  "min_ess_bulk": 5215.0,
   "num_chains": 4,
   "num_samples": 4000,
   "num_warmup": 2000,
-  "runtime_sec": 5.376672983169556,
+  "runtime_sec": 6.040298938751221,
   "target_accept_prob": 0.9,
   "theory_backend": "linearized",
   "validation": {
