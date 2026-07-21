@@ -470,8 +470,27 @@ def make_theory_vector_function(
     kappa_source: str = "cmb",
     paint_r200c_factor: float = DEFAULT_PAINT_R200C_FACTOR,
     jit_compile: bool = True,
+    fixed_param_specs: Sequence[ParameterSpec] | None = None,
 ):
-    """Create a JAX callable returning the selected map-matched datavector."""
+    """Create a JAX callable returning the selected map-matched datavector.
+
+    ``param_specs`` defines the entries supplied in the callable's ``theta``
+    argument.  ``fixed_param_specs`` applies additional parameter values at
+    their ``fiducial`` settings before the sampled entries are applied.  This
+    is needed when sampling a subset of the parameters used to create a saved
+    fiducial product; otherwise omitted parameters would silently fall back to
+    the defaults in the base GODMAX configuration.
+    """
+
+    fixed_param_specs = tuple(fixed_param_specs or ())
+    sampled_names = {spec.name for spec in param_specs}
+    fixed_names = {spec.name for spec in fixed_param_specs}
+    overlap = sampled_names.intersection(fixed_names)
+    if overlap:
+        raise ValueError(
+            "Parameters cannot be both sampled and fixed: "
+            f"{sorted(overlap)}"
+        )
 
     ensure_repo_paths()
     from base_class import base_class
@@ -495,6 +514,7 @@ def make_theory_vector_function(
         _nz_lens,
         _gal_zrange,
     ) = base_config
+    fixed_theta = jnp.asarray(fiducial_theta(fixed_param_specs))
     target_spectra = tuple(TARGET_SPECTRA)
     selected_indices = jnp.asarray(selection.indices, dtype=jnp.int32)
 
@@ -504,6 +524,12 @@ def make_theory_vector_function(
         halo_params_dict = copy.deepcopy(base_halo_params_dict)
         analysis_dict = copy.deepcopy(base_analysis_dict)
         other_params_dict = copy.deepcopy(base_other_params_dict)
+        _apply_theta_to_dicts(
+            sim_params_dict,
+            other_params_dict,
+            fixed_theta,
+            fixed_param_specs,
+        )
         _apply_theta_to_dicts(sim_params_dict, other_params_dict, theta, param_specs)
 
         base_obj = base_class(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
@@ -695,9 +721,13 @@ def metadata_json(
     param_specs: Sequence[ParameterSpec],
     selection: DataSelection,
     extra: Mapping[str, object] | None = None,
+    fixed_param_specs: Sequence[ParameterSpec] | None = None,
 ) -> str:
     payload = {
         "parameter_specs": [asdict(spec) for spec in param_specs],
+        "fixed_parameter_specs": [
+            asdict(spec) for spec in (fixed_param_specs or ())
+        ],
         "selection": {
             "probes": list(selection.probes),
             "ell_min": selection.ell_min,

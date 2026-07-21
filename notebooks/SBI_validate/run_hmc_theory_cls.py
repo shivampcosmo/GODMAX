@@ -6,6 +6,7 @@ import argparse
 import json
 import pathlib
 import time
+from typing import Sequence
 
 import numpy as np
 
@@ -22,6 +23,7 @@ from numpyro.infer import MCMC, NUTS, init_to_value
 
 from theory_sbi_utils import (
     DEFAULT_FIDUCIAL_PATH,
+    ParameterSpec,
     THEORY_SBI_DIR,
     ensure_default_fiducial_product,
     fiducial_theta,
@@ -53,6 +55,7 @@ def run_hmc(
     jit_compile: bool,
     fiducial_offset: bool,
     theory_backend: str,
+    fixed_param_specs: Sequence[ParameterSpec] | None = None,
 ) -> dict:
     """Run and save a fixed-covariance Gaussian NUTS chain."""
 
@@ -66,6 +69,7 @@ def run_hmc(
         backend=theory_backend,
         fiducial_offset=fiducial_offset,
         jit_compile=jit_compile,
+        fixed_param_specs=fixed_param_specs,
     )
     validation = validate_theory_vector(vector_fn, selected, param_specs)
 
@@ -147,6 +151,7 @@ def run_hmc(
                     "theory_backend": theory_backend,
                     "validation": validation,
                 },
+                fixed_param_specs=fixed_param_specs,
             )
         ),
     }
@@ -174,6 +179,17 @@ def run_hmc(
         "fiducial_offset_correction": fiducial_offset,
         "theory_backend": theory_backend,
         "fiducial_path": str(fiducial_path),
+        "fixed_parameter_specs": [
+            {
+                "name": spec.name,
+                "label": spec.label,
+                "fiducial": spec.fiducial,
+                "prior_min": spec.prior_min,
+                "prior_max": spec.prior_max,
+                "target": spec.target,
+            }
+            for spec in (fixed_param_specs or ())
+        ],
     }
     try:
         import arviz as az

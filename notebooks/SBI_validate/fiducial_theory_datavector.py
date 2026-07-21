@@ -32,6 +32,9 @@ PASTING_DIR = REPO_ROOT / "notebooks" / "pasting"
 OUTPUT_DIR = THIS_DIR / "outputs"
 DEFAULT_OUTPUT = OUTPUT_DIR / "fiducial_theory_datavector.npz"
 DEFAULT_PAINT_R200C_FACTOR = 8.0
+_np_trapezoid = getattr(np, "trapezoid", None)
+if _np_trapezoid is None:  # NumPy < 2.0
+    _np_trapezoid = np.trapz
 
 
 def ensure_repo_paths() -> None:
@@ -49,7 +52,7 @@ def lsst_like_source_nz(z: np.ndarray, z0: float = 0.64,
 
     z = np.asarray(z, dtype=float)
     nz = z ** 2 * np.exp(-((z / z0) ** alpha))
-    norm = np.trapezoid(nz, z)
+    norm = _np_trapezoid(nz, z)
     return nz / norm if norm > 0 else nz
 
 
@@ -141,7 +144,7 @@ def angular_galaxy_density_sr(analysis_dict: Mapping[str, np.ndarray],
     z = np.asarray(analysis_dict["nbar_gal_comoving_zarray"], dtype=float)
     nbar = np.asarray(analysis_dict["nbar_gal_comoving_val"], dtype=float)
     dV_dz = compute_dV_dz_per_sr(cosmo_jax, z)
-    return float(np.trapezoid(nbar * dV_dz, z))
+    return float(_np_trapezoid(nbar * dV_dz, z))
 
 
 def build_notebook_matched_config(
@@ -323,7 +326,7 @@ def _bias_for_probe(pkz, probe: int) -> np.ndarray:
 def _trapz_lnm(values: np.ndarray, mass: np.ndarray) -> np.ndarray:
     """Integrate an array over the last axis in dlnM."""
 
-    return np.trapezoid(values, x=np.log(np.asarray(mass, dtype=float)), axis=-1)
+    return _np_trapezoid(values, x=np.log(np.asarray(mass, dtype=float)), axis=-1)
 
 
 def _interp_transform_to_kpk(k_src: np.ndarray, uk_src: np.ndarray,
@@ -436,14 +439,14 @@ def single_halo_tau_profile_normalization_check(
     sel_rp = (rp > 0) & (rp <= rmax_phys) & np.isfinite(ne2d)
     projected_aperture = np.nan
     if np.count_nonzero(sel_rp) > 1:
-        projected_aperture = float(2.0 * np.pi * np.trapezoid(rp[sel_rp] * ne2d[sel_rp], rp[sel_rp]))
+        projected_aperture = float(2.0 * np.pi * _np_trapezoid(rp[sel_rp] * ne2d[sel_rp], rp[sel_rp]))
 
     r_phys = np.asarray(prof.r_array, dtype=float) / (1.0 + z_val)
     ne3d = np.asarray(prof.ne_mat_physical, dtype=float)[:, iz, im]
     sel_r = (r_phys > 0) & (r_phys <= rmax_phys) & np.isfinite(ne3d)
     spherical_truncated = np.nan
     if np.count_nonzero(sel_r) > 1:
-        spherical_truncated = float(4.0 * np.pi * np.trapezoid(r_phys[sel_r] ** 2 * ne3d[sel_r], r_phys[sel_r]))
+        spherical_truncated = float(4.0 * np.pi * _np_trapezoid(r_phys[sel_r] ** 2 * ne3d[sel_r], r_phys[sel_r]))
 
     ratio = projected_aperture / spherical_truncated if spherical_truncated > 0 else np.nan
     return {
@@ -611,7 +614,7 @@ def project_power_to_cl(cls, power_kz: np.ndarray, probe1: int, probe2: int,
         points = np.column_stack([np.log(k_for), z_for])
         pk_for = np.exp(interp(points))
         integrand = pref1 * pref2 * chi ** 2 * dchi_dz * pk_for
-        cl[i] = np.trapezoid(integrand, z_for)
+        cl[i] = _np_trapezoid(integrand, z_for)
     return cl
 
 

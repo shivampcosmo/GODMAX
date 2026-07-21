@@ -8,6 +8,7 @@ import os
 import pathlib
 import sys
 import time
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -24,6 +25,7 @@ import jax
 
 from theory_sbi_utils import (
     DEFAULT_FIDUCIAL_PATH,
+    ParameterSpec,
     THEORY_SBI_DIR,
     ensure_default_fiducial_product,
     fiducial_theta,
@@ -132,6 +134,7 @@ def run_sbi(
     validation_fraction: float,
     learning_rate: float,
     parameter_transform: str,
+    fixed_param_specs: Sequence[ParameterSpec] | None = None,
 ) -> dict:
     """Run sequential SNPE using noisy theory-Cl summaries."""
 
@@ -152,6 +155,7 @@ def run_sbi(
         backend=theory_backend,
         fiducial_offset=fiducial_offset,
         jit_compile=jit_compile,
+        fixed_param_specs=fixed_param_specs,
     )
     validation = validate_theory_vector(vector_fn, selected, param_specs)
 
@@ -423,6 +427,7 @@ def run_sbi(
                     "num_components": num_components,
                     "num_bins": num_bins,
                 },
+                fixed_param_specs=fixed_param_specs,
             )
         ),
     )
@@ -467,6 +472,17 @@ def run_sbi(
         "num_bins": num_bins,
         "training_batch_size": training_batch_size,
         "max_num_epochs": max_num_epochs,
+        "fixed_parameter_specs": [
+            {
+                "name": spec.name,
+                "label": spec.label,
+                "fiducial": spec.fiducial,
+                "prior_min": spec.prior_min,
+                "prior_max": spec.prior_max,
+                "target": spec.target,
+            }
+            for spec in (fixed_param_specs or ())
+        ],
     }
     with (output_dir / "sbi_diagnostics.json").open("w") as f:
         json.dump(diagnostics, f, indent=2, sort_keys=True)
