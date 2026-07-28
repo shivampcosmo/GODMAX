@@ -101,8 +101,8 @@ HMC_OUTPUT_DIR  = 'hmc_vs_sbi_outputs'
 
 # Theory Cls outputs written by the ported SBI_validate notebook
 THEORY_SBI_BASE    = Path('outputs') / 'theory_sbi'
-THEORY_HMC_RUN     = 'joint_gg_gy_gtau_gkappa_linearized'
-THEORY_SBI_RUN     = 'joint_gg_gy_gtau_gkappa_linearized_fisher_mdn5'
+THEORY_HMC_RUN     = 'all_2pt_linearized'
+THEORY_SBI_RUN     = 'all_2pt_linearized_fisher_mdn5'
 THEORY_HMC_NPZ     = THEORY_SBI_BASE / THEORY_HMC_RUN / 'hmc_samples.npz'
 THEORY_SBI_NPZ     = THEORY_SBI_BASE / THEORY_SBI_RUN / 'sbi_posterior_samples.npz'
 
