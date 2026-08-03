@@ -654,11 +654,25 @@ class Profiles(base_class):
             num = log10mthresh - log10Mstar
             denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
             val = self.fcen_z[jz] * (0.5 * (1 - jax.lax.erf(num / denom)))
+            return val
+
+        def get_Nsat(jz, jM, log10mthresh):
+            Mval = self.M_array[jM]
+            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
             Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
             Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
             Ncen = get_Ncen(jz, jM, log10mthresh) / jnp.maximum(self.fcen_z[jz], 1e-10)
             val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
             return val
+
+        def get_Nsat(jz, jM, log10mthresh):
+            Mval = self.M_array[jM]
+            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
+            Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
+            Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
+            Ncen = get_Ncen(jz, jM, log10mthresh) / jnp.maximum(self.fcen_z[jz], 1e-10)
+            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
+            return val            
 
         Mthresh_array = jnp.logspace(9, 14, 2*npoints)
         Ncen_mat = get_vmapped_func(get_Ncen, 3)(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
@@ -679,6 +693,8 @@ class Profiles(base_class):
             num = log10mthresh - log10Mstar
             denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
             val = self.fcen_z[jz] * (0.5 * (1 - jax.lax.erf(num / denom)))
+        
+        log10mthresh = jnp.log10(self.Mthresh_array[jz])
         # Clamp lower limit so the integration grid is always ascending and within SHMR support
         log10mthresh_safe = jnp.minimum(log10mthresh, MSTAR_LOG10_MAX - 0.1)
         Mthresh_array = jnp.logspace(log10mthresh_safe, MSTAR_LOG10_MAX, npoints)
