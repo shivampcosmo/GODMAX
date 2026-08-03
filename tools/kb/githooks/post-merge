@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# GODMAX_KB_HOOK — post-merge knowledge sync (fires on `git pull` / `git merge`).
+#
+# Never blocks: the change has already arrived. Its job is to answer
+# "what do I now not know?" and write knowledge/.kb/PENDING.md, which the
+# Claude Code SessionStart hook injects into every new session.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+KB="$REPO_ROOT/tools/kb/kb.py"
+PY="${GODMAX_KB_PYTHON:-python3}"
+command -v "$PY" >/dev/null 2>&1 || PY=python
+
+[ -f "$KB" ] || exit 0
+
+# ORIG_HEAD is the pre-merge tip; absent on a fresh clone's first checkout.
+if git rev-parse --verify --quiet ORIG_HEAD >/dev/null 2>&1; then
+  range="ORIG_HEAD..HEAD"
+  "$PY" "$KB" sync --range "$range" --quiet || true
+else
+  "$PY" "$KB" sync --quiet || true
+fi
+
+exit 0

@@ -1,0 +1,905 @@
+# GODMAX invariant registry
+#
+# The rules that must never break. Every agent walks the invariants in its scope
+# before proposing a change (validation loop step S3) and after executing it (S5).
+#
+# Schema: knowledge/_schema/FORMAT.md section 5.
+# Validate this file:  python tools/kb/kb.py invariants --lint
+# Run the checks:      python tools/kb/kb.py invariants --check
+#
+# severity: blocker -> pre-push gate blocks
+#           high    -> blocked unless --allow-high
+#           medium  -> warning, recorded in journal
+#
+# PROVENANCE: the measurement/xDESI invariants below were extracted from
+# notebooks/xDESI/survey_measure/README.md, BACKLIGHT_PASTE_HANDOFF_SUMMARY.md, and
+# tests/test_xdesi_multiprobe_namaster.py at commit 43e07ca. Where an invariant is
+# asserted by prose but not yet covered by an executable check, its check kind is
+# `manual` and confidence is recorded in the owning knowledge document.
+
+version: 1
+stamped_at_commit: 43e07ca
+
+invariants:
+
+  # ==========================================================================
+  # MEASUREMENT — NaMaster / pseudo-Cl / covariance
+  # ==========================================================================
+
+  - id: INV-NMT-COUPLED-01
+    title: Saved bandpower covariance must be computed decoupled
+    layer: measurement
+    severity: blocker
+    statement: |
+      Saved bandpower covariance must come from
+      nmt.gaussian_covariance(..., coupled=False). Never coupled=True.
+    rationale: |
+      In the NaMaster version pinned by this analysis, coupled=True returns the full
+      coupled-ell pseudo-spectrum covariance rather than the decoupled bandpower
+      covariance. The saved data vector is in decoupled bandpower space, so a coupled
+      covariance is dimensionally and statistically mismatched to it.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k covariance
+    violation_symptom: |
+      Covariance leading dimension equals n_ell instead of n_band; chi2 is wrong by
+      orders of magnitude; whitening eigenvalue spectrum has the wrong rank.
+    owner: measurement-namaster
+
+  - id: INV-NMT-BANDMAJOR-01
+    title: Flattened NaMaster covariance is band-major
+    layer: measurement
+    severity: blocker
+    statement: |
+      Component blocks are extracted from a flattened NaMaster covariance as
+      cov.reshape(n_band, n_comp_a, n_band, n_comp_b)[:, comp_a, :, comp_b].
+      The band index is the slow (outer) axis.
+    rationale: |
+      NaMaster flattens (band, component) pairs band-major. Assuming component-major
+      silently transposes the block structure: the matrix stays symmetric and
+      positive-definite, so no exception is raised and no shape check fails.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+      - tests/test_xdesi_multiprobe_namaster.py
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "covariance_component_selection"
+    violation_symptom: |
+      No error at all. EE/BB or spin components are swapped; cross-spectra covariance
+      is attributed to the wrong pair; chi2 is plausible but wrong. This is the most
+      dangerous failure mode in the measurement pipeline.
+    owner: measurement-namaster
+
+  - id: INV-SHEAR-SIGN-01
+    title: DES spin-2 fields carry shear_e_to_kappa_sign = -1
+    layer: measurement
+    severity: blocker
+    statement: |
+      DES spin-2 maps are read from the transferred `gamma1` and `gamma2_namaster`
+      datasets and multiplied by shear_e_to_kappa_sign = -1 before constructing the
+      NaMaster field. Theory shear-E is supplied in the positive-convergence E-mode
+      convention and converted using the saved field metadata.
+    rationale: |
+      The sign leaves all shear EE spectra unchanged (it squares out) but flips every
+      scalar x shear-E cross spectrum. Applying it makes scalar x shear-E carry the
+      same sign as scalar x positive-convergence theory.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "positive_convergence or shear_e"
+    violation_symptom: |
+      Shear EE spectra look perfect while every y x shear-E, g x shear-E and
+      kappa x shear-E spectrum is inverted. Symptom: those families show large chi2
+      that improves if you flip the theory sign by hand.
+    owner: measurement-namaster
+
+  - id: INV-KSZ-SIGN-01
+    title: kSZ data vector is raw C_ell^{pi,T} with a negative theory mapping
+    layer: measurement
+    severity: blocker
+    statement: |
+      The measured kSZ data vector is the raw C_ell^{pi,T_uK} built from the positive
+      vr_over_c catalog column. Theory supplies C_ell^{g,tau} only, and the wrapper
+      applies C_ell^{pi,T_uK} = -T_CMB_uK * A_v_bin * C_ell^{g,tau}.
+      Paper-style positive plots show D_ell^kSZ = -ell(ell+1) C_ell^{pi,T}/(2 pi).
+    rationale: |
+      Positive gas optical depth produces a negative raw pi x T correlation in this
+      convention. Conflating the raw estimator sign with the paper's positive plotting
+      convention flips the inferred sign of the gas signal.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+      - notebooks/xDESI/survey_measure/measure_ksz_high_ell.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k ksz
+    violation_symptom: |
+      kSZ chi2 is minimised at negative gas amplitude, or the fitted optical depth
+      comes out negative while the plot looks correct.
+    owner: measurement-namaster
+
+  - id: INV-KSZ-CALIB-01
+    title: kSZ velocity calibration constants are fixed and must be cited
+    layer: measurement
+    severity: high
+    statement: |
+      A_v_bin is built from the photometric velocity-reconstruction correlation r = 0.3,
+      the saved per-bin rms_rec_vr_over_c_weighted, and the Abacus
+      sigma_true_gas/c = [1.05580879e-3, 1.04915865e-3, 1.03582548e-3, 1.01760550e-3].
+      Any override must be explicit (ksz_sigma_true_over_c or free A_v_bin amplitudes).
+    rationale: |
+      r = 0.3 comes from the photometric DESI velocity-reconstruction calibration in
+      papers/ksz/2407.07152v2.pdf. The kSZ amplitude scales linearly with r and with
+      sigma_true, so an undocumented change rescales the inferred gas amplitude
+      without changing the fit quality.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+      - data/xDESI/survey_data/docs/DESI_ABACUS_SIGMA_TRUE_GAS.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "sigma_true or velocity_amplitudes"
+    violation_symptom: |
+      Gas amplitude shifts by a constant factor across all four kSZ bins while every
+      other probe family is unchanged.
+    owner: measurement-namaster
+
+  - id: INV-KSZ-CATALOG-01
+    title: kSZ spectra come from NmtFieldCatalogMomentum, not pixelised pi maps
+    layer: measurement
+    severity: blocker
+    statement: |
+      kSZ spectra are measured with pymaster.NmtFieldCatalogMomentum from the saved
+      catalog/{ra_deg,dec_deg,weight,field} arrays. The pixelised `pi` maps in the map
+      product are diagnostics only. Momentum autos add back the catalog zero-lag Nf
+      term in the covariance input.
+    rationale: |
+      Catalog-momentum estimation avoids the pixel-window and shot-noise structure of
+      a pixelised momentum map. Caches produced before the NaMaster 2.7 update lack
+      the catalog arrays and must be regenerated.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "catalog_momentum or zero_lag"
+    violation_symptom: |
+      KeyError on catalog/ arrays for old caches, or a kSZ auto spectrum with a
+      missing white-noise floor and an implausibly small covariance diagonal.
+    owner: measurement-namaster
+
+  - id: INV-SHOTNOISE-01
+    title: DESI galaxy autos subtract weighted Poisson shot noise
+    layer: measurement
+    severity: high
+    statement: |
+      DESI galaxy auto spectra subtract N_ell = area_sr * sum(w^2) / sum(w)^2, stored in
+      each g{i} field metadata. No ACT or kSZ noise is subtracted from the saved data
+      vector.
+    rationale: |
+      The imaging weights are mean-normalised but not uniform, so the unweighted
+      1/nbar shot noise is wrong. The asymmetry with ACT/kSZ (unsubtracted) must be
+      mirrored in the covariance inputs, where auto-noise is added back.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "shot_noise or imaging_weights"
+    violation_symptom: |
+      Galaxy auto spectra flatten to a constant at high ell instead of falling;
+      the HOD fit compensates by pushing satellite fractions up.
+    owner: measurement-namaster
+
+  - id: INV-BEAM-01
+    title: ACT y and T theory get a 1.6 arcmin Gaussian beam before bandpower windows
+    layer: measurement
+    severity: high
+    statement: |
+      ACT y and ACT CMB temperature theory curves are multiplied by a 1.6 arcmin
+      Gaussian beam by default before applying the saved NaMaster bandpower windows.
+      Extra transfer_functions["y"] or ["T"] are only for filtering beyond this beam.
+    rationale: |
+      The beam is already in the maps. Omitting it over-predicts high-ell y and T
+      cross spectra; applying it twice under-predicts them.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k beam
+    violation_symptom: |
+      Monotonic high-ell excess or deficit confined to y and T cross families, growing
+      with ell; low-ell bands are unaffected.
+    owner: measurement-namaster
+
+  - id: INV-WINDOW-CMP-01
+    title: Theory must be compared through saved bandpower windows, not at ell_eff
+    layer: measurement
+    severity: blocker
+    statement: |
+      The accepted data/theory comparison is windowed theory produced by
+      theory_to_data_vector(...) in the saved 460-element measurement convention.
+      Evaluating smooth theory at ell_eff is a diagnostic only and must never be
+      reported as the result.
+    rationale: |
+      Bandpowers are weighted integrals of C_ell over wide, partly logarithmic bands.
+      For steep or curved spectra the band average differs from the value at ell_eff,
+      and the discrepancy is ell-dependent, so it mimics a physical scale dependence.
+    scope:
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "theory_to_data_vector or saved_windows"
+    violation_symptom: |
+      A smooth ell-dependent residual tilt in the steepest spectra (galaxy autos,
+      high-ell kSZ) that no parameter can absorb.
+    owner: xdesi-lead
+
+  # ==========================================================================
+  # DATA — redshift kernels, products, provenance
+  # ==========================================================================
+
+  - id: INV-NZ-TRUEZ-01
+    title: DESI lens kernels use calibrated true-z n(z), never photo-z histograms
+    layer: data
+    severity: blocker
+    statement: |
+      The DESI theory lens kernel must use the calibrated true-redshift n(z) from
+      desi_dr9_extended_lrg_sigmaz0p05_true_nz.h5, group
+      zphot_std0p05_spec_ratio_corrected, saved at nz/desi/nz_dndz_by_pz. The
+      catalog Z_PHOT_MEDIAN histogram under nz/desi_photoz_diagnostic is a diagnostic
+      and must never be used as a theory kernel. The guard key is
+      desi_lens_redshift_kind = spectroscopic_calibrated_true_redshift.
+    rationale: |
+      The photometric scatter (sigma_z ~ 0.05) broadens the photo-z histogram relative
+      to the true distribution. Using it as the lens kernel mis-weights the Limber
+      integral and biases every galaxy-cross amplitude, which the HOD then absorbs
+      into unphysical occupation parameters.
+    scope:
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: grep
+      run: grep -rn "spectroscopic_calibrated_true_redshift" notebooks/xDESI/survey_measure/
+    violation_symptom: |
+      All four DESI galaxy families biased in the same direction; HOD parameters drift
+      to compensate; galaxy auto and galaxy-cross amplitudes cannot be fit together.
+    owner: xdesi-lead
+
+  - id: INV-NZ-NORM-01
+    title: Theory redshift kernels are normalised to unit integral
+    layer: physics
+    severity: high
+    statement: |
+      Every dN/dz used as a Limber kernel satisfies integral n(z) dz = 1 to within 1e-6,
+      computed on the same z grid used for the projection.
+    rationale: |
+      Limber projections assume normalised kernels; an unnormalised kernel rescales the
+      amplitude of every spectrum using it. DES source n(z) is loaded from raw FITS bin
+      values and must be normalised before use.
+    scope:
+      - src/get_Cls.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "nz and normal"
+    violation_symptom: |
+      A constant multiplicative offset in one probe family, degenerate with a
+      calibration or bias amplitude.
+    owner: halo-model-physicist
+
+  - id: INV-DV-SHAPE-01
+    title: fast1024 data vector is 46 spectra / 460 elements with covariance rank 459
+    layer: data
+    severity: blocker
+    statement: |
+      The fast1024 product has 46 spectra and 460 data-vector elements:
+      10 DES shear EE, 4 y x shear-E, 4 DESI galaxy autos, 4 galaxy x y,
+      16 galaxy x shear-E, 4 galaxy x ACT kappa, 4 DESI momentum x ACT T.
+      Covariance rank after the 1e-8 eigenvalue cut is 459.
+    rationale: |
+      Every downstream consumer (whitening, chi2, plotting, chain packing) indexes this
+      layout positionally. A silent change in spectrum inventory or ordering
+      mis-assigns residuals to the wrong probe.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "inventory or component_labels"
+    violation_symptom: |
+      Off-by-one family misattribution: residual plots show a discontinuity at a
+      family boundary, or chi2 per family sums to less than the total.
+    owner: xdesi-lead
+
+  - id: INV-PRODUCT-PROV-01
+    title: Every saved product records its inputs, noise policy and provisional status
+    layer: data
+    severity: high
+    statement: |
+      Each saved product records the catalog, mask, weights and n(z) it used; each
+      input_cls_for_covariance/* dataset records spin labels and noise policy; and any
+      provisional input (for example a single DR9 random realization, or a
+      sum-preserving nside4096 -> nside2048 mask downgrade) is flagged in metadata.
+    rationale: |
+      Products outlive the session that made them. Without provenance, a later fit
+      silently mixes mask versions or noise conventions across stages.
+    scope:
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+      - notebooks/xDESI/survey_measure/prepare_multiprobe_maps.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "survey_bundle or metadata or ud_grade"
+    violation_symptom: |
+      Two stages disagree at low ell with no code difference; the cause is a different
+      mask realization that nothing recorded.
+    owner: measurement-namaster
+
+  # ==========================================================================
+  # PHYSICS — halo model, profiles, HOD, projection
+  # ==========================================================================
+
+  - id: INV-HOD-PZBIN-01
+    title: Photometric bins overlap in true z; per-pz HOD needs separate theory blocks
+    layer: physics
+    severity: blocker
+    statement: |
+      Because the calibrated true-z distributions of the four photometric bins overlap,
+      per-pz HOD parameters must be applied by building a separate galaxy theory block
+      per photometric bin, each using that bin's own HOD parameters and its own
+      true-n(z)/nbar(z), on top of one shared non-galaxy WL/CMB block. Photometric bins
+      must never be treated as disjoint true-redshift slices.
+    rationale: |
+      Assigning HOD parameters to disjoint true-z intervals double-counts galaxies in
+      the overlap regions and starves the tails, so the recovered occupation is a
+      blend of neighbouring bins rather than each bin's own population.
+    scope:
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py
+      - notebooks/xDESI/abacus_paste/
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: manual
+      run: |
+        Confirm the theory assembly loops over pz bins building one galaxy block each
+        with that bin's HOD array entry and true n(z), plus one shared non-galaxy
+        block. Cite the loop by file:line.
+    violation_symptom: |
+      Adjacent-bin HOD parameters become strongly and unphysically anti-correlated in
+      the posterior; per-bin galaxy amplitudes cannot be fit simultaneously.
+    owner: xdesi-lead
+
+  - id: INV-HOD-ARRAY0-01
+    title: HOD array entry 0 is fixed; Stage-31 varies entries 1..4
+    layer: inference
+    severity: high
+    statement: |
+      Stage-31 varies per-pz-bin HOD entries [1:5] for log10M1_fshmr, log10M1_a_fshmr,
+      delta_fshmr, gamma_fshmr, siglogMstar_Ncen and alphasat_Nsat, leaving array
+      entry 0 fixed, together with 7 global baryonic scalars — 31 varied parameters.
+    rationale: |
+      Entry 0 is not used by the four photometric bins. Varying it adds an
+      unconstrained direction that inflates tree depth and slows NUTS without
+      affecting the likelihood.
+    scope:
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+      - param_files/xDESI/priors_multiprobe_fast1024_hmc_stage31.yaml
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: manual
+      run: |
+        Count the varied-parameter list in the HMC module and confirm it is 31, with
+        HOD slices [1:5] and array entry 0 absent. Cite file:line.
+    violation_symptom: |
+      A perfectly flat marginal posterior for one parameter identical to its prior,
+      plus a jump in per-step tree depth.
+    owner: inference-statistician
+
+  - id: INV-PHYS-MASSBUDGET-01
+    title: BCM component mass budget is conserved
+    layer: physics
+    severity: blocker
+    statement: |
+      In the baryonic correction model the sum of the component masses
+      (gas + stars + collisionless matter) equals the total halo mass to within the
+      documented numerical tolerance at every mass and redshift on the grid.
+    rationale: |
+      The BCM redistributes mass; it does not create or destroy it. A budget violation
+      shows up as a spurious change in the matter power spectrum amplitude that is
+      degenerate with sigma8.
+    scope:
+      - src/get_radial_profiles.py
+      - src/base_class.py
+    evidence:
+      - src/context/codebase_summary.md
+    check:
+      kind: manual
+      run: |
+        Evaluate the component fractions on the halo mass grid and confirm they sum to
+        1 within tolerance. Record max abs deviation and the command used.
+    violation_symptom: |
+      Matter P(k) amplitude drifts with baryon parameters at k where baryons should be
+      irrelevant (k < 0.1 h/Mpc).
+    owner: halo-model-physicist
+
+  - id: INV-PHYS-BIASNORM-01
+    title: Halo bias and HMF satisfy the large-scale consistency relation
+    layer: physics
+    severity: high
+    statement: |
+      The mass-weighted mean bias, integral b(M,z) n(M,z) M dM / rho_m, equals 1 to
+      within the documented tolerance on the integration grid, given the adopted
+      low-mass completeness correction.
+    rationale: |
+      This is the statement that all matter is in halos. Failure means the mass grid is
+      truncated or the HMF/bias pair is inconsistent, which biases every 2-halo term.
+    scope:
+      - src/get_radial_profiles.py
+      - src/hmf_symbolic.py
+    evidence:
+      - src/context/codebase_summary.md
+    check:
+      kind: manual
+      run: |
+        Compute the mass-weighted bias integral on the production mass grid and report
+        the deviation from 1 with the grid limits used.
+    violation_symptom: |
+      2-halo amplitude systematically off; galaxy and matter large-scale bias disagree
+      with the HOD's own effective bias.
+    owner: halo-model-physicist
+
+  - id: INV-PHYS-1H2H-01
+    title: The 1h/2h transition model must be declared and behave in both limits
+    layer: physics
+    severity: high
+    statement: |
+      The transition model (analysis.gg_transition_model, e.g. poweradd or response) is
+      recorded in the config, and the total P(k) tends to the 2-halo term at low k and
+      is 1-halo dominated at high k, with no unphysical dip or bump at the crossover.
+    rationale: |
+      Different transition prescriptions differ by tens of percent near k ~ 1 h/Mpc,
+      which is exactly where the gas and HOD parameters are constrained. An undeclared
+      change moves the best fit without any parameter changing.
+    scope:
+      - src/get_Pkzs.py
+      - notebooks/xDESI/abacus_paste/compare_physical_transition_variants.py
+      - notebooks/xDESI/abacus_paste/compare_matter_electron_poweradd_variants.py
+    evidence:
+      - src/context/codebase_summary.md
+    check:
+      kind: manual
+      run: |
+        Plot or tabulate P_1h, P_2h and P_tot over the production k range; confirm the
+        low-k and high-k limits and monotone behaviour through the crossover.
+    violation_symptom: |
+      A localised bump or dip near k ~ 1 h/Mpc that propagates into the mid-ell
+      bandpowers of every galaxy and gas spectrum.
+    owner: halo-model-physicist
+
+  - id: INV-PHYS-UNITS-01
+    title: Unit and h-convention boundaries are explicit at every interface
+    layer: physics
+    severity: blocker
+    statement: |
+      Masses, distances and spectra carry an explicit h convention at every module
+      boundary: halo masses in Msun/h vs Msun, distances in Mpc/h vs Mpc, Compton y
+      dimensionless, CMB temperature in microkelvin, C_ell in the units of the product
+      it is compared against.
+    rationale: |
+      h-factor errors are scale-independent multiplicative offsets that survive every
+      shape-based test, so they are absorbed by amplitude parameters and never
+      detected by chi2 alone.
+    scope:
+      - src/base_class.py
+      - src/get_radial_profiles.py
+      - src/get_Pkzs.py
+      - src/get_Cls.py
+    evidence:
+      - README.md
+    check:
+      kind: manual
+      run: |
+        For each quantity crossing the changed interface, state its unit and h
+        convention on both sides and cite the file:line where the conversion happens.
+    violation_symptom: |
+      Best-fit amplitudes off by a power of h (~0.67, 0.45, 1.49) with an otherwise
+      acceptable fit shape.
+    owner: halo-model-physicist
+
+  - id: INV-ABACUS-COSMO-01
+    title: Abacus paste validation uses the catalog's own cosmology
+    layer: physics
+    severity: blocker
+    statement: |
+      When comparing pasted Abacus maps to analytic theory, the theory cosmology is the
+      simulation's cosmology (override_cosmology_from_catalog: true), and any halo mass
+      cut applied to the catalog is also applied to the theory HOD
+      (theory_mass_cut_applied_to_hod: true).
+    rationale: |
+      A paste-vs-theory comparison is a null test of the pipeline, not a cosmology fit.
+      Mismatched cosmology or an unmatched mass cut turns a pipeline bug hunt into an
+      uninterpretable amplitude difference.
+    scope:
+      - notebooks/xDESI/abacus_pasting_config.yaml
+      - notebooks/xDESI/abacus_pasting_helpers.py
+      - notebooks/xDESI/abacus_paste/
+    evidence:
+      - notebooks/xDESI/abacus_pasting_config.yaml
+    check:
+      kind: grep
+      run: grep -rn "override_cosmology_from_catalog\|theory_mass_cut_applied_to_hod" notebooks/xDESI/ param_files/
+    violation_symptom: |
+      A constant offset between pasted and analytic spectra that scales with the mass
+      cut and does not vanish at large scales.
+    owner: abacus-paste-validator
+
+  # ==========================================================================
+  # NUMERICS — JAX, precision, differentiability
+  # ==========================================================================
+
+  - id: INV-JAX-X64-01
+    title: float64 is enabled before any array is created
+    layer: numerics
+    severity: blocker
+    statement: |
+      jax.config.update("jax_enable_x64", True) (and numpyro.enable_x64() where
+      numpyro is used) executes before any JAX array is created in every entry point
+      that runs GODMAX physics.
+    rationale: |
+      The Limber and FFTLog integrals, and the covariance eigendecomposition with a
+      1e-8 threshold, are not float32-safe. Enabling x64 late silently leaves already
+      created arrays in float32 and produces a mixed-precision graph.
+    scope:
+      - run_scripts/
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+      - notebooks/xDESI/survey_measure/run_godmax_multiprobe_hmc_stage31.py
+    evidence:
+      - README.md
+    check:
+      kind: grep
+      run: grep -rln "jax_enable_x64" run_scripts/ notebooks/xDESI/survey_measure/
+    violation_symptom: |
+      Whitening rank drops below 459; chi2 changes between runs; gradients become noisy
+      at the 1e-3 level; eigenvalue cut removes far more modes than expected.
+    owner: jax-numerics
+
+  - id: INV-JAX-GRAD-FINITE-01
+    title: Gradients are finite everywhere in the sampled prior volume
+    layer: numerics
+    severity: blocker
+    statement: |
+      The gradient of the log-likelihood is finite at the fiducial point, at the
+      best-fit point, and at the prior corners. Guards go on the *inputs* of a
+      division or log (safe-denominator pattern), never only on its output, because
+      jnp.where evaluates every branch and a NaN in an unused branch still poisons the
+      reverse-mode gradient.
+    rationale: |
+      A NaN gradient in one prior corner does not crash NUTS: it produces divergences
+      and a silently truncated posterior.
+    scope:
+      - src/get_radial_profiles.py
+      - src/get_Pkzs.py
+      - src/get_Cls.py
+      - src/mcfitjax/
+    evidence:
+      - README.md
+    check:
+      kind: manual
+      run: |
+        Evaluate jax.grad of the log-likelihood at fiducial, best-fit and prior corners;
+        assert jnp.all(jnp.isfinite(...)). Record the corner list used.
+    violation_symptom: |
+      Nonzero divergence count with a healthy acceptance rate; posterior edges that
+      stop short of the prior boundary.
+    owner: jax-numerics
+
+  - id: INV-JAX-TRACE-01
+    title: get_Cl construction is trace-safe but not standalone-JIT-able
+    layer: numerics
+    severity: high
+    statement: |
+      The get_Cl constructor builds interpax interpolators and is not JIT-able on its
+      own, but it traces correctly when constructed inside a numpyro model or a jitted
+      function. Individual methods are JIT-compatible. Do not "fix" the constructor by
+      converting traced values with float(), .item() or Python control flow.
+    rationale: |
+      The construction cost is real but the tracing behaviour is correct and load
+      bearing. Concretising traced values inside the constructor breaks gradient flow
+      to every parameter used during setup — which fails silently as a zero gradient,
+      not as an error.
+    scope:
+      - src/get_Cls.py
+      - src/get_Pkzs.py
+      - src/base_class.py
+    evidence:
+      - src/context/codebase_summary.md
+    check:
+      kind: manual
+      run: |
+        Confirm no float()/int()/.item()/bool() call is applied to a traced array in the
+        constructor chain, and that jax.grad w.r.t. a constructor-time parameter is
+        nonzero. Cite file:line.
+    violation_symptom: |
+      Exactly zero gradient for a parameter that demonstrably changes the likelihood;
+      NUTS never moves that parameter off its initial value.
+    owner: jax-numerics
+
+  - id: INV-JAX-SEED-01
+    title: Stochastic steps take an explicit, recorded PRNG key or seed
+    layer: numerics
+    severity: high
+    statement: |
+      Every stochastic operation (HOD sampling, map pasting, shuffled-velocity nulls,
+      chain initialisation) receives an explicit PRNG key or seed that is recorded in
+      the output metadata.
+    rationale: |
+      Null tests and paste-vs-theory comparisons are only interpretable if they are
+      reproducible. An unrecorded seed makes a failed null test undebuggable.
+    scope:
+      - src/get_sim_maps.py
+      - notebooks/xDESI/abacus_pasting_helpers.py
+      - notebooks/xDESI/abacus_pasting_config.yaml
+    evidence:
+      - notebooks/xDESI/abacus_pasting_config.yaml
+    check:
+      kind: grep
+      run: grep -rn "random_seed\|PRNGKey" notebooks/xDESI/abacus_pasting_config.yaml notebooks/xDESI/abacus_pasting_helpers.py
+    violation_symptom: |
+      A null test that cannot be reproduced run to run, attributed to "noise".
+    owner: jax-numerics
+
+  # ==========================================================================
+  # INFERENCE — likelihood, whitening, convergence, goodness of fit
+  # ==========================================================================
+
+  - id: INV-WHITEN-RANK-01
+    title: Whitening uses the correlation-matrix eigendecomposition with a 1e-8 cut
+    layer: inference
+    severity: blocker
+    statement: |
+      chi2 = || W (data - theory) ||^2, where W is built from the eigendecomposition of
+      the covariance *correlation* matrix with eigenvalue threshold 1e-8. The retained
+      rank must be reported alongside every chi2 (fast1024: 459 of 460).
+    rationale: |
+      chi2 is only interpretable against its degrees of freedom, and the eigenvalue cut
+      sets them. Two chi2 values computed at different retained ranks are not
+      comparable, and lowering the threshold to admit more modes inflates chi2 through
+      noise-dominated directions.
+    scope:
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+      - notebooks/xDESI/survey_measure/prune_stage31_cov_for_shearfix.py
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: manual
+      run: |
+        Report retained rank and the eigenvalue threshold used for every chi2 quoted.
+    violation_symptom: |
+      chi2 changes with no model change; two runs quote incomparable chi2 at the same
+      parameters.
+    owner: inference-statistician
+
+  - id: INV-CHI2-HONEST-01
+    title: Goodness of fit is judged against N_dof - k, and a bad fit is reported as bad
+    layer: inference
+    severity: blocker
+    statement: |
+      A fit is judged against the expectation chi2 ~ (retained rank - n_varied), with
+      scatter of order sqrt(2 * that value). For Stage-31 fast1024 that is
+      459 - 31 = 428 +/- ~29. The v1 best-fit whitened chi2 of 7346.23 is NOT a good
+      fit and must be labelled an operational point, never a physical result.
+    rationale: |
+      A large chi2 improvement from a terrible starting point is not evidence of a good
+      model. Reporting "chi2 improved by 200x" without the absolute comparison is the
+      single easiest way to publish a wrong result from this pipeline.
+    scope:
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+      - notebooks/xDESI/survey_measure/plot_stage31_bestfit_vs_fiducial_cls.py
+      - notebooks/xDESI/survey_measure/
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: manual
+      run: |
+        Quote absolute chi2, retained rank, n_varied, expected chi2 and per-family
+        breakdown together. Any claim of an acceptable fit must show chi2 within a few
+        sqrt(2 dof) of dof.
+    violation_symptom: |
+      A results summary quoting only relative improvement, or per-family chi2 that are
+      individually acceptable while the joint chi2 is an order of magnitude too large.
+    owner: inference-statistician
+
+  - id: INV-MCMC-TREEDEPTH-01
+    title: NUTS tree-depth saturation must be measured and reported
+    layer: inference
+    severity: high
+    statement: |
+      The fraction of transitions hitting max_tree_depth is reported with every chain.
+      The Stage-31 v2 config uses max_tree_depth: 4, which is low for 31 correlated
+      parameters; if saturation is high the posterior is biased and must not be quoted
+      as converged.
+    rationale: |
+      A saturated tree truncates the trajectory before it decorrelates, so NUTS
+      degenerates towards a short-step random walk. Acceptance rate and r_hat can both
+      look acceptable while the posterior is systematically too narrow.
+    scope:
+      - notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py
+      - param_files/xDESI/params_multiprobe_fast1024_hmc_stage31.yaml
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: manual
+      run: |
+        Report the max_tree_depth saturation fraction, divergence count, r_hat and ESS
+        per parameter from the saved chain summary.
+    violation_symptom: |
+      Suspiciously narrow marginals, r_hat near 1 with very low ESS, and step size
+      pinned at its adaptation ceiling.
+    owner: inference-statistician
+
+  - id: INV-MCMC-CONVERGENCE-01
+    title: No posterior is quoted without r_hat, ESS and divergence counts
+    layer: inference
+    severity: blocker
+    statement: |
+      Any quoted posterior, best fit or contour reports r_hat and ESS per parameter and
+      the divergence count. Multi-worker chains are checked for mutual consistency
+      before pooling; workers that disagree are not silently concatenated.
+    rationale: |
+      This pipeline pools 16 GPU workers. Pooling non-converged or disagreeing workers
+      manufactures a narrow, smooth, and wrong posterior that looks better than any
+      single worker.
+    scope:
+      - notebooks/xDESI/survey_measure/combine_godmax_hmc_stage31_workers.py
+      - notebooks/xDESI/survey_measure/monitor_godmax_hmc_stage31_checkpoints.py
+    evidence:
+      - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
+    check:
+      kind: manual
+      run: |
+        Report per-worker and pooled r_hat/ESS/divergences, plus a per-worker best-fit
+        chi2 spread, before quoting any combined posterior.
+    violation_symptom: |
+      Pooled contours much tighter than any individual worker's; multimodal pooled
+      marginals from workers stuck in different basins.
+    owner: inference-statistician
+
+  - id: INV-PRIOR-DESY3-01
+    title: DES Y3 Gaussian priors are fixed at their published values
+    layer: inference
+    severity: high
+    statement: |
+      DES Y3 priors saved under priors/des_y3_gaussian are
+      Delta_z_bias_bin{1..4} sigma = [0.018, 0.015, 0.011, 0.017] and
+      mult_shear_bias_bin{1..4} (mean, sigma) =
+      [(-0.006, 0.009), (-0.020, 0.008), (-0.024, 0.008), (-0.037, 0.008)].
+      Widening or dropping them is a documented analysis choice, not a default.
+    rationale: |
+      These encode external calibration information. Silently widening them lets shear
+      calibration absorb a genuine model failure elsewhere.
+    scope:
+      - param_files/xDESI/priors_multiprobe_fast1024_hmc_stage31.yaml
+      - notebooks/xDESI/survey_measure/multiprobe_namaster.py
+    evidence:
+      - notebooks/xDESI/survey_measure/README.md
+    check:
+      kind: pytest
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "prior or des_y3"
+    violation_symptom: |
+      Shear calibration parameters pulled many sigma from their prior means while chi2
+      improves — the model failure has been laundered into the calibration.
+    owner: inference-statistician
+
+  # ==========================================================================
+  # PROCESS — how agents and the git workflow must behave
+  # ==========================================================================
+
+  - id: INV-PROC-EVIDENCE-01
+    title: No numeric claim without the command that produced it
+    layer: process
+    severity: blocker
+    statement: |
+      Every number in an agent's report, journal entry or knowledge document is
+      accompanied by the exact command that produced it and the relevant output. Stored
+      notebook outputs are never evidence; re-execute or mark the claim UNVERIFIED.
+    rationale: |
+      This repository's notebooks carry megabytes of stored output from unknown code
+      versions. Treating them as evidence is how a stale number becomes a result.
+    scope:
+      - knowledge/
+      - notebooks/
+    evidence:
+      - knowledge/_schema/FORMAT.md
+    check:
+      kind: manual
+      run: |
+        Inspect the evidence ledger for the change: every number must have an adjacent
+        command and output.
+    violation_symptom: |
+      A confident summary that cannot be reproduced, and a later session that cannot
+      tell which number was measured and which was remembered.
+    owner: physics-referee
+
+  - id: INV-PROC-NOTOLERANCE-01
+    title: Never loosen a threshold to make a check pass
+    layer: process
+    severity: blocker
+    statement: |
+      Tolerances, eigenvalue cuts, mass-grid limits, ell ranges and convergence
+      thresholds are never relaxed in order to turn a failing check green. Changing one
+      is itself a physics change requiring its own knowledge document, invariant
+      review, and explicit user sign-off.
+    rationale: |
+      Relaxing a threshold converts a detected error into an undetected one. It is the
+      most common way an automated agent destroys a result while reporting success.
+    scope:
+      - knowledge/
+      - tests/
+      - param_files/
+    evidence:
+      - knowledge/_schema/FORMAT.md
+    check:
+      kind: command
+      run: python tools/kb/kb.py tolerance-check
+    violation_symptom: |
+      A diff that changes only a numeric threshold in a test or config, with a commit
+      message about fixing a failure.
+    owner: physics-referee
+
+  - id: INV-PROC-KB-FRESH-01
+    title: Pushed code changes require re-verified owning knowledge documents
+    layer: process
+    severity: blocker
+    statement: |
+      A push is blocked if any commit being pushed changes a file inside the `scope` of
+      a knowledge document whose status is not `verified` at the current digest, or if
+      the pushed commits have no journal entry.
+    rationale: |
+      This is the mechanism that keeps the tree honest. Without it the knowledge base
+      decays into confidently stated history.
+    scope:
+      - knowledge/
+      - .claude/
+    evidence:
+      - knowledge/70-validation/GIT_SYNC.md
+    check:
+      kind: command
+      run: python tools/kb/kb.py stale --exit-code
+    violation_symptom: |
+      Agents in later sessions act on documentation that describes code that no longer
+      exists, and produce confidently wrong changes.
+    owner: kb-curator

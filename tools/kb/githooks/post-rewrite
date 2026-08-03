@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# GODMAX_KB_HOOK — post-rewrite knowledge sync (fires after `git rebase`, `commit --amend`).
+#
+# Rewriting history invalidates commit-ancestry reasoning but not content digests,
+# which is exactly why staleness is content-addressed. This hook simply refreshes
+# the cache so PENDING.md reflects the rewritten tree.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+KB="$REPO_ROOT/tools/kb/kb.py"
+PY="${GODMAX_KB_PYTHON:-python3}"
+command -v "$PY" >/dev/null 2>&1 || PY=python
+
+[ -f "$KB" ] || exit 0
+
+# Drain stdin (git feeds old/new sha pairs); we only need the resulting tree state.
+cat >/dev/null 2>&1 || true
+
+"$PY" "$KB" sync --quiet || true
+exit 0

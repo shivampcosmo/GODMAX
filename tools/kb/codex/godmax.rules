@@ -1,0 +1,28 @@
+# GODMAX knowledge-base command allowlist for Codex.
+#
+# Generated into $CODEX_HOME/rules/ by: python tools/kb/sync_codex.py
+# Mirrors the permissions.allow list in .claude/settings.json so the same read-only
+# inspection commands run without prompting under both tools.
+#
+# Deliberately NOT allowlisted (they must stay interactive, as in .claude/settings.json):
+#   git push, git commit, sbatch, srun, salloc, scancel
+# The pre-push gate is enforced by .git/hooks/pre-push, which fires regardless of tool.
+
+prefix_rule(pattern=["python", "tools/kb/kb.py"], decision="allow")
+prefix_rule(pattern=["python3", "tools/kb/kb.py"], decision="allow")
+prefix_rule(pattern=["python", "tools/kb/sync_codex.py"], decision="allow")
+prefix_rule(pattern=["python3", "tools/kb/sync_codex.py"], decision="allow")
+
+prefix_rule(pattern=["git", "status"], decision="allow")
+prefix_rule(pattern=["git", "diff"], decision="allow")
+prefix_rule(pattern=["git", "log"], decision="allow")
+prefix_rule(pattern=["git", "show"], decision="allow")
+prefix_rule(pattern=["git", "branch"], decision="allow")
+prefix_rule(pattern=["git", "ls-files"], decision="allow")
+prefix_rule(pattern=["git", "check-ignore"], decision="allow")
+prefix_rule(pattern=["git", "rev-parse"], decision="allow")
+prefix_rule(pattern=["git", "merge-base"], decision="allow")
+
+prefix_rule(pattern=["pytest"], decision="allow")
+prefix_rule(pattern=["python", "-m", "pytest"], decision="allow")
+prefix_rule(pattern=["python3", "-m", "pytest"], decision="allow")

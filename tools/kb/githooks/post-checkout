@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# GODMAX_KB_HOOK — post-checkout knowledge sync.
+#
+# Args: <prev_head> <new_head> <is_branch_checkout>
+# Only re-syncs on a branch switch, not on a file checkout, and not when the
+# tree did not move. This repository has many long-lived branches (main, ltuSP,
+# map, pge_paper, DESxACT, ...) whose knowledge state differs, so switching
+# branches must refresh staleness.
+
+set -uo pipefail
+
+prev="${1:-}"
+new="${2:-}"
+is_branch="${3:-0}"
+
+[ "$is_branch" = "1" ] || exit 0
+[ "$prev" = "$new" ] && exit 0
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+KB="$REPO_ROOT/tools/kb/kb.py"
+PY="${GODMAX_KB_PYTHON:-python3}"
+command -v "$PY" >/dev/null 2>&1 || PY=python
+
+[ -f "$KB" ] || exit 0
+
+"$PY" "$KB" sync --range "$prev..$new" --quiet || true
+exit 0
