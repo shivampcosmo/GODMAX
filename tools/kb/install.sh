@@ -28,7 +28,8 @@ echo "  knowledge/.kb/ (gitignored)"
 
 echo "[3/6] checking optional dependencies"
 "$PY" - <<'EOF'
-import importlib, shutil
+import importlib.util
+import shutil
 for mod, why in (("yaml", "invariant registry"),):
     print(f"  {'ok  ' if importlib.util.find_spec(mod) else 'MISSING'} {mod:8} ({why})")
 print(f"  {'ok  ' if shutil.which('pytest') else 'MISSING'} pytest   (gate test step)")
