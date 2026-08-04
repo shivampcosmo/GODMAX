@@ -38,7 +38,6 @@ echo "  install missing pieces with: pip install pyyaml pytest"
 
 echo "[4/6] refreshing knowledge state"
 "$PY" tools/kb/kb.py sync --quiet || true
-"$PY" tools/kb/kb.py index >/dev/null || true
 
 echo "[5/6] installing Codex skills and prompts"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
