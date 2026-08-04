@@ -52,6 +52,7 @@ artifacts from it:
 `.claude/agents/` stays canonical rather than moving to a neutral directory, so the working
 Claude path is never a generated artifact — only one side is generated, and drift has one
 direction. Drift is detected by a manifest digest over the sources plus `REWRITE_VERSION`
+and an exact comparison of every installed skill/prompt against freshly generated content
 (`sync_codex.py --check`, wired into `kb doctor`).
 
 **Why `$CODEX_HOME` artifacts cannot travel.** Codex skills and prompts are user-level, not
@@ -146,6 +147,9 @@ anywhere under `$CODEX_HOME`.
 - **Changing `build_skill` / `rewrite_agent_refs` without bumping `REWRITE_VERSION`.**
   `--check` then reports artifacts as current when their generation logic has changed, so
   stale text persists indefinitely.
+- **Trusting only the manifest after a generated file was hand-edited.** `--check` compares
+  every installed skill and prompt byte-for-byte with freshly generated content, so source
+  freshness and target integrity are both required.
 - **Prefixing `--agent` values inside code fences.** `kb verify --agent godmax-xdesi-lead`
   fails the owner check against `owner: xdesi-lead`, and the fix looks like a `kb.py` bug.
 - **Assuming a Codex session was gated like a Claude one.** The push gate is identical, but

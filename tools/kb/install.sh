@@ -19,14 +19,14 @@ echo "GODMAX agent system — setup"
 echo "repo: $REPO_ROOT"
 echo
 
-echo "[1/5] installing git hooks"
+echo "[1/6] installing git hooks"
 "$PY" tools/kb/kb.py install-hooks "$@"
 
-echo "[2/5] creating local cache"
+echo "[2/6] creating local cache"
 mkdir -p knowledge/.kb/ledgers
 echo "  knowledge/.kb/ (gitignored)"
 
-echo "[3/5] checking optional dependencies"
+echo "[3/6] checking optional dependencies"
 "$PY" - <<'EOF'
 import importlib, shutil
 for mod, why in (("yaml", "invariant registry"),):
@@ -67,7 +67,7 @@ In Codex:        /godmax-kb-status  /godmax-kb-sync  /godmax-validate
                  /godmax-xdesi-status  /godmax-invariant-check  /godmax-kb-new
                  plus the godmax-* skills, offered by description
 
-Both tools share the same knowledge base, invariants, and git hooks. Codex has no hooks,
-so AGENTS.md instructs the model to run the kb commands itself; the pre-push gate blocks
-identically under either tool.
+Both tools share the same knowledge base, invariants, and git hooks. Codex does not run the
+Claude lifecycle hooks, so AGENTS.md instructs the model to run those checks itself; the
+git-level pre-push gate blocks identically under either tool.
 EOF

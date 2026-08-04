@@ -15,8 +15,9 @@ Two adaptations are applied rather than copying text verbatim, because Codex doe
 the repository's Claude Code lifecycle hooks and Codex collaboration capabilities vary by
 runtime:
 
-  * no hooks  -> nothing injects staleness at session start or routes an edit, so each
-                 generated skill carries an explicit "do this yourself" preamble;
+  * no Claude lifecycle hooks -> nothing injects staleness at session start or routes an
+                 edit, so each generated skill carries an explicit "do this yourself"
+                 preamble;
   * dispatch-aware routing -> when collaboration tools are available, bounded work is
                  routed to the appropriate role with non-overlapping write scope; limited
                  builds fall back to sequential role adoption. S6 uses a fresh-context
@@ -122,7 +123,8 @@ PROMPT_NOTE = """\
 ---
 *Codex notes: this prompt came from `.claude/commands/` via `tools/kb/sync_codex.py`. If your
 Codex build does not substitute `$1` / `$ARGUMENTS`, supply the argument inline when you
-invoke it. No hooks fire under Codex — run the `kb` commands shown above yourself.*
+invoke it. No Claude lifecycle hooks fire under Codex — run the `kb` commands shown above
+yourself.*
 """
 
 
@@ -252,12 +254,23 @@ def cmd_check() -> int:
     man = read_manifest()
     have = man.get("source_digest")
     missing = []
+    drifted = []
     for p in sorted(SRC_AGENTS.glob("*.md")):
-        if not (SKILLS_DIR / prefixed(p.stem) / "SKILL.md").exists():
+        target = SKILLS_DIR / prefixed(p.stem) / "SKILL.md"
+        if not target.exists():
             missing.append(f"skill {prefixed(p.stem)}")
+        else:
+            _, expected = build_skill(p)
+            if target.read_text(encoding="utf-8") != expected:
+                drifted.append(f"skill {prefixed(p.stem)}")
     for p in sorted(SRC_COMMANDS.glob("*.md")):
-        if not (PROMPTS_DIR / f"{prefixed(p.stem)}.md").exists():
+        target = PROMPTS_DIR / f"{prefixed(p.stem)}.md"
+        if not target.exists():
             missing.append(f"prompt {prefixed(p.stem)}")
+        else:
+            _, expected = build_prompt(p)
+            if target.read_text(encoding="utf-8") != expected:
+                drifted.append(f"prompt {prefixed(p.stem)}")
 
     if not have:
         print(_c(WARN, f"codex artifacts not installed under {CODEX_HOME}"))
@@ -266,6 +279,11 @@ def cmd_check() -> int:
     if missing:
         print(_c(WARN, f"{len(missing)} codex artifact(s) missing: "
                        f"{', '.join(missing[:6])}"))
+        print("  run: python tools/kb/sync_codex.py")
+        return 1
+    if drifted:
+        print(_c(WARN, f"{len(drifted)} codex artifact(s) differ from generated content: "
+                       f"{', '.join(drifted[:6])}"))
         print("  run: python tools/kb/sync_codex.py")
         return 1
     if have != want:

@@ -4,7 +4,7 @@ Codex reads `AGENTS.md` hierarchically, so this file applies on top of the repo-
 `AGENTS.md` whenever you are working under `notebooks/xDESI/`. Adopt the
 `godmax-xdesi-lead` skill for anything spanning more than one stage.
 
-Run first, every time (no hooks fire under Codex):
+Run first, every time (Codex does not run the Claude lifecycle hooks):
 
 ```bash
 python tools/kb/kb.py which notebooks/xDESI/survey_measure/ notebooks/xDESI/abacus_paste/
