@@ -20,10 +20,10 @@ scope:
 invariants: [INV-PROC-KB-FRESH-01, INV-PROC-NOTOLERANCE-01]
 checks:
   - python tools/kb/kb.py doctor
-verified_at_commit: 43e07ca
+verified_at_commit: a6dc164
 verified_on: 2026-08-04
 see_also: [kb.validation.loop]
-scope_digest: sha256:9c63612e982495b2b9973db74f756132
+scope_digest: sha256:7d66b13e10ddb74aff1e72f5417ea876
 ---
 
 ## Claim

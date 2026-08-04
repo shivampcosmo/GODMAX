@@ -15,10 +15,10 @@ invariants:
   - INV-PROC-KB-FRESH-01
 checks:
   - python tools/kb/kb.py invariants --lint
-verified_at_commit: 43e07ca
+verified_at_commit: a6dc164
 verified_on: 2026-08-04
 see_also: [kb.validation.evidence-ledger, kb.validation.agent-roster, kb.validation.git-sync]
-scope_digest: sha256:32b5f24b94fa8c510da38114793aca53
+scope_digest: sha256:091fef4672993cb9150864d597f1bba2
 ---
 
 ## Claim
