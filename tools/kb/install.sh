@@ -12,8 +12,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-PY="${GODMAX_KB_PYTHON:-python3}"
-command -v "$PY" >/dev/null 2>&1 || PY=python
+PY="${GODMAX_KB_PYTHON:-python}"
+command -v "$PY" >/dev/null 2>&1 || PY=python3
 
 echo "GODMAX agent system — setup"
 echo "repo: $REPO_ROOT"
