@@ -10,10 +10,10 @@ scope:
 invariants: [INV-PROC-EVIDENCE-01]
 checks:
   - python tools/kb/kb.py invariants --check --id INV-PROC-EVIDENCE-01
-verified_at_commit: a6dc164
-verified_on: 2026-08-04
+verified_at_commit: a3b3f96
+verified_on: 2026-08-16
 see_also: [kb.validation.loop]
-scope_digest: sha256:0d05369e5454cc933fc60da2706cd938
+scope_digest: sha256:de534b2779d372d815fa2307df26c208
 ---
 
 ## Claim

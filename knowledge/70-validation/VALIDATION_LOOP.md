@@ -15,10 +15,10 @@ invariants:
   - INV-PROC-KB-FRESH-01
 checks:
   - python tools/kb/kb.py invariants --lint
-verified_at_commit: cf72943
-verified_on: 2026-08-05
+verified_at_commit: a3b3f96
+verified_on: 2026-08-16
 see_also: [kb.validation.evidence-ledger, kb.validation.agent-roster, kb.validation.git-sync]
-scope_digest: sha256:818df53bb81e3c9d145912658cafe925
+scope_digest: sha256:d90049686b530be7027f1bc57b308b26
 ---
 
 ## Claim
@@ -246,6 +246,12 @@ python tools/kb/kb.py gate --dry-run
 grep -l "VALIDATION_LOOP" .claude/agents/*.md | wc -l   # must equal the agent count
 ls .claude/agents/*.md | wc -l
 ```
+
+The pre-push gate runs every registered blocker check with visible progress, then executes
+the complete `pytest tests/ -q -x` suite. Pytest selectors are intentionally kept literal
+and individually enforced; the full suite additionally catches regressions that are not yet
+registered as invariants. Registry marker checks use `git grep` with an explicit tracked
+scope and must never recurse through ignored runtime products.
 
 ## Failure modes
 

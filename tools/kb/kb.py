@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -986,9 +987,13 @@ def cmd_gate(args) -> int:
     else:
         fails = []
         manual = []
+        skipped = []
         for i in invs:
             if i.get("severity") != "blocker":
                 continue
+            kind = (i.get("check") or {}).get("kind", "unknown")
+            if kind != "manual":
+                print(f"  {_c(DIM,'INV ')} running {i['id']} ({kind}) ...", flush=True)
             res, detail = check_invariant(i)
             if res == "FAIL":
                 fails.append(i["id"])
@@ -997,10 +1002,17 @@ def cmd_gate(args) -> int:
                     print(f"        {ln}")
             elif res == "MANUAL":
                 manual.append(i["id"])
+            elif res == "SKIP":
+                skipped.append(i["id"])
+                print(f"  {_c(DIM,'INV ')} {i['id']} SKIPPED: {detail}", flush=True)
+            else:
+                print(f"  {_c(OK,'INV ')} {i['id']} passed", flush=True)
         if fails:
             blockers.append(f"blocker invariants failing: {', '.join(fails)}")
         else:
             print(f"  {_c(OK,'INV ')} no automated blocker invariant is failing")
+        if skipped:
+            warnings.append(f"{len(skipped)} blocker invariant check(s) skipped")
         if manual:
             print(f"  {_c(WARN,'INV ')} {len(manual)} manual blocker invariant(s) — "
                   "must be argued in the ledger")
@@ -1009,16 +1021,20 @@ def cmd_gate(args) -> int:
     if shutil.which("pytest") is None:
         print(f"  {_c(DIM,'TEST')} pytest not installed — skipped")
     else:
+        print(f"  {_c(DIM,'TEST')} running pytest tests/ -q -x ...", flush=True)
+        started = time.monotonic()
         code, out = run_shell("pytest tests/ -q -x", timeout=1200)
+        elapsed = time.monotonic() - started
         lowered = out.lower()
         if code == 0:
-            print(f"  {_c(OK,'TEST')} pytest tests/ passed")
+            print(f"  {_c(OK,'TEST')} pytest tests/ passed in {elapsed:.1f}s")
         elif "modulenotfounderror" in lowered or "importerror" in lowered or code == 5:
-            print(f"  {_c(DIM,'TEST')} skipped (missing dependency or no tests)")
+            print(f"  {_c(DIM,'TEST')} skipped after {elapsed:.1f}s "
+                  "(missing dependency or no tests)")
             warnings.append("test suite could not run (dependencies unavailable)")
         else:
             blockers.append("pytest tests/ failed")
-            print(f"  {_c(BAD,'TEST')} pytest failed")
+            print(f"  {_c(BAD,'TEST')} pytest failed after {elapsed:.1f}s")
             for ln in out.strip().splitlines()[-12:]:
                 print(f"        {ln}")
 

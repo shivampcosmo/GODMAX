@@ -20,10 +20,10 @@ scope:
 invariants: [INV-PROC-KB-FRESH-01, INV-PROC-NOTOLERANCE-01]
 checks:
   - python tools/kb/kb.py doctor
-verified_at_commit: a6dc164
-verified_on: 2026-08-04
+verified_at_commit: a3b3f96
+verified_on: 2026-08-16
 see_also: [kb.validation.loop]
-scope_digest: sha256:7d66b13e10ddb74aff1e72f5417ea876
+scope_digest: sha256:282fad9131755256dd3c3e9d7ef0a294
 ---
 
 ## Claim
@@ -111,9 +111,12 @@ confidently-wrong agent output in a multi-machine workflow like this one (laptop
 checks, in order:
 
 1. **Invariant lint** — `invariants.yaml` parses and every entry is well formed.
-2. **Blocker invariant checks** — every automatable `severity: blocker` check runs.
-3. **Fast test suite** — `pytest tests/ -q -x` (skipped with a warning if pytest or its
-   data dependencies are unavailable, so a laptop without cluster data can still push).
+2. **Blocker invariant checks** — every automatable `severity: blocker` check runs with a
+   visible start/result line, including each registered pytest selector. Keeping the
+   registry commands literal avoids a second command parser at the push boundary.
+3. **Complete test suite** — `pytest tests/ -q -x` (skipped with a warning if pytest
+   or its data dependencies are unavailable, so a laptop without cluster data can still
+   push). The gate prints before launching it and reports elapsed time.
 4. **Knowledge freshness** — for every file changed in the pushed range, the owning
    documents must be `verified` at the current digest. Stale or missing → **block**.
 5. **Journal** — the pushed range must be referenced by a `90-journal/` entry → **block**.
@@ -135,6 +138,11 @@ tool should say so rather than imply coverage it does not have.
 **No invariant check may invoke `kb gate`.** The gate runs blocker invariant checks, so such
 a check recurses until it is killed. `cmd_gate` guards re-entry with `GODMAX_KB_IN_GATE`, and
 the two process invariants use non-recursive checks (`tolerance-check`, `stale --exit-code`).
+
+Automated source-marker checks must inspect tracked source, normally with `git grep` and an
+explicit path scope. Recursive filesystem greps are prohibited in the registry: they walk
+ignored HDF5, checkpoint, and plot outputs on shared storage, add no source coverage, and
+can make a healthy push appear hung for many minutes.
 
 ### Bypassing the gate
 

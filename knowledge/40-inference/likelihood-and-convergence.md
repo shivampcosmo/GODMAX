@@ -21,11 +21,12 @@ invariants:
   - INV-MCMC-CONVERGENCE-01
   - INV-PRIOR-DESY3-01
 checks:
-  - "TODO(inference-statistician): assert the varied-parameter list is 31 with HOD slices [1:5]"
-verified_at_commit: cf72943
-verified_on: 2026-08-05
+  - "/mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python -m pytest tests/test_xdesi_multiprobe_namaster.py -q -k 'measurement_loader_marginalizes or galaxy_shot or stage31_combiner or stage31_cached'"
+  - "rg -n 'PARAMETER_COUNT_STAGE31|hod_indices|eigenvalue_threshold|max_tree_depth|target_accept_prob' notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py param_files/xDESI/priors_multiprobe_fast1024_hmc_stage31.yaml param_files/xDESI/params_multiprobe_fast1024_hmc_stage31.yaml"
+verified_at_commit: a3b3f96
+verified_on: 2026-08-16
 see_also: [kb.xdesi.analysis-state, kb.numerics.jax-contract]
-scope_digest: sha256:1884ea9f987e9b619e3536d45105cd6b
+scope_digest: sha256:5ecb869ed2886fea393f9fd170506cc7
 ---
 
 ## Claim
@@ -54,22 +55,38 @@ the no-additional-cut analysis basis has 892 entries. Its covariance is the ordi
 principal submatrix `cov[np.ix_(valid, valid)]`; using the inverse of the full covariance
 with zero placeholders would condition on invalid estimators and is forbidden. The retained
 whitening rank remains product-specific and must be measured after assembly rather than
-inherited from fast1024 or midres2048.
+inherited from fast1024 or midres2048. The finalized high-resolution validation report
+records rank 920/920 for the archive and 892/892 for the active principal submatrix at the
+unchanged 1e-8 cut. These are measurement-structure results, not a chi2, likelihood fit, or
+posterior.
 
 **Goodness of fit** (`INV-CHI2-HONEST-01`). Judge against `retained rank − n_varied`. For
 Stage-31 `fast1024`: `459 − 31 = 428`, scatter of order `sqrt(2 × 428) ≈ 29`. The v1 best fit
 at 7346.23 is not a good fit; the misfit is concentrated in `desi_g_auto` (6411 of the total).
 See `kb.xdesi.analysis-state` for the per-family breakdown.
 
-**Samplers in use.** NumPyro NUTS for Stage-31, with `chain_method: vectorized` fanned across
-up to 16 GPU workers (`400x16`, `1000x2000` configurations exist). The repository also keeps
-the NumPyro sampler entry point `run_scripts/pge/sample_params_v5.py`; no current tracked
-blackjax Stage-31 entry point is in this document's scope.
+**Samplers in use.** The Stage-31 driver uses NumPyro NUTS and can write independent worker
+products whose vectorized within-worker chains are flattened before combination. The
+repository also keeps the NumPyro sampler entry point `run_scripts/pge/sample_params_v5.py`;
+no current tracked blackjax Stage-31 entry point is in this document's scope.
 
 **Multi-worker pooling** (`INV-MCMC-CONVERGENCE-01`) is the highest-risk operation here.
 Pooling non-converged or mutually disagreeing workers manufactures a narrow, smooth posterior
-that looks better than any individual worker. `combine_godmax_hmc_stage31_workers.py` performs
-the pooling; `monitor_godmax_hmc_stage31_checkpoints.py` tracks progress.
+that looks better than any individual worker. The current combiner does correctly fail closed
+on mismatched ordered parameter/prior, likelihood, saved-response, measurement and galaxy-auto
+mean-convention identities, and it recomputes the selected minimum-chi2 sample under the
+current likelihood before saving (`combine_godmax_hmc_stage31_workers.py:130-234`,
+`:330-378`).
+
+Its convergence summary is deliberately not sufficient for a posterior claim. Each worker's
+vectorized chains have already been flattened, so the combiner treats workers as independent
+chains and reports only an approximate split-R-hat plus optional divergence, acceptance and
+`num_steps` summaries (`combine_godmax_hmc_stage31_workers.py:257-316`). It does not recover
+within-worker R-hat, compute bulk/tail ESS, measure the tree-depth saturation fraction, report
+the final step size, or report the per-worker best-fit chi2 spread. Moreover,
+`passes_basic_gate` permits a missing divergence field. That flag is a screening diagnostic,
+not convergence certification; `monitor_godmax_hmc_stage31_checkpoints.py` tracks operational
+progress only.
 
 **Tree depth** (`INV-MCMC-TREEDEPTH-01`). The v2 configuration uses `max_tree_depth: 4` with
 `target_accept_prob: 0.85`, `num_warmup: 800`, `num_samples: 8000`, `num_chains: 4`. Depth 4
@@ -161,10 +178,13 @@ n_varied together — never separately.
 
 ## Open questions
 
-- The v2 chains' saturation fraction, r_hat and ESS are not recorded. Until they are, **no v2
-  posterior is quotable**. Owner: `inference-statistician`. Blocking.
+- The current combined-chain summary lacks bulk/tail ESS, within-worker R-hat, tree-depth
+  saturation, final step size and per-worker best-fit chi2 spread. Until those are computed
+  from chain-preserving outputs and reported with divergences, **no v2 posterior is
+  quotable**, even if `passes_basic_gate` is true. Owner: `inference-statistician`. Blocking.
 - Whether `max_tree_depth: 4` was a deliberate cost trade-off or an oversight is not recorded.
   If deliberate, the justification belongs in the journal; if not, it needs raising before the
   next production run. Owner: `inference-statistician`.
-- Derived from the handoff summary; not verified against
-  `godmax_multiprobe_hmc_stage31.py` at line level. `confidence: medium`.
+- The current likelihood, shot-noise, validity-mask, identity and combiner paths were audited
+  at line level at commit `a3b3f96`. The legacy-v1 numerical fit remains a historical saved
+  product and must be re-executed before publication; this is why confidence remains medium.

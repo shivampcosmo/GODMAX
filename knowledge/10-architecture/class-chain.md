@@ -3,7 +3,7 @@ id: kb.arch.class-chain
 title: The GODMAX class chain and its construction contract
 layer: 10-architecture
 owner: godmax-core
-status: draft
+status: verified
 confidence: medium
 scope:
   - src/base_class.py
@@ -19,23 +19,28 @@ invariants:
 checks:
   - /usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python -m pytest tests/test_get_radial_profiles.py -q
   - "TODO(godmax-core): construction smoke test — build the chain from params_default.yaml and assert C(ell) shape"
-verified_at_commit: 43e07ca
-verified_on: 2026-08-03
+verified_at_commit: a3b3f96
+verified_on: 2026-08-16
 see_also: [kb.arch.params-dicts, kb.numerics.jax-contract]
-scope_digest: sha256:3fcbe3ee73528ee27f9290f573f0e7e2
+scope_digest: sha256:be89031e20a5c7d10004549d40852fa1
 ---
 
 ## Claim
 
-The computation is a linear chain of five classes, each constructed by **dependency
-injection** of the previous instance, with all four parameter dicts threaded through every
-layer. A layer may depend only on layers below it. The `get_Cl` constructor is not JIT-able
-standalone but traces correctly inside a numpyro model or a jitted function.
+The computation has a four-layer inheritance/construction spine
+`base_class -> Profiles -> get_Pkz -> get_Cl`, followed by sibling `get_xi` and `get_cov`
+consumers of `get_Cl`.  Each layer can either construct its parent or copy the state of an
+injected parent instance; all four parameter dicts remain in the constructor signatures. A
+layer may depend only on layers below it. The `get_Cl` constructor is not JIT-able standalone
+but is required to trace correctly inside a numpyro model or a jitted function.
 
 ## Why it is true
 
-The construction pattern is documented in `README.md:115-118` and is the pattern used by
-every consumer:
+The constructor topology is visible directly in `src/base_class.py:72-104`,
+`src/get_radial_profiles.py:32-50`, `src/get_Pkzs.py:13-41`, and
+`src/get_Cls.py:15-43`.  `get_xi` and `get_cov` independently accept an injected `Cl_obj`
+(`src/get_Xis.py:47-58`, `src/get_covs.py:21-34`).  The representative construction pattern
+documented in `README.md:115-118` is:
 
 ```python
 base_test     = base_class(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
@@ -62,8 +67,8 @@ base_class            src/base_class.py            cosmology, grids, linear P(k,
         -> get_cov    src/get_covs.py              Gaussian + trispectrum covariance
 ```
 
-Branches: `setup_sim_map` and `get_sim_map` (`src/get_sim_maps.py`, 1555 lines) descend from
-`Profiles`; `Battaglia_12_16` (`src/get_B12_profile.py`) and the OWLS/LeBrun15 profile
+Branches: `setup_sim_map` and `get_sim_map` (`src/get_sim_maps.py`) descend from `Profiles`;
+`Battaglia_12_16` (`src/get_B12_profile.py`) and the OWLS/LeBrun15 profile
 (`src/get_OWLS_profile.py`) descend from `base_class`.
 
 There is **no packaged public API**. Consumers use `sys.path.insert` and import modules
@@ -78,21 +83,19 @@ current behaviour.
 ## How to verify
 
 ```bash
-# the construction pattern used by real consumers
-grep -rn "base_class_obj=\|Profiles_obj=\|Pkz_obj=" --include=*.py --include=*.ipynb . | grep -v src/arxiv
+# the construction pattern used by tracked consumers
+git grep -n -E "base_class_obj=|Profiles_obj=|Pkz_obj=|Cl_obj=" -- '*.py' '*.ipynb'
 
 # enumerate callers before changing any signature (both .py and .ipynb)
-grep -rn "from get_Cls import\|import get_Cls\|get_Cl(" --include=*.py --include=*.ipynb . | grep -v src/arxiv
+git grep -n -E "from get_Cls import|import get_Cls|get_Cl\(" -- '*.py' '*.ipynb'
 
 # targeted core HOD construction, formulas, gradients, and non-galaxy null
 /usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python \
   -m pytest tests/test_get_radial_profiles.py -q
 
-# module sizes — the split pressure points
-find src -maxdepth 1 -name "*.py" | xargs wc -l | sort -rn | head
+# module sizes — measure the current split pressure points rather than relying on literals
+wc -l src/get_sim_maps.py src/get_radial_profiles.py src/get_covs.py
 ```
-
-Expected: `get_sim_maps.py` ~1555 lines, `get_radial_profiles.py` ~960, `get_covs.py` ~673.
 
 ## Failure modes
 
@@ -110,15 +113,16 @@ Expected: `get_sim_maps.py` ~1555 lines, `get_radial_profiles.py` ~960, `get_cov
   the break.
 - **Importing from `src/arxiv/`.** Produces plausible results from a superseded model with
   no error.
-- **Adding a fifth concern to `get_sim_maps.py` or `get_radial_profiles.py`.** These are at
-  the size where several failure modes share one file — the same condition that forced
-  `multiprobe_namaster.py` to get a dedicated owner.
+- **Adding another concern to `get_sim_maps.py` or `get_radial_profiles.py`.** These are
+  already large, multi-purpose modules where several failure modes share one file — the
+  same condition that forced `multiprobe_namaster.py` to get a dedicated owner.
 
 ## Open questions
 
-- This document is derived from `README.md` and `src/context/codebase_summary.md`, not yet
-  from line-level reading of each module. `confidence: medium` until anchored to specific
-  constructor lines. Owner: `godmax-core`. Not blocking.
+- The constructor topology and the repaired HOD call path have now been checked at the
+  source anchors above. The scientific calculations inside every layer have not been
+  line-audited by this architecture document; they remain with their physics/numerics
+  owners.
 - The targeted HOD construction path is covered by `tests/test_get_radial_profiles.py`, but
   no automated test builds the complete class chain from `params_default.yaml` and asserts
   the resulting `C(ell)` shape. That remains the cheapest durable end-to-end coverage.

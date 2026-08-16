@@ -1,9 +1,9 @@
 ---
 id: kb.numerics.performance
-title: Likelihood-evaluation performance profile and safe optimisation targets
+title: Likelihood-evaluation performance evidence and safe optimisation targets
 layer: 30-numerics
 owner: jax-numerics
-status: draft
+status: verified
 confidence: low
 scope:
   - src/get_radial_profiles.py
@@ -16,25 +16,28 @@ invariants:
   - INV-JAX-X64-01
 checks:
   - "TODO(jax-numerics): benchmark harness reporting compile vs steady-state time per likelihood eval"
-verified_at_commit: 43e07ca
-verified_on: 2026-08-03
+verified_at_commit: a3b3f96
+verified_on: 2026-08-16
 see_also: [kb.numerics.jax-contract, kb.xdesi.analysis-state]
-scope_digest: sha256:3122aa7f940bef55aa9bf05b44812867
+scope_digest: sha256:c2f2f0530d56473d6d23860ed496f369
 ---
 
 ## Claim
 
-The dominant cost per likelihood evaluation is rebuilding the full class hierarchy
-(order 5–15 s). Optimisation is worth pursuing because it gates feasible chain lengths, but
-**no** optimisation may alter forward values or gradients, and the constructor must keep
-tracing correctly inside the numpyro model.
+No reproducible compile-versus-steady-state benchmark for one full likelihood evaluation is
+currently recorded in this document's scope. The historical estimate that rebuilding the
+class hierarchy costs roughly 5–15 seconds is therefore a hypothesis, not an evidence-backed
+performance result, and must not be used for resource planning. Any optimisation must leave
+forward values and gradients unchanged and keep constructor-time parameter flow trace-safe.
 
 ## Why it is true
 
-This document currently records an **unverified** analysis carried over from earlier
-profiling notes (`performance_bottlenecks.md` referenced in project memory, not present in
-the tree at `43e07ca`). It is marked `confidence: low` for that reason and must be
-re-measured before being acted on.
+The historical analysis came from `performance_bottlenecks.md`, referenced in project
+memory but absent from the tracked tree. A tracked-source search finds no single-evaluation
+benchmark that separates compilation from a warmed execution for this class chain. The MAP
+driver has a related population `value_and_grad` benchmark
+(`notebooks/xDESI/survey_measure/godmax_multiprobe_map_stage31.py:618-716`), but that is a
+different workload and does not verify the historical estimate here.
 
 The recorded claims, to be re-tested:
 
@@ -46,11 +49,16 @@ The recorded claims, to be re-tested:
 3. **Quick wins:** the symbolic P(k) and HMF emulators in place of numerical integrals;
    precomputing log-arrays; removing timing decorators from traced code.
 
-Why it matters concretely: the Stage-31 v2 configuration requests 8000 samples × 4 chains.
-At 5 s per evaluation with the tree depths NUTS actually uses, that is not feasible; the
-existing workaround is fanning across up to 16 GPU workers, which then creates the chain
-pooling risk described in `INV-MCMC-CONVERGENCE-01`. Making the likelihood faster reduces a
-statistical risk, not just a wall-clock one.
+The changed HOD construction path does now have targeted numerical evidence: the restored
+`get_Ncen` and `get_Nsat` methods remain `jit(static_argnums=(0,))`
+(`src/get_radial_profiles.py:632-650`), and the regression test obtains finite, nonzero
+`jax.jacrev` derivatives with respect to the HOD threshold
+(`tests/test_get_radial_profiles.py:132-141`). That is trace-safety evidence for this narrow
+path, not a full-likelihood gradient proof and not a timing result.
+
+Performance still matters because it gates feasible chain lengths, but a resource estimate
+must start from a synchronized benchmark of the actual likelihood and sampler configuration,
+not from the historical numbers above.
 
 ## How to verify
 
@@ -73,6 +81,13 @@ EOF
 dispatch, not computation. A timing decorator placed inside a traced function measures trace
 time and is meaningless.
 
+For the current HOD correctness/null control:
+
+```bash
+/usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python \
+  -m pytest tests/test_get_radial_profiles.py -q
+```
+
 ## Failure modes
 
 - **Optimising with a forward-only comparison.** Passes for changes that destroy
@@ -89,10 +104,10 @@ time and is meaningless.
 
 ## Open questions
 
-- **Everything in this document needs re-measurement.** `performance_bottlenecks.md` is not
-  present in the tree at `43e07ca`, so the 5–15 s figure and the ranking are unverified.
-  Owner: `jax-numerics`. Not blocking correctness, but blocking any optimisation work — do
-  not act on these numbers until they are reproduced.
+- **The historical performance ranking needs re-measurement.** The absent profiling note
+  cannot support the 5–15 second estimate or identify the dominant cost. Owner:
+  `jax-numerics`. This does not block the already-tested HOD correctness repair, but it blocks
+  optimisation or resource-allocation claims based on those numbers.
 - Whether the construction cost can be reduced while preserving `INV-JAX-TRACE-01` is an
   open design question. Any proposal needs the gradient-agreement test in
   `kb.numerics.jax-contract` and `physics-referee` sign-off, because the failure mode is a

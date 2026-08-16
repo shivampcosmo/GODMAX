@@ -24,18 +24,18 @@ invariants:
   - INV-KSZ-CALIB-01
 checks:
   - python -m py_compile measurements/xDESI/scripts/compute_dr10_imaging_weights.py measurements/xDESI/scripts/plot_des_y3_tomo4_paper_style_covariance.py measurements/xDESI/scripts/prepare_act_desi_ksz_hdf5.py measurements/xDESI/scripts/prepare_des_y3_shear_maps.py measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py measurements/xDESI/scripts/prepare_desi_dr9_lrg_nz.py
-  - /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python -m pytest tests/test_xdesi_multiprobe_namaster.py -q -k "survey_bundle or build_desi_fields or calibrated_true_nz"
+  - /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python -m pytest tests/test_xdesi_multiprobe_namaster.py -q -k "survey_bundle or build_desi_fields or multi_random_loader or highres8192 or highres_kappa"
   - /usr/bin/env PATH=/mnt/home/spandey/miniconda3/envs/ili-sbi/bin:/usr/bin:/bin python tools/kb/kb.py invariants --check --id INV-PRODUCT-PROV-01
   - /usr/bin/env PATH=/mnt/home/spandey/miniconda3/envs/ili-sbi/bin:/usr/bin:/bin python tools/kb/kb.py invariants --check --id INV-KSZ-CALIB-01
   - rg -n "spectroscopic_calibrated_true_redshift" notebooks/xDESI/survey_measure/multiprobe_namaster.py notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py
   - "[needs-data] jq -e '.products.desi_dr9_extended_velocity_catalogs.combined == \"data/desi_dr9_extended_velocity_catalogs/desi_dr9_extended_all_pz_compact_with_weights.h5\"' data/xDESI/survey_data/manifest.json"
   - bash -n notebooks/xDESI/survey_measure/build_desi_dr9_multi_random_mask.sbatch
   - "[needs-data] /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py --transfer-root data/xDESI/survey_data --random-source-root data/xDESI/survey_data/desi_dr9/legacy-survey-0.49.0 --random-indices 0 1 10 11 12 13 14 15 --skip-catalogs --validate-only"
-verified_at_commit: cf72943
-verified_on: 2026-08-05
+verified_at_commit: a3b3f96
+verified_on: 2026-08-16
 see_also: [kb.measurement.multiprobe-product, kb.xdesi.ksz-conventions, kb.xdesi.analysis-state]
 supersedes: []
-scope_digest: sha256:96cff16d439ec64e928c27b02eb4b2a1
+scope_digest: sha256:6010bc58c916b0dcdc950db8c85b6ebf
 ---
 
 ## Claim
@@ -64,7 +64,7 @@ Here `DR9` and `DR10` identify the **Legacy Surveys imaging/target-catalog
 release**, not a DESI spectroscopic survey data release. The transferred DR9 random
 realizations come from `desi/public/ets/target/catalogs/dr9/0.49.0`, while the separate
 DR10 random comes from the Legacy Surveys `dr10/randoms` tree
-(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:55`;
+(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:59-62`;
 `measurements/xDESI/scripts/prepare_act_desi_ksz_hdf5.py:57`).
 
 The production catalog builder names its input and output DR9 Extended explicitly. It
@@ -72,9 +72,9 @@ joins the four velocity files
 `DESI_pz{1..4}/extended_catalog_allfoot_perbin_sigmaz0.0500.txt` to the public
 `lrg_xcorr_2023/v1/catalogs/dr9_extended_lrg_pzbins.fits` catalog and its two public DR9
 weight tables (`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:2`,
-`:49`, `:81`). The `sigmaz0.0500` velocity sample imposes
+`:53-58`, `:139-172`). The `sigmaz0.0500` velocity sample imposes
 `Z_PHOT_STD <= 0.05 * (1 + Z_PHOT_MEDIAN)`
-(`measurements/xDESI/scripts/prepare_desi_dr9_lrg_nz.py:2`, `:42`, `:62`, `:224`).
+(`measurements/xDESI/scripts/prepare_desi_dr9_lrg_nz.py:2`, `:42-62`, `:224-233`).
 This is the **Extended LRG** selection, not the standard/main-LRG catalog and not a
 spectroscopic DESI clustering catalog.
 The four `pz` labels and their boundaries are inherited from the public `pz_bin` column
@@ -85,19 +85,20 @@ For each photo-z bin, the builder matches the velocity rows back to the public D
 Extended catalog by sky position and `Z_PHOT_MEDIAN`, attaches the public precomputed DR9
 weights, and emits
 `data/desi_dr9_extended_velocity_catalogs/desi_dr9_extended_all_pz_compact_with_weights.h5`
-(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:234`, `:279`, `:303`,
-`:401`). The match tolerances are `1e-4` arcsec and `1e-5` in redshift
-(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:70`, `:307`).
+(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:765-807`, `:810-926`,
+`:932-977`). The match tolerances are `1e-4` arcsec and `1e-5` in redshift
+(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:93-94`, `:834-870`).
 
 The recommended object selection is `catalog/valid_for_cl`. It requires a successful
 public-DR9 match, the DR9 LRG quality footprint, and a finite positive imaging weight;
 the measurement weight is `catalog/weight_imaging_mean1`, the public DR9 Extended weight
 renormalized to mean one within each photo-z bin
-(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:313`, `:327`,
-`:343`, `:373`). The quality footprint requires `NOBS_G/R/Z >= 2`, `lrg_mask == 0`,
+(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:839-851`, `:886-912`).
+The quality footprint requires `NOBS_G/R/Z >= 2`, `lrg_mask == 0`,
 `EBV < 0.15`, stellar density below 2500 deg^-2, and removal of the
 `DEC < -10.5, 120 < RA < 260` islands
-(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:200`, `:343`).
+(`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:87-94`, `:226-241`,
+`:874-884`).
 
 The generated combined HDF5 contains 19,911,871 rows, of which 19,386,574 pass
 `valid_for_cl`: 2,794,391, 4,743,086, 6,187,158 and 5,661,939 in pz1--pz4. These are
@@ -109,13 +110,13 @@ execution-derived product counts; the exact inspection command and output are in
 `SurveyBundle.from_root` resolves only the manifest keys
 `desi_dr9_extended_velocity_catalogs`, `desi_dr9_imaging_randoms` and
 `desi_dr9_redshift_distributions`; it never resolves a DR10 DESI key
-(`notebooks/xDESI/survey_measure/multiprobe_namaster.py:123`). The field builder records
+(`notebooks/xDESI/survey_measure/multiprobe_namaster.py:128-153`). The field builder records
 `desi_release = DR9 Extended LRG`, filters on `valid_for_cl`, uses
 `weight_imaging_mean1`, and saves those choices in every galaxy and momentum field
-(`notebooks/xDESI/survey_measure/multiprobe_namaster.py:1677`, `:1711`, `:1808`,
-`:1884`). Both the diagnostic galaxy maps and the catalog-momentum kSZ estimator therefore
+(`notebooks/xDESI/survey_measure/multiprobe_namaster.py:2315-2373`, `:2453-2521`). Both
+the diagnostic galaxy maps and the catalog-momentum kSZ estimator therefore
 come from the same selected DR9 rows; the latter uses `(ra_deg, dec_deg)`, the DR9 imaging
-weight, and `vr_over_c` (`notebooks/xDESI/survey_measure/multiprobe_namaster.py:1894`).
+weight, and `vr_over_c` (`notebooks/xDESI/survey_measure/multiprobe_namaster.py:2531-2567`).
 
 The current submission wrappers default to
 `data/xDESI/processed/multiprobe_namaster_true_nz`, and the current default map names have
@@ -214,7 +215,7 @@ raising if the requirement is unmet. It additionally compares realization count,
 indices, full-source input identity and random-product schema against the survey manifest,
 requires the exact 18 expected source paths and valid 64-hex digests, compares the ledger
 and inventory digests to the manifest, then checks the native nside array against its byte
-checksum and count sum (`notebooks/xDESI/survey_measure/multiprobe_namaster.py`). Thus neither a legacy
+checksum and count sum (`notebooks/xDESI/survey_measure/multiprobe_namaster.py:1980-2198`). Thus neither a legacy
 one-random count map nor a different eight-random set can silently enter the new
 high-resolution run. The object rows, weights and true-`n(z)` remain the same DR9 Extended
 products; only the random-derived angular-selection product changed.
@@ -225,15 +226,15 @@ products; only the random-derived angular-selection product changed.
 theory lens kernel. The active theory input is
 `data/desi_dr9_redshift_distributions/desi_dr9_extended_lrg_sigmaz0p05_true_nz.h5`,
 group `zphot_std0p05_spec_ratio_corrected`, dataset `nz_unit_integral`
-(`notebooks/xDESI/survey_measure/multiprobe_namaster.py:82`, `:937`, `:1667`). That group
+(`notebooks/xDESI/survey_measure/multiprobe_namaster.py:82-86`, `:1231-1289`, `:2315-2348`). That group
 anchors to the public spectroscopic calibration, applies the measured response of the
 photo-z-uncertainty cut, and is renormalized to the exact full-`valid_for_cl` surface
 density (`measurements/xDESI/scripts/prepare_desi_dr9_lrg_nz.py:201`, `:224`, `:269`).
 The photo-z histogram is saved only as a diagnostic.
 
 The velocity field is source ASCII column 15 divided by `3e5 km/s`, with no sign flip
-at catalog preparation (`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:289`,
-`:327`). The active maps use the full-footprint `valid_for_cl` object list. They do **not**
+at catalog preparation (`measurements/xDESI/scripts/prepare_desi_dr9_extended_catalogs.py:750-762`,
+`:820-829`, `:864`). The active maps use the full-footprint `valid_for_cl` object list. They do **not**
 apply the final kSZ-paper ACT-overlap and velocity-outlier cleaning at object level. The
 transfer n(z) file contains separate `ksz_paper_scaled_counts/*` groups that represent
 that paper selection only by count rescaling
@@ -255,7 +256,8 @@ with the DR9 measurement sample is not established by this provenance audit.
 `prepare_act_desi_ksz_hdf5.py` is the earlier transfer/bootstrap builder: it reads
 `extended_catalog_dr10_allfoot_perbin_sigmaz0.0500.txt`, writes
 `desi_dr10_extended_*`, and constructs an initial DR10-only manifest
-(`measurements/xDESI/scripts/prepare_act_desi_ksz_hdf5.py:49`, `:102`, `:261`, `:952`).
+(`measurements/xDESI/scripts/prepare_act_desi_ksz_hdf5.py:49`, `:102-132`, `:261-351`,
+`:962-1035`).
 `compute_dr10_imaging_weights.py` likewise targets the combined DR10 catalog. Its own
 metadata calls the result approximate because it applies DR9-trained coefficients to
 DR10 random-derived templates and says a DR10 refit is required for production
@@ -277,7 +279,7 @@ future edits are routed through the provenance review.
 ```bash
 python -m py_compile measurements/xDESI/scripts/*.py
 pytest tests/test_xdesi_multiprobe_namaster.py -q \
-  -k "survey_bundle or build_desi_fields or calibrated_true_nz"
+  -k "survey_bundle or build_desi_fields or multi_random_loader or highres8192 or highres_kappa"
 /usr/bin/env PATH=/mnt/home/spandey/miniconda3/envs/ili-sbi/bin:/usr/bin:/bin \
   python tools/kb/kb.py invariants --check --id INV-PRODUCT-PROV-01
 /usr/bin/env PATH=/mnt/home/spandey/miniconda3/envs/ili-sbi/bin:/usr/bin:/bin \
@@ -324,8 +326,11 @@ bash -n notebooks/xDESI/survey_measure/build_desi_dr9_multi_random_mask.sbatch
 ```
 
 Expected: all commands exit zero; the pytest selection passes; the downstream DR10 search
-prints nothing; the manifest assertion returns `true`; and the random preflight prints the
-exact eight-pair identity and source-row total above. These checks validate the transferred
+prints nothing; the manifest assertion returns `true`; and the write-free random preflight
+prints the exact eight-pair identity, 18-entry ledger inventory and source-row total above.
+Without `--verify-full-sha256`, that preflight validates structure/samples against the bound
+ledger but correctly reports `full_source_sha256_verified: false`; the final schema-v3 HDF5
+must itself record `full_source_sha256_verified = 1`. These checks validate the transferred
 inputs and wrapper syntax. The builder's second identical invocation must report that it is
 reusing the validated products; `sacct -j 6882555` reports `COMPLETED|0:0|00:07:42`.
 

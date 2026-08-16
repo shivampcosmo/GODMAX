@@ -304,7 +304,7 @@ invariants:
       - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
     check:
       kind: grep
-      run: grep -rn "spectroscopic_calibrated_true_redshift" notebooks/xDESI/survey_measure/
+      run: git grep -n "spectroscopic_calibrated_true_redshift" -- notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py notebooks/xDESI/survey_measure/godmax_multiprobe_hmc_stage31.py notebooks/xDESI/survey_measure/multiprobe_namaster.py
     violation_symptom: |
       All four DESI galaxy families biased in the same direction; HOD parameters drift
       to compensate; galaxy auto and galaxy-cross amplitudes cannot be fit together.
@@ -595,7 +595,7 @@ invariants:
       - notebooks/xDESI/abacus_pasting_config.yaml
     check:
       kind: grep
-      run: grep -rn "override_cosmology_from_catalog\|theory_mass_cut_applied_to_hod" notebooks/xDESI/ param_files/
+      run: git grep -n -E "override_cosmology_from_catalog|theory_mass_cut_applied_to_hod" -- notebooks/xDESI param_files
     violation_symptom: |
       A constant offset between pasted and analytic spectra that scales with the mass
       cut and does not vanish at large scales.
@@ -625,7 +625,7 @@ invariants:
       - README.md
     check:
       kind: grep
-      run: grep -rln "jax_enable_x64" run_scripts/ notebooks/xDESI/survey_measure/
+      run: git grep -l "jax_enable_x64" -- run_scripts notebooks/xDESI/survey_measure
     violation_symptom: |
       Whitening rank changes between identical runs; chi2 changes between runs; gradients
       become noisy at the 1e-3 level; the eigenvalue cut removes far more modes than expected.
