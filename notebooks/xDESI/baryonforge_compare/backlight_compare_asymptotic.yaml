@@ -1,0 +1,137 @@
+schema: baryonforge_godmax_backlight_compare_v1
+
+project:
+  name: baryonforge_godmax_mgt13_pz3_cap600_asymptotic_norm_128r
+  xdesi_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/notebooks/xDESI
+  output_root: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/baryonforge_godmax_backlight/mgt13_pz3_cap600_asymptotic_norm_128r
+  catalog_subdir: halos
+  map_subdir: maps
+  measurement_subdir: measurements
+  profile_subdir: profiles
+
+catalog:
+  source_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/abacus_backlight/stage31_pz3_cap600_mmin11p147538/halos/abacus_c9999_ph9999_pz3cap600_z0p63_0p98_logMgt11p147538_halos.h5
+  # Reuse the byte-identical, strict-M200c filtered parent catalog.  Candidate
+  # profiles/maps live under the separate project.output_root above.
+  output_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/baryonforge_godmax_backlight/mgt13_pz3_cap600/halos/abacus_c9999_ph9999_pz3cap600_buffered_M200cgt1e13_halos.h5
+  mass_field: M200c_hMsun
+  mass_cut_hMsun: 1.0e13
+  predicate: M200c_hMsun > 1.0e13
+  expected_selected_count: 136651
+  retain_outer_buffer_halos: true
+
+catalogs:
+  buffered_mgt13:
+    output_name: abacus_c9999_ph9999_pz3cap600_buffered_M200cgt1e13_halos.h5
+    z_min: 0.63
+    z_max: 0.98
+    log10_m_min_hmsun: 13.0
+    metadata:
+      selection_predicate: M200c_hMsun > 1.0e13
+      halo_mass_semantics: Interpolated_N times ParticleMassHMsun, treated as M200c
+      retain_outer_buffer_halos: true
+
+sky_patch:
+  center_ra_deg: 27.421875
+  center_dec_deg: -24.62431835216408
+  radius_deg: 13.853487211490563
+  edge_buffer_deg: 1.0
+  area_deg2: 600.0
+  ordering: RING
+
+profiles:
+  normalization_variant: asymptotic_total_mass_v1
+  godmax_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/Pge/params_baryonforge_backlight_godmax_asymptotic.yaml
+  baryonforge_params: /mnt/ceph/users/spandey/ltu-godmax/BaryonForge/examples/params_baryonforge_backlight_godmax.yaml
+  masses_hMsun: [1.0e13, 1.0e14, 1.0e15]
+  redshifts: [0.65, 0.80, 0.95]
+  radius_min_R200c: 0.02
+  radius_max_R200c: 5.0
+  n_radius: 96
+  output_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/baryonforge_godmax_backlight/mgt13_pz3_cap600_asymptotic_norm_128r/profiles/profile_comparison.h5
+
+godmax:
+  default_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/params_default.yaml
+  xdesi_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/Pge/params_baryonforge_backlight_godmax_asymptotic.yaml
+  xdesi_fit_summary: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/abacus_LRG_nz_Clgg_v5_deltaell_100_combined_16sims.pkl
+  source_nz_fits: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/forecast/lsst_simulate_Y1.fits
+  source_nz_hdu: nz_source
+  source_nz_z_column: Z_MID
+  source_nz_bin_column: BIN5
+  source_nz_floor: 1.0e-4
+  override_cosmology_from_catalog: true
+
+baryonforge:
+  params: /mnt/ceph/users/spandey/ltu-godmax/BaryonForge/examples/params_baryonforge_backlight_godmax.yaml
+  output_h5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/xDESI/processed/baryonforge_godmax_backlight/mgt13_pz3_cap600_asymptotic_norm_128r/maps/baryonforge_native_nside1024.h5
+  n_jobs: 8
+
+pasting:
+  run_name: godmax_asymptotic_norm_mgt13_pz3_cap600
+  catalog_key: buffered_mgt13
+  nside: 1024
+  lmax: 1024
+  max_paint_R200c_factor: 5.0
+  smooth_profiles: false
+  get_galmap: false
+  get_ymap: true
+  get_kSZmap: false
+  get_kszmap: false
+  get_taumap: false
+  get_kappa_wl: false
+  get_kappa_cmb: true
+  use_multi_kappa_maps: true
+  store_projected_matter_maps: false
+  get_baryonifiedmap: false
+  return_sparse_maps: true
+  use_fused_profile_maps: true
+  split_strategy: contiguous
+  pixel_backend: healpy_ring
+  pixel_workers: 1
+  persistent_pixel_pool: false
+  single_pixel_angle_factor: 0.0
+  random_seed: 20260804
+  verbose: true
+  chunk_halos_by_nside:
+    128: 10000
+    1024: 25000
+  num_splits_by_nside:
+    128: 1
+    1024: 1
+  jax:
+    preallocate: false
+    memory_fraction: 0.8
+    platforms: cuda
+
+statistics:
+  apodization_deg: 1.0
+  apodization_type: C2
+  ell_min: 8
+  lmax: 1024
+  n_bins: 10
+  binning: linear
+  subtract_weighted_mean: true
+  deconvolve_pixel_window: false
+  log10_mass_edges: [13.0, 13.5, 14.0, 14.5, 16.0]
+  redshift_edges: [0.63, 0.75, 0.86, 0.98]
+  radial_edges_R200c: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0, 7.0]
+  background_annulus_R200c: [5.5, 7.0]
+  max_halos_per_stack_bin: 2000
+  random_seed: 20260804
+
+validation:
+  smoke_nside: 1024
+  smoke_max_halos: 64
+  production_nside: 1024
+  require_catalog_hash_match: true
+  require_no_internal_smoothing: true
+  require_ring_ordering: true
+  require_complete_catalog_paint: true
+  require_current_contract_match: true
+  require_nonzero_production_maps: true
+  native_redistribution_max_relative_error: 0.01
+  native_redistribution_radial_samples: 2048
+  asymptotic_convergence_reference_rmax_R200c: 256.0
+  asymptotic_convergence_reference_method: gauss_legendre_log
+  asymptotic_convergence_reference_points: 512
+  asymptotic_convergence_max_relative_change: 0.001

@@ -158,6 +158,11 @@ halo_params:
 
 
 analysis:
+  # ``legacy_log_radius`` preserves historical maps.  Validation runs can opt
+  # into the unit-consistent nonsingular ``physical_table_cosh`` projector.
+  projected_profile_integration_method: legacy_log_radius
+  num_points_projected_profile: 32
+  projected_profile_los_max_comoving_mpc: null
   backreaction: True
   model_galaxies: True
   model_tSZ: True

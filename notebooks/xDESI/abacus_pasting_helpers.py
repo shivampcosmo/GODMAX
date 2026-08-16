@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import importlib
 import json
 import math
 import os
@@ -81,11 +82,79 @@ _PIXEL_BACKENDS = {
     _PIXEL_BACKEND_HEALPY_STENCIL,
 }
 _RING_GEOM_CACHE: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+_EFFECTIVE_GRID_SIGNIFICANT_DIGITS = 13
 
 
 def _log(message: str, verbose: bool = True) -> None:
     if verbose:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+def _canonicalize_effective_grid(values: np.ndarray) -> np.ndarray:
+    """Suppress the observed CPU-math-library drift in analytic setup grids.
+
+    ``np.exp`` and ``np.geomspace`` may differ by a few final float64 bits on
+    otherwise identical nodes.  Those differences do not resolve a grid cell,
+    but hashing the raw arrays makes the map contract architecture-dependent.
+    Quantizing only these analytically generated setup grids to 13 significant
+    decimal digits keeps their relative perturbation below 5e-13 while making
+    both the values used by GODMAX and their provenance byte-stable on the
+    tested Rome and H100-host architectures.  A cross-architecture manifest
+    comparison remains the falsifier for any new platform.
+    """
+
+    array = np.asarray(values, dtype=np.float64)
+    if not bool(np.all(np.isfinite(array))):
+        raise ValueError("Effective GODMAX setup grids must be finite.")
+    canonical = np.fromiter(
+        (
+            float(format(float(value), f".{_EFFECTIVE_GRID_SIGNIFICANT_DIGITS}g"))
+            for value in array.ravel()
+        ),
+        dtype=np.float64,
+        count=array.size,
+    )
+    return canonical.reshape(array.shape)
+
+
+def effective_grid_canonicalization_contract() -> Dict[str, object]:
+    """Describe the deliberately narrow generated-grid canonicalization."""
+
+    return {
+        "method": "decimal_significant_digits",
+        "significant_digits": _EFFECTIVE_GRID_SIGNIFICANT_DIGITS,
+        "affected_effective_config_paths": [
+            "analysis.k_array_survey",
+            "analysis.l_array_survey",
+            "analysis.dl_array_survey",
+            "halo_params.ell_array",
+        ],
+        "applies_to_catalog_or_profile_values": False,
+    }
+
+
+def _effective_survey_grids(h0: float, nside: int) -> Tuple[np.ndarray, ...]:
+    """Construct the final canonicalized k, ell, and delta-ell grids."""
+
+    hubble = float(h0)
+    if not np.isfinite(hubble) or hubble <= 0.0:
+        raise ValueError(f"H0 must be finite and positive, got {h0!r}.")
+    resolution = int(nside)
+    if resolution <= 0:
+        raise ValueError(f"NSIDE must be positive, got {nside!r}.")
+
+    k_survey = _canonicalize_effective_grid(
+        np.geomspace(3.0e-1, 10.0, 10) / (hubble / 100.0)
+    )
+    lmin, lmax, dl_log = 20.0, 3.0 * resolution, 0.08
+    ell_edges = np.exp(
+        np.arange(np.log(lmin), np.log(max(lmin + 1.0, lmax)), dl_log)
+    )
+    ell = _canonicalize_effective_grid(
+        0.5 * (ell_edges[1:] + ell_edges[:-1])
+    )
+    delta_ell = _canonicalize_effective_grid(ell_edges[1:] - ell_edges[:-1])
+    return k_survey, ell, delta_ell
 
 
 def auto_cpu_workers() -> int:
@@ -331,12 +400,10 @@ def prepare_godmax_config(
     other_params["mult_shear_bias_array"] = np.zeros(source_nz["nbins"])
 
     cp = sim_params["cosmo"]
-    ks = np.geomspace(3.0e-1, 10.0, 10)
-    analysis["k_array_survey"] = jnp.array(ks / (cp["H0"] / 100.0))
-    lmin, lmax, dl_log = 20.0, 3.0 * int(config["pasting"].get("nside", 1024)), 0.08
-    ell_edges = np.exp(np.arange(np.log(lmin), np.log(max(lmin + 1.0, lmax)), dl_log))
-    ell = 0.5 * (ell_edges[1:] + ell_edges[:-1])
-    dell = ell_edges[1:] - ell_edges[:-1]
+    k_survey, ell, dell = _effective_survey_grids(
+        cp["H0"], int(config["pasting"].get("nside", 1024))
+    )
+    analysis["k_array_survey"] = jnp.array(k_survey)
     halo_params["ell_array"] = jnp.array(ell)
     analysis["l_array_survey"] = jnp.array(ell)
     analysis["dl_array_survey"] = jnp.array(dell)
@@ -1867,6 +1934,7 @@ def run_paste_split(
     pixel_start_method: Optional[str] = None,
     pixel_backend: Optional[str] = None,
     query_disc_buffer_safety_factor: Optional[float] = None,
+    profiles_class_path: Optional[str] = None,
 ) -> Path:
     wall0 = time.perf_counter()
     config = load_config(config_path)
@@ -2007,8 +2075,26 @@ def run_paste_split(
     import jax
     import jax.numpy as jnp
     from base_class import base_class
-    from get_radial_profiles import Profiles
+    from get_radial_profiles import Profiles as NativeProfiles
     from get_sim_maps import setup_sim_map, get_sim_map
+    profiles_class = NativeProfiles
+    if profiles_class_path is not None:
+        module_name, separator, class_name = str(profiles_class_path).rpartition(".")
+        if not separator or not module_name or not class_name:
+            raise ValueError(
+                "profiles_class_path must be a fully qualified module.Class name; "
+                f"got {profiles_class_path!r}."
+            )
+        profiles_class = getattr(importlib.import_module(module_name), class_name)
+        if not isinstance(profiles_class, type) or not issubclass(
+            profiles_class, NativeProfiles
+        ):
+            raise TypeError(
+                f"{profiles_class_path} is not a get_radial_profiles.Profiles subclass."
+            )
+    profiles_class_fqname = (
+        f"{profiles_class.__module__}.{profiles_class.__qualname__}"
+    )
     jax_module_import_time_s = time.perf_counter() - t_jax_import
     jax_cache_config_time_s = 0.0
     jax_cache_config_error = None
@@ -2040,7 +2126,13 @@ def run_paste_split(
     base_class_time_s = time.perf_counter() - t_base_class
     _log("[paste:godmax] instantiate Profiles", verbose)
     t_profiles = time.perf_counter()
-    profiles = Profiles(sim_params, halo_params, analysis, other_params, base_class_obj=base)
+    profiles = profiles_class(
+        sim_params,
+        halo_params,
+        analysis,
+        other_params,
+        base_class_obj=base,
+    )
     profiles_time_s = time.perf_counter() - t_profiles
 
     get_kappa_wl = bool(config["pasting"].get("get_kappa_wl", True))
@@ -2166,6 +2258,7 @@ def run_paste_split(
         "godmax_prepare_config_time_s": float(godmax_prepare_config_time_s),
         "base_class_time_s": float(base_class_time_s),
         "profiles_time_s": float(profiles_time_s),
+        "profiles_class_fqname": profiles_class_fqname,
         "setup_sim_map_main_time_s": float(setup_sim_map_main_time_s),
         "setup_sim_map_main_profile_s": setup_sim_map_main_profile_s,
         "setup_sim_map_wl_time_s": setup_sim_map_wl_time_s,
@@ -2438,6 +2531,7 @@ def run_paste_split(
             "split_load_note": str(split_load_note),
             "max_paint_R200c_factor": max_paint,
             "smooth_profiles": bool(config["pasting"].get("smooth_profiles", True)),
+            "profiles_class_fqname": profiles_class_fqname,
             "wl_source_bins_json": json.dumps(wl_source_bins),
             "wl_source_bin_datasets_json": json.dumps(
                 {str(source_bin): ("map_kappa_wl" if int(source_bin) == 1 else f"map_kappa_wl_tomo{int(source_bin)}") for source_bin in wl_source_bins}

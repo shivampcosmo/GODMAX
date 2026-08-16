@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import os
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - used when running this file as a scrip
 
 DEFAULT_STAGE31_CONFIG = "param_files/xDESI/params_multiprobe_fast1024_hmc_stage31.yaml"
 PARAMETER_COUNT_STAGE31 = 31
+STAGE31_CHAIN_CONTRACT_VERSION = "stage31_chain_v4_gshot_validitymask"
 HALO_MASS_FLOOR_TOL = 5.0e-7
 FIXED_ZERO_HOD_ARRAYS = (
     "gamma_a_fshmr_array",
@@ -75,6 +77,8 @@ class SpectrumSpec:
     transfer: jnp.ndarray
     scalar_factor: float
     ksz_amp: float
+    shot_noise_template: jnp.ndarray
+    shot_noise_amplitude: float
     source_band_count: int
     selected_band_indices: Tuple[int, ...]
     ell_band: Tuple[float, ...]
@@ -82,6 +86,9 @@ class SpectrumSpec:
 
 @dataclass(frozen=True)
 class LikelihoodData:
+    measurement_path: str
+    measurement_map_product_id: str
+    desi_galaxy_auto_mean_convention: str
     names: Tuple[str, ...]
     families: Tuple[str, ...]
     labels: Tuple[str, ...]
@@ -535,12 +542,18 @@ def _selected_band_indices(
 def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[str, object]) -> LikelihoodData:
     gmt.ensure_godmax_import_paths(Path(config["repo_root"]))
     from multiprobe_namaster import (
+        DESI_GALAXY_AUTO_MEAN_CONVENTION,
         _load_default_transfers,
+        _value_for_pz,
         ksz_velocity_amplitudes_from_field_metadata,
+        validate_measurement_product_identity,
     )
 
     measurement_path = Path(config["paths"]["measurement_h5"])
     raw_wrapper = config["raw"].get("theory_to_data_vector", {})
+    configured_shot_noise_amplitudes = gmt.desi_galaxy_shot_noise_amplitudes_from_config(
+        config
+    )
     threshold = float(stage_config.get("covariance", {}).get("eigenvalue_threshold", 1.0e-8))
     cut_config = stage_config.get("likelihood_cuts", {})
     if cut_config is None:
@@ -555,6 +568,12 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
     spectrum_specs: List[SpectrumSpec] = []
 
     with h5py.File(measurement_path, "r") as h5:
+        validate_measurement_product_identity(h5)
+        measurement_path_resolved = str(measurement_path.resolve())
+        measurement_map_product_id = str(h5.attrs["map_product_id"])
+        measurement_mean_convention = str(
+            h5.attrs["desi_galaxy_auto_mean_convention"]
+        )
         measurement_config = json.loads(h5.attrs["config_json"])
         lmax = int(measurement_config["lmax"])
         field_meta = json.loads(h5["fields"].attrs["metadata_json"])
@@ -572,6 +591,13 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
         full_ell = np.asarray(h5["joint/ell"][:], dtype=np.float64)
         full_data_vector = np.asarray(h5["joint/data_vector"][:], dtype=np.float64)
         full_covariance = np.asarray(h5["joint/cov"][:], dtype=np.float64)
+        full_validity = (
+            np.asarray(h5["joint/data_vector_valid"][:], dtype=bool)
+            if "joint/data_vector_valid" in h5
+            else np.ones(full_data_vector.size, dtype=bool)
+        )
+        if full_validity.shape != full_data_vector.shape:
+            raise ValueError("Measurement validity mask has the wrong shape.")
         full_starts = np.asarray(h5["joint/slice_start"][:], dtype=int)
         full_stops = np.asarray(h5["joint/slice_stop"][:], dtype=int)
         default_ell_left = np.asarray(h5["ell_left"][:], dtype=np.float64) if "ell_left" in h5 else None
@@ -602,13 +628,19 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
             ell_min = _ell_min_for_spectrum(name, family, theory_key, cut_config)
             ell_max = _ell_max_for_spectrum(name, family, theory_key, cut_config)
             selected = _selected_band_indices(ell, ell_left, ell_right, ell_min, ell_max, band_selection, name)
+            source_validity = full_validity[source_start:source_stop]
+            selected = selected[source_validity[selected]]
+            if selected.size == 0:
+                raise ValueError(
+                    f"Saved data-vector validity plus likelihood cuts select zero bandpowers for {name}."
+                )
             if np.any(selected < 0) or np.any(selected >= source_band_count):
                 raise ValueError(f"Selected band indices for {name} are outside 0..{source_band_count - 1}.")
             scalar = _shear_m_factor(fields, shear_m_bias)
             if bool(raw_wrapper.get("theory_shear_e_is_positive_kappa", True)):
                 scalar *= _shear_sign_factor(fields, field_meta)
             transfer = transfers.get(fields[0], np.ones(lmax + 1)) * transfers.get(fields[1], np.ones(lmax + 1))
-            pz_bin = int(metadata["desi_pz"]) if family == "desi_pi_act_T" else None
+            pz_bin = int(metadata["desi_pz"]) if family in {"desi_pi_act_T", "desi_g_auto"} else None
             window = np.asarray(group["bandpower_window_selected"][:], dtype=np.float64)
             if window.shape[0] != source_band_count:
                 raise ValueError(
@@ -621,6 +653,30 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
             selected_global_indices.extend((source_start + selected).astype(int).tolist())
             selected_ell = ell[selected]
             selected_ell_chunks.append(selected_ell)
+            shot_noise_template = np.zeros(selected.size, dtype=np.float64)
+            shot_noise_amplitude = 0.0
+            if family == "desi_g_auto":
+                cl_convention = str(group.attrs.get("cl_convention", ""))
+                if cl_convention != DESI_GALAXY_AUTO_MEAN_CONVENTION:
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} has cl_convention={cl_convention!r}, "
+                        f"expected {DESI_GALAXY_AUTO_MEAN_CONVENTION!r}."
+                    )
+                if "noise_decoupled_all_components" not in group:
+                    raise ValueError(f"DESI galaxy auto {name!r} has no saved shot-noise template.")
+                component = int(group.attrs["component"])
+                noise_all = np.asarray(group["noise_decoupled_all_components"][:], dtype=np.float64)
+                if not (0 <= component < noise_all.shape[0]):
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} component {component} is outside "
+                        f"saved noise shape {noise_all.shape}."
+                    )
+                shot_noise_template = np.asarray(noise_all[component, selected], dtype=np.float64)
+                shot_noise_amplitude = _value_for_pz(
+                    configured_shot_noise_amplitudes,
+                    int(pz_bin),
+                    "desi_galaxy_shot_noise_amplitudes",
+                )
             spectrum_specs.append(
                 SpectrumSpec(
                     name=name,
@@ -631,7 +687,9 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
                     window=jnp.asarray(window[selected], dtype=jnp.float64),
                     transfer=jnp.asarray(transfer, dtype=jnp.float64),
                     scalar_factor=float(scalar),
-                    ksz_amp=float(ksz_amps[pz_bin]) if pz_bin is not None else 0.0,
+                    ksz_amp=float(ksz_amps[pz_bin]) if family == "desi_pi_act_T" else 0.0,
+                    shot_noise_template=jnp.asarray(shot_noise_template, dtype=jnp.float64),
+                    shot_noise_amplitude=float(shot_noise_amplitude),
                     source_band_count=source_band_count,
                     selected_band_indices=tuple(int(x) for x in selected),
                     ell_band=tuple(float(x) for x in selected_ell),
@@ -657,6 +715,9 @@ def prepare_likelihood_data(config: Mapping[str, object], stage_config: Mapping[
     whitener = (eigenvectors[:, kept].T / np.sqrt(eigenvalues[kept])[:, None]) / sigma[None, :]
 
     return LikelihoodData(
+        measurement_path=measurement_path_resolved,
+        measurement_map_product_id=measurement_map_product_id,
+        desi_galaxy_auto_mean_convention=measurement_mean_convention,
         names=names,
         families=tuple(families),
         labels=tuple(labels),
@@ -1041,7 +1102,28 @@ def ell2_to_full_lmax(cl_ell2: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate([cl_ell2[:1], cl_ell2[:1], cl_ell2])
 
 
-def theory_data_vector_jax(likelihood: LikelihoodData, theory_cls: Mapping[str, jnp.ndarray]) -> jnp.ndarray:
+def _shot_noise_amplitude_for_pz_jax(
+    values: Optional[object],
+    pz_bin: int,
+    default: float,
+) -> jnp.ndarray:
+    if values is None:
+        return jnp.asarray(default, dtype=jnp.float64)
+    if isinstance(values, Mapping):
+        for key in (pz_bin, str(pz_bin), f"pz{pz_bin}"):
+            if key in values:
+                return jnp.asarray(values[key], dtype=jnp.float64)
+        return jnp.asarray(default, dtype=jnp.float64)
+    if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
+        return jnp.asarray(values[pz_bin - 1], dtype=jnp.float64)
+    return jnp.asarray(values, dtype=jnp.float64)
+
+
+def theory_data_vector_jax(
+    likelihood: LikelihoodData,
+    theory_cls: Mapping[str, jnp.ndarray],
+    desi_galaxy_shot_noise_amplitudes: Optional[object] = None,
+) -> jnp.ndarray:
     gmt.ensure_godmax_import_paths()
     from multiprobe_namaster import TCMB_UK
 
@@ -1054,7 +1136,17 @@ def theory_data_vector_jax(likelihood: LikelihoodData, theory_cls: Mapping[str, 
         else:
             cl = theory_cls[spec.theory_key]
         full = ell2_to_full_lmax(cl * float(spec.scalar_factor))
-        out.append(spec.window @ (full[: spec.window.shape[1]] * spec.transfer[: spec.window.shape[1]]))
+        bandpower = spec.window @ (
+            full[: spec.window.shape[1]] * spec.transfer[: spec.window.shape[1]]
+        )
+        if spec.family == "desi_g_auto":
+            amplitude = _shot_noise_amplitude_for_pz_jax(
+                desi_galaxy_shot_noise_amplitudes,
+                int(spec.pz_bin),
+                float(spec.shot_noise_amplitude),
+            )
+            bandpower = bandpower + amplitude * spec.shot_noise_template
+        out.append(bandpower)
     return jnp.concatenate(out)
 
 
@@ -1094,10 +1186,23 @@ def _dense_theory_cls_from_models(
     return _densify_theory_cls_to_full_lmax(theory_cls, models["wl"].ell_array, lmax)
 
 
+def _sampled_shot_noise_amplitudes(sample_values: Mapping[str, object]) -> Optional[Dict[int, object]]:
+    amplitudes = {
+        pz_bin: sample_values[f"desi_galaxy_shot_noise_amplitude_pz{pz_bin}"]
+        for pz_bin in range(1, 5)
+        if f"desi_galaxy_shot_noise_amplitude_pz{pz_bin}" in sample_values
+    }
+    return amplitudes or None
+
+
 def evaluate_sample_theory_vector(context: FitContext, sample_values: Mapping[str, object]) -> jnp.ndarray:
     models = build_models_from_sample(context, sample_values)
     theory_cls = _dense_theory_cls_from_models(context, models)
-    return theory_data_vector_jax(context.likelihood, theory_cls)
+    return theory_data_vector_jax(
+        context.likelihood,
+        theory_cls,
+        desi_galaxy_shot_noise_amplitudes=_sampled_shot_noise_amplitudes(sample_values),
+    )
 
 
 def whitened_chi2(likelihood: LikelihoodData, theory_vector: jnp.ndarray) -> jnp.ndarray:
@@ -1263,6 +1368,88 @@ def numpyro_model(context: FitContext, *, remat_theory: bool = False) -> None:
     numpyro.factor("xdesi_loglike", -0.5 * chi2)
 
 
+def _update_identity_json(digest: object, label: str, value: object) -> None:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    digest.update(label.encode("utf-8") + b"\0" + payload + b"\0")
+
+
+def _update_identity_array(digest: object, label: str, value: object) -> None:
+    array = np.ascontiguousarray(np.asarray(value))
+    header = json.dumps(
+        {"dtype": array.dtype.str, "shape": list(array.shape)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest.update(label.encode("utf-8") + b"\0" + header + b"\0")
+    digest.update(array.tobytes(order="C"))
+    digest.update(b"\0")
+
+
+def likelihood_identity(likelihood: LikelihoodData) -> str:
+    """Content identity for every saved-chain likelihood input and response."""
+
+    digest = hashlib.sha256()
+    _update_identity_json(digest, "chain_contract", STAGE31_CHAIN_CONTRACT_VERSION)
+    _update_identity_json(digest, "measurement_path", likelihood.measurement_path)
+    _update_identity_json(
+        digest, "measurement_map_product_id", likelihood.measurement_map_product_id
+    )
+    _update_identity_json(
+        digest,
+        "desi_galaxy_auto_mean_convention",
+        likelihood.desi_galaxy_auto_mean_convention,
+    )
+    for label, value in (
+        ("names", likelihood.names),
+        ("families", likelihood.families),
+        ("labels", likelihood.labels),
+        ("theory_keys", likelihood.theory_keys),
+        ("eigenvalue_threshold", float(likelihood.eigenvalue_threshold)),
+    ):
+        _update_identity_json(digest, label, value)
+    for label, value in (
+        ("ell_band", likelihood.ell_band),
+        ("data_vector", likelihood.data_vector),
+        ("covariance", likelihood.covariance),
+        ("starts", likelihood.starts),
+        ("stops", likelihood.stops),
+        ("whitener", likelihood.whitener),
+        ("corr_eigenvalues", likelihood.corr_eigenvalues),
+        ("kept_modes", likelihood.kept_modes),
+    ):
+        _update_identity_array(digest, label, value)
+    for index, spec in enumerate(likelihood.spectrum_specs):
+        prefix = f"spectrum[{index}]"
+        _update_identity_json(
+            digest,
+            f"{prefix}.metadata",
+            {
+                "name": spec.name,
+                "family": spec.family,
+                "theory_key": spec.theory_key,
+                "fields": spec.fields,
+                "pz_bin": spec.pz_bin,
+                "scalar_factor": float(spec.scalar_factor),
+                "ksz_amp": float(spec.ksz_amp),
+                "shot_noise_amplitude": float(spec.shot_noise_amplitude),
+                "source_band_count": int(spec.source_band_count),
+                "selected_band_indices": spec.selected_band_indices,
+                "ell_band": spec.ell_band,
+            },
+        )
+        _update_identity_array(digest, f"{prefix}.window", spec.window)
+        _update_identity_array(digest, f"{prefix}.transfer", spec.transfer)
+        _update_identity_array(
+            digest, f"{prefix}.shot_noise_template", spec.shot_noise_template
+        )
+    return digest.hexdigest()
+
+
 def static_summary(context: FitContext) -> dict:
     validation = validate_parameter_specs(context.config, context.parameter_specs, context.prior_config)
     halo_mass_floor = validate_halo_mass_floor(context.stage_config, context.config)
@@ -1270,6 +1457,16 @@ def static_summary(context: FitContext) -> dict:
     analysis = context.config["params"].get("analysis", {})
     other = context.config["params"].get("other_params", {})
     return {
+        "chain_contract_version": STAGE31_CHAIN_CONTRACT_VERSION,
+        "likelihood_identity_sha256": likelihood_identity(likelihood),
+        "theory_response_identity_sha256": gmt.theory_response_identity_sha256(
+            context.config
+        ),
+        "measurement_path": likelihood.measurement_path,
+        "measurement_map_product_id": likelihood.measurement_map_product_id,
+        "desi_galaxy_auto_mean_convention": (
+            likelihood.desi_galaxy_auto_mean_convention
+        ),
         "stage": context.stage_config["stage"],
         "n_parameters": validation["n_parameters"],
         "n_spectra": len(likelihood.names),
@@ -1281,6 +1478,9 @@ def static_summary(context: FitContext) -> dict:
         "min_corr_eigenvalue": float(np.min(likelihood.corr_eigenvalues)),
         "max_corr_eigenvalue": float(np.max(likelihood.corr_eigenvalues)),
         "parameter_names": validation["parameter_names"],
+        "parameter_contract_identity_sha256": parameter_contract_identity_sha256(
+            context.parameter_specs
+        ),
         "halo_lg10_Mmin": halo_mass_floor["actual"],
         "minimum_halo_log10_m200c_hmsun": halo_mass_floor["required"],
         "halo_mass_floor_enforced": halo_mass_floor["enforced"],
@@ -1329,7 +1529,13 @@ def compare_fiducial_windowing(context: FitContext) -> dict:
     fid = pack_fiducial_sample(context.parameter_specs)
     models = build_models_from_sample(context, fid)
     theory_cls_jax = _dense_theory_cls_from_models(context, models)
-    jax_vector = np.asarray(theory_data_vector_jax(context.likelihood, theory_cls_jax))
+    jax_vector = np.asarray(
+        theory_data_vector_jax(
+            context.likelihood,
+            theory_cls_jax,
+            desi_galaxy_shot_noise_amplitudes=_sampled_shot_noise_amplitudes(fid),
+        )
+    )
     theory_cls_np = gmt.extract_theory_cls_from_models(models, context.config["metadata"])
     ell_theory = gmt.model_ell_array(models)
     wrapper_vector, wrapper_names = gmt.theory_data_vector(
@@ -1678,6 +1884,9 @@ def _write_checkpoint_outputs(
     payload = {f"sample__{key}": np.asarray(value) for key, value in samples.items()}
     payload.update({f"extra__{key}": np.asarray(value) for key, value in extra.items()})
     payload["parameter_names"] = np.asarray([spec.name for spec in context.parameter_specs])
+    payload["parameter_contract_identity_sha256"] = np.asarray(
+        parameter_contract_identity_sha256(context.parameter_specs)
+    )
     payload["metadata_json"] = np.asarray(
         json.dumps(
             {
@@ -1838,7 +2047,10 @@ def best_sample_from_mcmc(mcmc: MCMC, specs: Sequence[ParameterSpec]) -> Tuple[D
 
 
 def measurement_from_likelihood(context: FitContext, likelihood: LikelihoodData) -> gmt.MeasurementData:
-    source = gmt.load_measurement_data(context.config["paths"]["measurement_h5"])
+    source = gmt.load_measurement_data(
+        context.config["paths"]["measurement_h5"],
+        include_invalid_placeholders=True,
+    )
     names = list(likelihood.names)
     ell_left = None
     ell_right = None
@@ -1900,6 +2112,18 @@ def parameter_specs_jsonable(specs: Sequence[ParameterSpec]) -> List[dict]:
     ]
 
 
+def parameter_contract_identity_sha256(specs: Sequence[ParameterSpec]) -> str:
+    """Hash the exact ordered varied-parameter targets, fiducials, and priors."""
+
+    canonical = json.dumps(
+        parameter_specs_jsonable(specs),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def save_fit_outputs(
     context: FitContext,
     mcmc: MCMC,
@@ -1921,17 +2145,70 @@ def save_fit_outputs(
     chi2_per_mode = float(best_chi2) / max(float(chi2_n_modes), 1.0)
     models = build_models_from_sample(context, best_sample)
     theory_cls = _dense_theory_cls_from_models(context, models)
-    best_theory = np.asarray(theory_data_vector_jax(context.likelihood, theory_cls))
+    best_shot_noise = _sampled_shot_noise_amplitudes(best_sample)
+    best_theory = np.asarray(
+        theory_data_vector_jax(
+            context.likelihood,
+            theory_cls,
+            desi_galaxy_shot_noise_amplitudes=best_shot_noise,
+        )
+    )
     measurement = measurement_for_plots(context)
     stats = gmt.comparison_statistics(measurement, best_theory)
     full_likelihood = full_likelihood_for_plots(context)
     full_measurement = measurement_from_likelihood(context, full_likelihood)
-    full_best_theory = np.asarray(theory_data_vector_jax(full_likelihood, theory_cls))
+    full_best_theory = np.asarray(
+        theory_data_vector_jax(
+            full_likelihood,
+            theory_cls,
+            desi_galaxy_shot_noise_amplitudes=best_shot_noise,
+        )
+    )
+    measurement_identity = gmt.measurement_identity_sha256(measurement)
+    full_measurement_identity = gmt.measurement_identity_sha256(full_measurement)
+    active_likelihood_identity = likelihood_identity(context.likelihood)
+    full_likelihood_identity = likelihood_identity(full_likelihood)
+    comparison_config_identity = gmt.comparison_config_identity_sha256(context.config)
+    theory_response_identity = gmt.theory_response_identity_sha256(context.config)
+    parameter_names = [spec.name for spec in context.parameter_specs]
+    parameter_contract_identity = parameter_contract_identity_sha256(context.parameter_specs)
+    active_vector_cache_fields = gmt.theory_vector_cache_fields(
+        best_theory,
+        measurement_identity,
+        {
+            "product_kind": "stage31_bestfit_active",
+            "chain_contract_version": STAGE31_CHAIN_CONTRACT_VERSION,
+            "likelihood_identity_sha256": active_likelihood_identity,
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "parameter_names": parameter_names,
+            "parameter_contract_identity_sha256": parameter_contract_identity,
+            "best_sample": best_sample,
+            "best_whitened_chi2": float(best_chi2),
+        },
+    )
+    full_vector_cache_fields = gmt.theory_vector_cache_fields(
+        full_best_theory,
+        full_measurement_identity,
+        {
+            "product_kind": "stage31_bestfit_full",
+            "chain_contract_version": STAGE31_CHAIN_CONTRACT_VERSION,
+            "likelihood_identity_sha256": full_likelihood_identity,
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "parameter_names": parameter_names,
+            "parameter_contract_identity_sha256": parameter_contract_identity,
+            "source_active_likelihood_identity_sha256": active_likelihood_identity,
+            "best_sample": best_sample,
+            "best_whitened_chi2": float(best_chi2),
+        },
+    )
 
     chain_path = output / f"chain_{suffix}.npz"
     payload = {f"sample__{key}": value for key, value in samples.items()}
     payload.update({f"extra__{key}": value for key, value in extra.items()})
-    payload["parameter_names"] = np.asarray([spec.name for spec in context.parameter_specs])
+    payload["parameter_names"] = np.asarray(parameter_names)
+    payload["parameter_contract_identity_sha256"] = np.asarray(parameter_contract_identity)
     payload["metadata_json"] = np.asarray(
         json.dumps(
             {
@@ -1963,8 +2240,17 @@ def save_fit_outputs(
         theory_vector=best_theory,
         covariance=np.asarray(measurement.covariance),
         spectrum_names=np.asarray(measurement.names),
+        slice_start=np.asarray(measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(measurement_identity),
+        likelihood_identity_sha256=np.asarray(active_likelihood_identity),
+        chain_contract_version=np.asarray(STAGE31_CHAIN_CONTRACT_VERSION),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
+        parameter_names=np.asarray(parameter_names),
+        parameter_contract_identity_sha256=np.asarray(parameter_contract_identity),
         best_sample_json=np.asarray(json.dumps(best_sample)),
         best_whitened_chi2=np.asarray(best_chi2),
+        **active_vector_cache_fields,
     )
 
     full_theory_path = output / f"bestfit_full_theory_data_vector_{suffix}.npz"
@@ -1975,9 +2261,19 @@ def save_fit_outputs(
         theory_vector=full_best_theory,
         covariance=np.asarray(full_measurement.covariance),
         spectrum_names=np.asarray(full_measurement.names),
+        slice_start=np.asarray(full_measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(full_measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(full_measurement_identity),
+        likelihood_identity_sha256=np.asarray(full_likelihood_identity),
+        source_active_likelihood_identity_sha256=np.asarray(active_likelihood_identity),
+        chain_contract_version=np.asarray(STAGE31_CHAIN_CONTRACT_VERSION),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
+        parameter_names=np.asarray(parameter_names),
+        parameter_contract_identity_sha256=np.asarray(parameter_contract_identity),
         best_sample_json=np.asarray(json.dumps(best_sample)),
         best_whitened_chi2=np.asarray(best_chi2),
         likelihood_bestfit_theory_vector=np.asarray(str(theory_path)),
+        **full_vector_cache_fields,
     )
 
     pdf_path = output / f"posterior_predictive_comparison_{suffix}.pdf"

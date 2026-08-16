@@ -1,0 +1,89 @@
+# GODMAX side of the comparison-only asymptotic-normalization experiment.
+#
+# This retains the analytic choices in params_baryonforge_backlight_godmax.yaml
+# and changes only the outer integration boundary and its quadrature accuracy.
+# The stock GODMAX class ignores comparison_extended_profile_rmax_r200c; the
+# orchestration config must explicitly select AsymptoticNormalizationProfiles.
+
+sim_params:
+  cosmo:
+    flat: true
+    H0: 67.11
+    Om0: 0.3175
+    Ob0: 0.049
+    sigma8: 0.834
+    ns: 0.9624
+    w0: -1.0
+
+  init_power: true
+  nfw_trunc: true
+  epsilon_rt: 4.0
+
+  theta_ej_0: 2.0
+  log10_Mstar0_theta_ej: 16.0
+  nu_theta_ej_M: -0.33
+  nu_theta_ej_z: -1.22
+  nu_theta_ej_c: 0.0
+
+  theta_co_0: 0.05
+  log10_Mstar0_theta_co: 16.0
+  nu_theta_co_M: 0.0
+  nu_theta_co_z: 0.0
+  nu_theta_co_c: 0.0
+
+  mu_beta: 0.0762
+  log10_Mstar0: 14.0
+  log10_Mc0: 13.75
+  nu_M: 0.0
+  nu_z: 0.0
+  gamma_rhogas: 2.0
+  delta_rhogas: 7.0
+
+  a_zeta: 0.3
+  n_zeta: 2.0
+
+  alpha_nt: 0.05
+  beta_nt: 0.0
+  n_nt: 0.3
+
+  A_starcga: 0.09
+  log10_M1_starcga: 11.4
+  eta_star: 0.3
+  eta_cga: 0.6
+
+halo_params:
+  rmin: 0.003
+  rmax: 12.0
+  nr: 64
+  zmin: 0.60
+  zmax: 1.02
+  nz: 48
+  lg10_Mmin: 12.75
+  lg10_Mmax: 16.0
+  nM: 48
+  mdef_Delta: 200
+  conc_model: Duffy08
+  hmf_model: T10
+
+analysis:
+  backreaction: false
+  model_galaxies: false
+  model_tSZ: true
+  calc_nfw_only: true
+  # 128 R200c is a finite proxy for the Schneider-model r -> infinity
+  # boundary.  A 256-R200c/512-point reference is the fixed convergence test.
+  # The pre-registered 100-R200c candidate failed the 1e-3 full-grid gas gate.
+  comparison_extended_profile_rmax_r200c: 128.0
+  comparison_extended_profile_integration_method: gauss_legendre_log
+  comparison_extended_profile_num_points: 64
+  num_points_trapz_int: 64
+  symbolic_pk: false
+  symbolic_hmf: false
+  verbose_time: false
+  is_cmb_lensing: true
+  nbar_gal_comoving_val: 0.0005
+
+other_params:
+  A_IA: 0.0
+  eta_IA: 0.0
+  alpha_ky: 1.0

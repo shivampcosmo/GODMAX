@@ -184,17 +184,28 @@ invariants:
     owner: measurement-namaster
 
   - id: INV-SHOTNOISE-01
-    title: DESI galaxy autos subtract weighted Poisson shot noise
+    title: DESI galaxy autos retain weighted Poisson shot noise exactly once
     layer: measurement
     severity: high
     statement: |
-      DESI galaxy auto spectra subtract N_ell = area_sr * sum(w^2) / sum(w)^2, stored in
-      each g{i} field metadata. No ACT or kSZ noise is subtracted from the saved data
-      vector.
+      DESI galaxy auto spectra and their joint-data-vector slices retain the catalog-derived
+      weighted Poisson shot noise exactly once. The exact constant coupled pseudo-noise
+      Omega_pix * sum(w^2) / [N_pix * (alpha * random_mean)^2] and its decoupled bandpower
+      template are saved for every g{i}. Default iNKA covariance inputs use the raw map auto,
+      which already contains the same term, with no subtraction or second add-back. Theory
+      windows the clustering signal normally and then adds a free per-pz amplitude times the
+      saved decoupled shot template in bandpower space. DES shear shape noise remains
+      subtracted; no ACT or kSZ noise is subtracted from the saved data vector.
     rationale: |
-      The imaging weights are mean-normalised but not uniform, so the unweighted
-      1/nbar shot noise is wrong. The asymmetry with ACT/kSZ (unsubtracted) must be
-      mirrored in the covariance inputs, where auto-noise is added back.
+      The imaging weights are mean-normalised but not uniform, so an unweighted 1/nbar
+      shot-noise model is wrong. For the variable random-count mask, the observed
+      masked field is G/(alpha*random_mean)-R/random_mean; coupling the
+      full-sky-equivalent area_sr*sum(w^2)/sum(w)^2 through that mask a second time
+      gives the wrong response. Retaining the raw mean matches the requested signal-plus-shot
+      data convention. The saved decoupled template is the exact response for a free theory
+      nuisance and must be added after cosmological signal windowing, not sent through the
+      galaxy pixel transfer. The raw auto independently supplies the total iNKA covariance
+      input, so restoring noise there a second time would double-count it.
     scope:
       - notebooks/xDESI/survey_measure/multiprobe_namaster.py
     evidence:
@@ -203,8 +214,10 @@ invariants:
       kind: pytest
       run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "shot_noise or imaging_weights"
     violation_symptom: |
-      Galaxy auto spectra flatten to a constant at high ell instead of falling;
-      the HOD fit compensates by pushing satellite fractions up.
+      Galaxy autos differ from raw decoupled map autos by one shot template, plots add the
+      template twice, or a signal-only theory leaves a high-ell constant residual that HOD
+      parameters absorb. Covariance errors are biased if its auto input omits or doubles the
+      same template.
     owner: measurement-namaster
 
   - id: INV-BEAM-01
@@ -237,7 +250,12 @@ invariants:
     severity: blocker
     statement: |
       The accepted data/theory comparison is windowed theory produced by
-      theory_to_data_vector(...) in the saved 460-element measurement convention.
+      theory_to_data_vector(...) in the exact saved product convention (460 elements
+      for fast1024 and 736 for the 16-band midres2048 product). The 20-band
+      highres4096 product archives 920 estimator bandpowers, but its four DESI-galaxy
+      x ACT-kappa spectra mark the seven bands above the supported ell=3000 cutoff
+      invalid. Statistical consumers must use the saved validity mask, giving 892
+      active elements, and the corresponding ordinary principal covariance submatrix.
       Evaluating smooth theory at ell_eff is a diagnostic only and must never be
       reported as the result.
     rationale: |
@@ -317,14 +335,28 @@ invariants:
     owner: halo-model-physicist
 
   - id: INV-DV-SHAPE-01
-    title: fast1024 data vector is 46 spectra / 460 elements with covariance rank 459
+    title: Data vector is 46 spectra; element count and rank are product-specific
     layer: data
     severity: blocker
     statement: |
-      The fast1024 product has 46 spectra and 460 data-vector elements:
+      Every current pipeline-v2 product has the same 46 spectra:
       10 DES shear EE, 4 y x shear-E, 4 DESI galaxy autos, 4 galaxy x y,
       16 galaxy x shear-E, 4 galaxy x ACT kappa, 4 DESI momentum x ACT T.
-      Covariance rank after the 1e-8 eigenvalue cut is 459.
+      The fast1024 product has 10 bands and 460 elements; the ell<=4096 midres2048
+      product has 16 bands and 736 elements. The ell<=8192 highres4096 archive has
+      20 bands and 920 slots. Exactly 28 slots -- bins 13..19 of the four
+      DESI-galaxy x ACT-kappa spectra -- are transfer-null placeholders whose packed
+      values are zero and whose saved validity flags are false; the active data vector
+      therefore has 892 elements. Raw values remain in spectra/<name>/cl and
+      joint/data_vector_raw, and the full 920x920 Gaussian/iNKA covariance remains on
+      that raw estimator basis. Likelihoods must select the 892x892 ordinary principal
+      submatrix; they must not invert the full matrix with zero placeholders or use a
+      Schur complement.
+      The retained covariance rank must be computed from and reported for the exact
+      saved product. The regenerated pipeline-v2 product retains 460/460 modes after the
+      1e-8 correlation-eigenvalue cut; rank 459 belongs to the legacy-v1 covariance.
+      Neither rank may be inherited by a different product, and no highres4096 rank may
+      be quoted until that exact active covariance has been measured.
     rationale: |
       Every downstream consumer (whitening, chi2, plotting, chain packing) indexes this
       layout positionally. A silent change in spectrum inventory or ordering
@@ -336,7 +368,7 @@ invariants:
       - notebooks/xDESI/survey_measure/BACKLIGHT_PASTE_HANDOFF_SUMMARY.md
     check:
       kind: pytest
-      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "inventory or component_labels"
+      run: pytest tests/test_xdesi_multiprobe_namaster.py -q -k "inventory or component_labels or highres_kappa_packing"
     violation_symptom: |
       Off-by-one family misattribution: residual plots show a discontinuity at a
       family boundary, or chi2 per family sums to less than the total.
@@ -349,8 +381,10 @@ invariants:
     statement: |
       Each saved product records the catalog, mask, weights and n(z) it used; each
       input_cls_for_covariance/* dataset records spin labels and noise policy; and any
-      provisional input (for example a single DR9 random realization, or a
+      provisional input (for example a historical single-DR9-random mask, or a
       sum-preserving nside4096 -> nside2048 mask downgrade) is flagged in metadata.
+      A stage that requires multiple random realizations must fail closed unless the
+      random-count product records at least that count and the exact realization set.
     rationale: |
       Products outlive the session that made them. Without provenance, a later fit
       silently mixes mask versions or noise conventions across stages.
@@ -593,8 +627,8 @@ invariants:
       kind: grep
       run: grep -rln "jax_enable_x64" run_scripts/ notebooks/xDESI/survey_measure/
     violation_symptom: |
-      Whitening rank drops below 459; chi2 changes between runs; gradients become noisy
-      at the 1e-3 level; eigenvalue cut removes far more modes than expected.
+      Whitening rank changes between identical runs; chi2 changes between runs; gradients
+      become noisy at the 1e-3 level; the eigenvalue cut removes far more modes than expected.
     owner: jax-numerics
 
   - id: INV-JAX-GRAD-FINITE-01
@@ -693,7 +727,9 @@ invariants:
     statement: |
       chi2 = || W (data - theory) ||^2, where W is built from the eigendecomposition of
       the covariance *correlation* matrix with eigenvalue threshold 1e-8. The retained
-      rank must be reported alongside every chi2 (fast1024: 459 of 460).
+      rank must be reported alongside every chi2. The legacy-v1 fast1024 covariance retained
+      459 of 460 modes; the regenerated pipeline-v2 fast covariance retains 460 of 460.
+      No pipeline-v2 chi2 has been evaluated, so this rank is not a goodness-of-fit result.
     rationale: |
       chi2 is only interpretable against its degrees of freedom, and the eigenvalue cut
       sets them. Two chi2 values computed at different retained ranks are not
@@ -719,7 +755,7 @@ invariants:
     severity: blocker
     statement: |
       A fit is judged against the expectation chi2 ~ (retained rank - n_varied), with
-      scatter of order sqrt(2 * that value). For Stage-31 fast1024 that is
+      scatter of order sqrt(2 * that value). For the legacy-v1 Stage-31 fast1024 result that is
       459 - 31 = 428 +/- ~29. The v1 best-fit whitened chi2 of 7346.23 is NOT a good
       fit and must be labelled an operational point, never a physical result.
     rationale: |

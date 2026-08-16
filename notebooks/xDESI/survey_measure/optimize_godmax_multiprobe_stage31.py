@@ -319,6 +319,29 @@ def save_map_outputs(
     best_theory = np.asarray(hmc31.evaluate_sample_theory_vector(context, best_sample))
     measurement = hmc31.measurement_for_plots(context)
     stats = gmt.comparison_statistics(measurement, best_theory)
+    measurement_identity = gmt.measurement_identity_sha256(measurement)
+    likelihood_identity = hmc31.likelihood_identity(context.likelihood)
+    comparison_config_identity = gmt.comparison_config_identity_sha256(context.config)
+    theory_response_identity = gmt.theory_response_identity_sha256(context.config)
+    parameter_names = [spec.name for spec in context.parameter_specs]
+    parameter_contract_identity = hmc31.parameter_contract_identity_sha256(
+        context.parameter_specs
+    )
+    vector_cache_fields = gmt.theory_vector_cache_fields(
+        best_theory,
+        measurement_identity,
+        {
+            "product_kind": "stage31_optimized_bestfit_active",
+            "chain_contract_version": hmc31.STAGE31_CHAIN_CONTRACT_VERSION,
+            "likelihood_identity_sha256": likelihood_identity,
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "parameter_names": parameter_names,
+            "parameter_contract_identity_sha256": parameter_contract_identity,
+            "best_sample": dict(best_sample),
+            "best_whitened_chi2": float(best_chi2),
+        },
+    )
 
     theory_path = output_dir / f"map_bestfit_theory_data_vector_{suffix}.npz"
     np.savez_compressed(
@@ -328,8 +351,17 @@ def save_map_outputs(
         theory_vector=best_theory,
         covariance=np.asarray(measurement.covariance),
         spectrum_names=np.asarray(measurement.names),
+        slice_start=np.asarray(measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(measurement_identity),
+        likelihood_identity_sha256=np.asarray(likelihood_identity),
+        chain_contract_version=np.asarray(hmc31.STAGE31_CHAIN_CONTRACT_VERSION),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
+        parameter_names=np.asarray(parameter_names),
+        parameter_contract_identity_sha256=np.asarray(parameter_contract_identity),
         best_sample_json=np.asarray(json.dumps(best_sample)),
         best_whitened_chi2=np.asarray(best_chi2),
+        **vector_cache_fields,
     )
 
     pdf_path = output_dir / f"map_bestfit_comparison_{suffix}.pdf"

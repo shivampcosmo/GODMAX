@@ -7,6 +7,8 @@ import argparse
 from pathlib import Path
 
 from multiprobe_namaster import (
+    MAP_CONSTRUCTION_VERSION,
+    MEASUREMENT_PIPELINE_VERSION,
     MeasurementConfig,
     add_common_cli_args,
     config_from_args,
@@ -29,19 +31,32 @@ def parse_args() -> argparse.Namespace:
 
 
 def _config_from_map_metadata(config: MeasurementConfig, map_metadata: dict) -> MeasurementConfig:
+    if str(map_metadata.get("pipeline_version", "")) != MEASUREMENT_PIPELINE_VERSION:
+        raise ValueError("Cached map product is from a stale pipeline version; regenerate it.")
+    if str(map_metadata.get("map_construction_version", "")) != MAP_CONSTRUCTION_VERSION:
+        raise ValueError("Cached map product uses a stale map-construction algorithm; regenerate it.")
+    if not str(map_metadata.get("map_product_id", "")):
+        raise ValueError("Cached map product has no map_product_id; regenerate it.")
     map_config = map_metadata.get("config", {})
     for key in (
+        "pipeline_version",
         "stage",
         "nside",
         "act_downgrade",
         "shear_e_to_kappa_sign",
         "shear_mask_dataset",
         "shear_noise_attr",
+        "subtract_masked_mean",
         "mask_apodization_deg",
         "mask_apodization_type",
+        "pair_overlap_mean_subtract",
     ):
-        if key in map_config:
-            setattr(config, key, map_config[key])
+        if key not in map_config:
+            raise ValueError(f"Cached map product is missing construction config key {key!r}.")
+        if map_config[key] != getattr(config, key):
+            raise ValueError(
+                f"Requested {key}={getattr(config, key)!r} does not match cached map value {map_config[key]!r}."
+            )
     if "lmax" in map_config:
         map_lmax = int(map_config["lmax"])
         if int(config.lmax) > map_lmax:

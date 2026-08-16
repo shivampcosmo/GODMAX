@@ -62,7 +62,11 @@ The measured spectra are:
 - DESI galaxy x ACT CMB kappa: 4 spectra
 - DESI kSZ momentum x ACT temperature: 4 spectra
 
-The measurement convention is raw bandpower `C_ell` in the HDF5 data vector. Plotting converts most spectra to `D_ell = ell(ell+1) C_ell / 2pi`; galaxy autos are usually left as signal-only `C_ell`; kSZ plots use the positive convention `-D_ell^{pi,T}` or `-10^3 D_ell^{pi,T}`.
+The measurement convention is raw bandpower `C_ell` in the HDF5 data vector. Current
+`_pipev2_gshot` galaxy autos retain clustering plus weighted Poisson shot noise exactly once;
+their `C_ell` and `D_ell` views plot that saved total without adding another template.
+Plotting converts spectra to `D_ell = ell(ell+1) C_ell / 2pi`; kSZ plots use the positive
+convention `-D_ell^{pi,T}` or `-10^3 D_ell^{pi,T}`.
 
 ## DESI Photometric Catalog And n(z)
 
@@ -455,8 +459,11 @@ Recommended validation sequence:
    - raw simulated/measurement vector should follow `C_ell^{pi,T_uK}`
    - diagnostic plots should use positive `-D_ell^{pi,T}`
 9. Check galaxy auto spectra carefully:
-   - measurement comparison uses shot-noise-subtracted signal-only autos
-   - any simulated shot noise should be handled consistently
+   - the current measurement comparison uses signal-plus-shot-noise autos, with catalog
+     shot noise retained exactly once
+   - compare a signal-only analytic or simulated spectrum through the saved bandpower
+     window, then add `A_shot,pz` times the saved decoupled shot-noise bandpower template;
+     do not apply the signal transfer/window to that saved response again
 10. Check abundance:
    - each pz-bin projected density should recover the measured `nbar_per_sr`
    - comoving nbar(z) should be `nbar_per_sr_i * n_i_true(z) / [chi(z)^2 dchi/dz]`

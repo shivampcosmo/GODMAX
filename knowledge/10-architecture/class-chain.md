@@ -12,10 +12,12 @@ scope:
   - src/get_Cls.py
   - src/get_Xis.py
   - src/get_covs.py
+  - tests/test_get_radial_profiles.py
 invariants:
   - INV-JAX-TRACE-01
   - INV-PHYS-UNITS-01
 checks:
+  - /usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python -m pytest tests/test_get_radial_profiles.py -q
   - "TODO(godmax-core): construction smoke test — build the chain from params_default.yaml and assert C(ell) shape"
 verified_at_commit: 43e07ca
 verified_on: 2026-08-03
@@ -41,6 +43,12 @@ profiles_test = Profiles(..., base_class_obj=base_test)
 Pkz_test      = get_Pkz(..., Profiles_obj=profiles_test)
 Cl_test       = get_Cl(..., Pkz_obj=Pkz_test)
 ```
+
+Within `Profiles`, galaxy-enabled construction resolves `get_Ncen` and `get_Nsat` as
+separate class-level, JIT-decorated methods (`src/get_radial_profiles.py:632-650`) before
+building the central and satellite stellar fractions (`src/get_radial_profiles.py:223-239`).
+`tests/test_get_radial_profiles.py` regression-tests this contract through the live
+`run_stars_calc` path and checks the non-galaxy branch as its null control.
 
 The chain and its responsibilities are recorded in `src/context/codebase_summary.md`
 (section 2.1):
@@ -76,6 +84,10 @@ grep -rn "base_class_obj=\|Profiles_obj=\|Pkz_obj=" --include=*.py --include=*.i
 # enumerate callers before changing any signature (both .py and .ipynb)
 grep -rn "from get_Cls import\|import get_Cls\|get_Cl(" --include=*.py --include=*.ipynb . | grep -v src/arxiv
 
+# targeted core HOD construction, formulas, gradients, and non-galaxy null
+/usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python \
+  -m pytest tests/test_get_radial_profiles.py -q
+
 # module sizes — the split pressure points
 find src -maxdepth 1 -name "*.py" | xargs wc -l | sort -rn | head
 ```
@@ -93,6 +105,9 @@ Expected: `get_sim_maps.py` ~1555 lines, `get_radial_profiles.py` ~960, `get_cov
 - **Concretising a traced value in a constructor** to make it JIT-able. Fails silently as a
   zero gradient for every parameter used during setup (`INV-JAX-TRACE-01`); NUTS then never
   moves that parameter off its initial value.
+- **Merging two HOD helpers into one class method.** `run_stars_calc` either cannot resolve
+  `get_Nsat` or recursively calls `get_Ncen`; galaxy-disabled configurations do not expose
+  the break.
 - **Importing from `src/arxiv/`.** Produces plausible results from a superseded model with
   no error.
 - **Adding a fifth concern to `get_sim_maps.py` or `get_radial_profiles.py`.** These are at
@@ -104,7 +119,7 @@ Expected: `get_sim_maps.py` ~1555 lines, `get_radial_profiles.py` ~960, `get_cov
 - This document is derived from `README.md` and `src/context/codebase_summary.md`, not yet
   from line-level reading of each module. `confidence: medium` until anchored to specific
   constructor lines. Owner: `godmax-core`. Not blocking.
-- No construction smoke test exists. `tests/` contains one file and it covers the xDESI
-  measurement, not `src/`. A test that builds the chain from `params_default.yaml` and
-  asserts the `C(ell)` shape would be the cheapest durable coverage in the repository.
+- The targeted HOD construction path is covered by `tests/test_get_radial_profiles.py`, but
+  no automated test builds the complete class chain from `params_default.yaml` and asserts
+  the resulting `C(ell)` shape. That remains the cheapest durable end-to-end coverage.
   Owner: `godmax-core` with `repro-runner`.

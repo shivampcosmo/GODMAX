@@ -9,6 +9,7 @@ can be inspected and reused before launching production measurements.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -87,6 +88,23 @@ DESI_DR9_SUPPORTED_RANDOM_NSIDE = (1024, 4096)
 DESI_DR9_RANDOM_DERIVED_NSIDE = (2048,)
 SCHEMA_MAPS = "xdesi_multiprobe_maps_v1"
 SCHEMA_MEASUREMENT = "xdesi_multiprobe_measurement_v1"
+SCHEMA_MEASUREMENT_VALIDITY_MASK = "xdesi_multiprobe_measurement_v2"
+MEASUREMENT_PIPELINE_VERSION = "namaster_v2"
+MAP_CONSTRUCTION_VERSION = "shear_act_desi_masks_v2"
+SPECTRUM_ESTIMATOR_VERSION = "catalog_noise_and_transfer_v2"
+COVARIANCE_ESTIMATOR_VERSION = "inka_data_v1"
+DESI_GALAXY_AUTO_MEAN_CONVENTION = "signal_plus_weighted_poisson_shot_noise"
+DESI_GALAXY_AUTO_PRODUCT_TAG = "gshot"
+DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION = "conditional_weighted_poisson_views_v1"
+DESI_GALAXY_AUTO_PRIMARY_VIEW = "total"
+DESI_GALAXY_AUTO_SUBTRACTED_VIEW = "weighted_poisson_subtracted"
+DATA_VECTOR_VALIDITY_CONTRACT_VERSION = "kappa_band_validity_v1"
+ACT_CMB_TEMPERATURE_UNITS = "uK_CMB"
+DESI_GALAXY_AUTO_THEORY_INTERFACE_NOTE = (
+    "For DESI galaxy autos, window the clustering signal with the saved signal transfers "
+    "and then add A_shot,pz times spectra/<name>/noise_decoupled_all_components[component]. "
+    "That template is already decoupled; do not window it or add it to the measurement again."
+)
 
 
 @dataclass(frozen=True)
@@ -212,13 +230,25 @@ class SurveyBundle:
 
 @dataclass
 class MeasurementConfig:
+    pipeline_version: str = MEASUREMENT_PIPELINE_VERSION
     stage: str = "lowres"
     nside: int = 1024
     lmax: int = 1024
+    # Harmonic cutoff used for survey masks. ``None`` follows the science
+    # cutoff for backwards-compatible ad-hoc configurations; production
+    # stages set this explicitly when the mask bandwidth must be larger.
+    lmax_mask: Optional[int] = None
     ell_min: int = 8
     n_bins: int = 24
     binning: str = "sqrt"
-    act_downgrade: int = 4
+    # Inclusive ACT CMB-lensing science cutoff.  ``None`` means that every
+    # common-grid band is active.  The high-resolution stage uses the measured
+    # ACT response support, which is non-zero through ell=3000 and null from
+    # ell=3001 onward.
+    kappa_cmb_lmax: Optional[int] = None
+    act_cmb_temperature_units_confirmed: bool = False
+    minimum_desi_random_realizations: int = 1
+    act_downgrade: int = 1
     catalog_chunk: int = 2_000_000
     shear_mask_dataset: str = "mask_weight"
     shear_noise_attr: str = "shape_noise_pseudo_cl_normalized_weight_mask"
@@ -233,7 +263,7 @@ class MeasurementConfig:
     covariance_l_exact: int = -1
     covariance_dl_band: int = -1
     covariance_workspace_cache_size: int = 0
-    covariance_input_mode: str = "decoupled_total_bandpowers_unbinned"
+    covariance_input_mode: str = "inka_data"
     covariance_input_smooth_bandpowers: bool = True
     covariance_input_smooth_window: int = 5
     covariance_zero_parity_odd_inputs: bool = True
@@ -248,7 +278,7 @@ class MeasurementConfig:
     def for_stage(cls, stage: str) -> "MeasurementConfig":
         stage = str(stage).lower()
         if stage == "lowres":
-            return cls(stage="lowres", nside=1024, lmax=2048, n_bins=32, act_downgrade=4)
+            return cls(stage="lowres", nside=1024, lmax=2048, n_bins=32, act_downgrade=1)
         if stage == "fast1024":
             return cls(
                 stage="fast1024",
@@ -256,21 +286,30 @@ class MeasurementConfig:
                 lmax=1024,
                 n_bins=10,
                 binning="linear",
-                act_downgrade=4,
+                # CAR block averaging has an anisotropic transfer that is not
+                # represented by a HEALPix pixel window. Reproject the native
+                # map instead of introducing an unmodelled filter.
+                act_downgrade=1,
                 include_ksz_velocity_shuffle=False,
             )
         if stage == "midres2048":
             return cls(
                 stage="midres2048",
                 nside=2048,
-                lmax=3000,
+                lmax=4096,
+                lmax_mask=6143,
                 ell_min=128,
-                n_bins=13,
+                n_bins=16,
                 binning="log",
                 act_downgrade=1,
-                mask_apodization_deg=1.0,
+                # The DES shear and DESI random-count masks contain internal
+                # zero-count pixels. Treating each zero as an apodization
+                # boundary destroys their effective area. ACT T/kappa masks
+                # are already tapered upstream, so no second apodization is
+                # applied here either.
+                mask_apodization_deg=0.0,
                 mask_apodization_type="C2",
-                pair_overlap_mean_subtract=True,
+                pair_overlap_mean_subtract=False,
                 include_ksz_velocity_shuffle=False,
             )
         if stage == "full":
@@ -282,34 +321,94 @@ class MeasurementConfig:
                 act_downgrade=1,
                 include_ksz_velocity_shuffle=False,
             )
-        raise ValueError("stage must be 'lowres', 'fast1024', 'midres2048', or 'full'.")
+        if stage == "highres4096":
+            return cls(
+                stage="highres4096",
+                nside=4096,
+                lmax=8192,
+                lmax_mask=12287,
+                ell_min=128,
+                n_bins=20,
+                binning="log",
+                kappa_cmb_lmax=3000,
+                act_cmb_temperature_units_confirmed=True,
+                minimum_desi_random_realizations=8,
+                act_downgrade=1,
+                mask_apodization_deg=0.0,
+                mask_apodization_type="C2",
+                pair_overlap_mean_subtract=False,
+                include_ksz_velocity_shuffle=False,
+            )
+        raise ValueError(
+            "stage must be 'lowres', 'fast1024', 'midres2048', 'full', or 'highres4096'."
+        )
 
     def validate(self) -> None:
+        if str(self.pipeline_version) != MEASUREMENT_PIPELINE_VERSION:
+            raise ValueError(
+                f"pipeline_version={self.pipeline_version!r} is not supported by this code; "
+                f"expected {MEASUREMENT_PIPELINE_VERSION!r}. Regenerate stale map/spectrum products."
+            )
         if int(self.ell_min) < 0:
             raise ValueError("ell_min must be non-negative.")
         if int(self.lmax) < int(self.ell_min):
             raise ValueError(f"lmax={self.lmax} must be >= ell_min={self.ell_min}.")
         if int(self.n_bins) <= 0:
             raise ValueError("n_bins must be positive.")
+        if int(self.minimum_desi_random_realizations) <= 0:
+            raise ValueError("minimum_desi_random_realizations must be positive.")
         if int(self.lmax) > 3 * int(self.nside) - 1:
             raise ValueError(f"lmax={self.lmax} exceeds the HEALPix limit 3*nside-1={3 * int(self.nside) - 1}.")
+        if int(self.effective_lmax_mask) < int(self.lmax):
+            raise ValueError(
+                f"lmax_mask={self.effective_lmax_mask} must be >= the science lmax={self.lmax}."
+            )
+        if int(self.effective_lmax_mask) > 3 * int(self.nside) - 1:
+            raise ValueError(
+                f"lmax_mask={self.effective_lmax_mask} exceeds the HEALPix limit "
+                f"3*nside-1={3 * int(self.nside) - 1}."
+            )
         if str(self.binning).lower() not in {"sqrt", "linear", "log"}:
             raise ValueError(f"Unsupported binning={self.binning!r}; expected 'sqrt', 'linear', or 'log'.")
         if float(self.mask_apodization_deg) < 0.0:
             raise ValueError("mask_apodization_deg must be non-negative.")
         if str(self.mask_apodization_type) not in {"C1", "C2", "Smooth"}:
             raise ValueError("mask_apodization_type must be one of 'C1', 'C2', or 'Smooth'.")
+        if self.kappa_cmb_lmax is not None:
+            if int(self.kappa_cmb_lmax) < int(self.ell_min):
+                raise ValueError("kappa_cmb_lmax must be >= ell_min when supplied.")
+            if int(self.kappa_cmb_lmax) > int(self.lmax):
+                raise ValueError("kappa_cmb_lmax must be <= lmax when supplied.")
+        if bool(self.act_cmb_temperature_units_confirmed) and ACT_CMB_TEMPERATURE_UNITS != "uK_CMB":
+            raise ValueError("The confirmed ACT CMB temperature-unit contract must be uK_CMB.")
 
     @property
     def output_root(self) -> Path:
         return Path(self.output_dir).resolve() / self.stage
 
     @property
-    def product_tag(self) -> str:
+    def effective_lmax_mask(self) -> int:
+        """Resolved NaMaster mask-harmonic cutoff saved in product provenance."""
+
+        return int(self.lmax if self.lmax_mask is None else self.lmax_mask)
+
+    def to_dict(self) -> Dict[str, object]:
+        """Serialize configuration with defaults resolved to executed values."""
+
+        payload = asdict(self)
+        payload["lmax_mask"] = int(self.effective_lmax_mask)
+        return payload
+
+    @property
+    def map_product_tag(self) -> str:
+        """Tag for reusable map products, which do not depend on the saved-mean policy."""
+
         parts = [f"nside{self.nside}"]
         if int(self.ell_min) != 8:
             parts.append(f"ell{int(self.ell_min)}")
         parts.append(f"lmax{self.lmax}")
+        if int(self.effective_lmax_mask) != int(self.lmax):
+            parts.append(f"lmask{self.effective_lmax_mask}")
         if not (self.stage in {"lowres", "full"} and str(self.binning).lower() == "sqrt"):
             parts.append(f"nbin{self.n_bins}")
             parts.append(str(self.binning).lower())
@@ -320,11 +419,27 @@ class MeasurementConfig:
             parts.append(str(self.mask_apodization_type))
         if bool(self.pair_overlap_mean_subtract):
             parts.append("pairmean")
+        parts.append("pipev2")
         return "_".join(parts)
 
     @property
+    def product_tag(self) -> str:
+        """Tag for spectra/assembled products with galaxy shot noise in the mean."""
+
+        parts = [self.map_product_tag, DESI_GALAXY_AUTO_PRODUCT_TAG]
+        if self.kappa_cmb_lmax is not None:
+            parts.extend((f"gkell{int(self.kappa_cmb_lmax)}", "dvvalidv1"))
+        return "_".join(parts)
+
+    @property
+    def covariance_product_tag(self) -> str:
+        """Tag for covariance artifacts, unchanged by the saved galaxy-mean policy."""
+
+        return self.map_product_tag
+
+    @property
     def default_maps_path(self) -> Path:
-        return self.output_root / f"xdesi_multiprobe_maps_{self.product_tag}.h5"
+        return self.output_root / f"xdesi_multiprobe_maps_{self.map_product_tag}.h5"
 
     @property
     def default_measurement_path(self) -> Path:
@@ -407,6 +522,541 @@ def _json_default(value: object) -> object:
 
 def _json_dumps(value: object) -> str:
     return json.dumps(value, default=_json_default, indent=2, sort_keys=True)
+
+
+def _stable_sha256(value: object) -> str:
+    return hashlib.sha256(_json_dumps(value).encode("utf-8")).hexdigest()
+
+
+def _array_content_sha256(values: np.ndarray) -> str:
+    """Return a stable identity for one saved numeric array."""
+
+    arr = np.ascontiguousarray(np.asarray(values))
+    digest = hashlib.sha256()
+    digest.update(str(arr.shape).encode("ascii"))
+    digest.update(arr.dtype.str.encode("ascii"))
+    digest.update(memoryview(arr).cast("B"))
+    return digest.hexdigest()
+
+
+def _array_raw_sha256(values: np.ndarray) -> str:
+    """Hash only contiguous array bytes, matching transferred count-map provenance."""
+
+    arr = np.ascontiguousarray(np.asarray(values))
+    return hashlib.sha256(memoryview(arr).cast("B")).hexdigest()
+
+
+def map_content_digests(fields: Mapping[str, FieldMap]) -> Dict[str, object]:
+    """Content-address the complete estimator contract for every saved field."""
+
+    masks: Dict[str, str] = {}
+    field_mask_names: Dict[str, str] = {}
+    field_descriptors: Dict[str, str] = {}
+    field_arrays: Dict[str, object] = {}
+    for name in sorted(fields):
+        field_map = fields[name]
+        mask_name = str(field_map.mask_name)
+        if mask_name not in masks:
+            masks[mask_name] = _array_content_sha256(
+                np.asarray(field_map.mask, dtype=np.float32)
+            )
+        field_mask_names[name] = mask_name
+        field_descriptors[name] = _stable_sha256(
+            {
+                "name": str(field_map.name),
+                "label": str(field_map.label),
+                "kind": str(field_map.kind),
+                "spin": int(field_map.spin),
+                "mask_name": mask_name,
+                "metadata": field_map.metadata,
+            }
+        )
+        field_arrays[name] = {
+            "maps": [
+                _array_content_sha256(np.asarray(values, dtype=np.float32))
+                for values in field_map.maps
+            ],
+            "catalog": {
+                key: _array_content_sha256(
+                    np.asarray(field_map.catalog[key], dtype=np.float64)
+                )
+                for key in sorted(field_map.catalog)
+            },
+        }
+    return {
+        "masks": masks,
+        "field_mask_names": field_mask_names,
+        "field_descriptors": field_descriptors,
+        "fields": field_arrays,
+    }
+
+
+def map_product_id_from_metadata(metadata: Mapping[str, object]) -> str:
+    """Derive the map-product ID from algorithms, inputs, config and array content."""
+
+    content = metadata.get("map_content_digests")
+    if not isinstance(content, Mapping) or not content:
+        raise ValueError("Map metadata has no map_content_digests; regenerate the map product.")
+    return _stable_sha256(
+        {
+            "pipeline_version": metadata.get("pipeline_version"),
+            "map_construction_version": metadata.get("map_construction_version"),
+            "config": metadata.get("config"),
+            "input_files": metadata.get("input_files"),
+            "desi_summary": metadata.get("desi_summary"),
+            "des_y3_source_nz": metadata.get("des_y3_source_nz"),
+            "map_content_digests": content,
+        }
+    )
+
+
+def map_metadata_with_content_identity(
+    fields: Mapping[str, FieldMap],
+    metadata: Mapping[str, object],
+) -> Dict[str, object]:
+    """Return map metadata bound to the exact saved mask/map/catalog arrays."""
+
+    out = dict(metadata)
+    out["map_content_digests"] = map_content_digests(fields)
+    out["map_product_id"] = map_product_id_from_metadata(out)
+    return out
+
+
+def validate_map_metadata_identity(metadata: Mapping[str, object]) -> str:
+    """Validate and return the content-addressed map-product ID."""
+
+    product_id = str(metadata.get("map_product_id", ""))
+    expected = map_product_id_from_metadata(metadata)
+    if not product_id or product_id != expected:
+        raise ValueError(
+            "Map product identity is missing or does not match its config/input/content digests; "
+            "regenerate it instead of reusing it."
+        )
+    return product_id
+
+
+def validate_loaded_map_content(
+    fields: Mapping[str, FieldMap],
+    metadata: Mapping[str, object],
+) -> None:
+    """Check loaded arrays against the content identities stored in map metadata."""
+
+    expected = metadata.get("map_content_digests")
+    if not isinstance(expected, Mapping):
+        raise ValueError("Map metadata has no content digests; regenerate the product.")
+    actual = map_content_digests(fields)
+    for section in ("masks", "field_mask_names", "field_descriptors", "fields"):
+        expected_section = expected.get(section)
+        if not isinstance(expected_section, Mapping):
+            raise ValueError(f"Map metadata content-digest section {section!r} is missing.")
+        for name, value in actual[section].items():
+            if name not in expected_section or expected_section[name] != value:
+                raise ValueError(
+                    f"Loaded map content for {section}/{name} does not match map_product_id; "
+                    "the HDF5 product is stale or has been modified."
+                )
+
+
+def _json_hdf5_attr(attrs: h5py.AttributeManager, key: str) -> object:
+    if key not in attrs:
+        raise ValueError(f"HDF5 product is missing required {key!r} provenance.")
+    raw = attrs[key]
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        return json.loads(str(raw))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"HDF5 product has invalid JSON provenance in {key!r}.") from exc
+
+
+def validate_map_product_hdf_identity(
+    h5: h5py.File,
+    *,
+    allow_legacy_product: bool = False,
+) -> str:
+    """Validate the algorithm and originating-content identity of an open map HDF5."""
+
+    schema = str(h5.attrs.get("schema", ""))
+    if schema != SCHEMA_MAPS:
+        raise ValueError(f"HDF5 product schema={schema!r}, expected {SCHEMA_MAPS!r}.")
+    pipeline_version = str(h5.attrs.get("pipeline_version", ""))
+    if pipeline_version != MEASUREMENT_PIPELINE_VERSION:
+        if allow_legacy_product:
+            return str(h5.attrs.get("map_product_id", ""))
+        raise ValueError(
+            f"Map product pipeline_version={pipeline_version!r} is legacy; expected "
+            f"{MEASUREMENT_PIPELINE_VERSION!r}. Regenerate it, or explicitly opt into "
+            "allow_legacy_product=True for a historical-only comparison."
+        )
+    map_version = str(h5.attrs.get("map_construction_version", ""))
+    if map_version != MAP_CONSTRUCTION_VERSION:
+        raise ValueError(
+            f"Map product map_construction_version={map_version!r}, expected "
+            f"{MAP_CONSTRUCTION_VERSION!r}."
+        )
+    metadata = _json_hdf5_attr(h5.attrs, "metadata_json")
+    if not isinstance(metadata, Mapping):
+        raise ValueError("Map metadata_json must decode to a mapping.")
+    product_id = validate_map_metadata_identity(metadata)
+    root_product_id = str(h5.attrs.get("map_product_id", ""))
+    if root_product_id != product_id:
+        raise ValueError("Map HDF5 map_product_id does not match its embedded metadata.")
+    for key, expected in (
+        ("pipeline_version", MEASUREMENT_PIPELINE_VERSION),
+        ("map_construction_version", MAP_CONSTRUCTION_VERSION),
+        ("spectrum_estimator_version", SPECTRUM_ESTIMATOR_VERSION),
+        ("covariance_estimator_version", COVARIANCE_ESTIMATOR_VERSION),
+    ):
+        if str(metadata.get(key, "")) != expected:
+            raise ValueError(
+                f"Map metadata {key}={metadata.get(key)!r}, expected {expected!r}."
+            )
+    return product_id
+
+
+def validate_measurement_product_identity(
+    h5: h5py.File,
+    *,
+    allow_legacy_product: bool = False,
+) -> str:
+    """Validate an open measurement and return its originating map-product ID.
+
+    Legacy products are rejected by default because their masks, noise subtraction,
+    transfer functions and covariance estimator differ from pipeline v2.  The opt-in
+    exists only to make deliberately historical comparisons explicit.
+    """
+
+    schema = str(h5.attrs.get("schema", ""))
+    supported_schemas = {SCHEMA_MEASUREMENT, SCHEMA_MEASUREMENT_VALIDITY_MASK}
+    if schema not in supported_schemas:
+        raise ValueError(
+            f"HDF5 product schema={schema!r}, expected one of {sorted(supported_schemas)!r}."
+        )
+    pipeline_version = str(h5.attrs.get("pipeline_version", ""))
+    if pipeline_version != MEASUREMENT_PIPELINE_VERSION:
+        if allow_legacy_product:
+            return str(h5.attrs.get("map_product_id", ""))
+        raise ValueError(
+            f"Measurement pipeline_version={pipeline_version!r} is legacy; expected "
+            f"{MEASUREMENT_PIPELINE_VERSION!r}. Regenerate it, or explicitly opt into "
+            "allow_legacy_product=True for a historical-only comparison."
+        )
+    for key, expected in (
+        ("map_construction_version", MAP_CONSTRUCTION_VERSION),
+        ("spectrum_estimator_version", SPECTRUM_ESTIMATOR_VERSION),
+        ("covariance_estimator_version", COVARIANCE_ESTIMATOR_VERSION),
+    ):
+        actual = str(h5.attrs.get(key, ""))
+        if actual != expected:
+            raise ValueError(f"Measurement {key}={actual!r}, expected {expected!r}.")
+    mean_convention = str(h5.attrs.get("desi_galaxy_auto_mean_convention", ""))
+    if mean_convention != DESI_GALAXY_AUTO_MEAN_CONVENTION and not allow_legacy_product:
+        raise ValueError(
+            "Measurement desi_galaxy_auto_mean_convention="
+            f"{mean_convention!r}, expected {DESI_GALAXY_AUTO_MEAN_CONVENTION!r}. "
+            "Regenerate it, or explicitly opt into allow_legacy_product=True for a "
+            "historical shot-noise-subtracted comparison."
+        )
+    map_metadata = _json_hdf5_attr(h5.attrs, "map_metadata_json")
+    if not isinstance(map_metadata, Mapping):
+        raise ValueError("Measurement map_metadata_json must decode to a mapping.")
+    map_product_id = validate_map_metadata_identity(map_metadata)
+    if str(h5.attrs.get("map_product_id", "")) != map_product_id:
+        raise ValueError(
+            "Measurement map_product_id does not match its embedded map metadata."
+        )
+    for key, expected in (
+        ("pipeline_version", MEASUREMENT_PIPELINE_VERSION),
+        ("map_construction_version", MAP_CONSTRUCTION_VERSION),
+        ("spectrum_estimator_version", SPECTRUM_ESTIMATOR_VERSION),
+        ("covariance_estimator_version", COVARIANCE_ESTIMATOR_VERSION),
+    ):
+        if str(map_metadata.get(key, "")) != expected:
+            raise ValueError(
+                f"Embedded map metadata {key}={map_metadata.get(key)!r}, expected {expected!r}."
+            )
+    measurement_config = _json_hdf5_attr(h5.attrs, "config_json")
+    map_config = map_metadata.get("config")
+    if not isinstance(measurement_config, Mapping) or not isinstance(map_config, Mapping):
+        raise ValueError("Measurement and embedded map configs must both be mappings.")
+    expected_schema = measurement_schema_for_config(measurement_config)
+    if schema != expected_schema:
+        raise ValueError(
+            f"Measurement schema={schema!r} does not match its packing config; expected {expected_schema!r}."
+        )
+    # Split production intentionally changes execution-only settings such as
+    # compute_covariance after loading the prepared map.  Bind only settings that
+    # determine the saved map realization; the measurement HDF5 is authoritative for
+    # its own binning/covariance settings.
+    map_construction_keys = (
+        "pipeline_version",
+        "nside",
+        "act_downgrade",
+        "shear_mask_dataset",
+        "shear_noise_attr",
+        "shear_e_to_kappa_sign",
+        "subtract_masked_mean",
+        "mask_apodization_deg",
+        "mask_apodization_type",
+        "include_ksz_velocity_shuffle",
+        "ksz_shuffle_seed",
+    )
+    if schema == SCHEMA_MEASUREMENT_VALIDITY_MASK:
+        map_construction_keys += (
+            "act_cmb_temperature_units_confirmed",
+            "minimum_desi_random_realizations",
+        )
+    for key in map_construction_keys:
+        if key not in measurement_config or key not in map_config:
+            raise ValueError(f"Measurement/map provenance is missing config key {key!r}.")
+        if measurement_config[key] != map_config[key]:
+            raise ValueError(
+                f"Measurement config {key}={measurement_config[key]!r} does not match "
+                f"its originating map config value {map_config[key]!r}."
+            )
+    if int(measurement_config.get("lmax", -1)) > int(map_config.get("lmax", -1)):
+        raise ValueError(
+            "Measurement lmax exceeds the lmax used to construct its originating map product."
+        )
+    measurement_lmax_mask = measurement_config.get("lmax_mask")
+    if measurement_lmax_mask is None:
+        measurement_lmax_mask = measurement_config.get("lmax")
+    map_lmax_mask = map_config.get("lmax_mask")
+    if map_lmax_mask is None:
+        map_lmax_mask = map_config.get("lmax")
+    if int(measurement_lmax_mask) != int(map_lmax_mask):
+        raise ValueError(
+            "Measurement lmax_mask does not match the mask bandwidth of its originating map product."
+        )
+    if schema == SCHEMA_MEASUREMENT_VALIDITY_MASK:
+        covariance_present = "joint/cov" in h5
+        covariance_declared = bool(measurement_config.get("compute_covariance", False))
+        if covariance_present != covariance_declared:
+            raise ValueError(
+                "Validity-mask product covariance presence disagrees with "
+                "config.compute_covariance; regenerate the spectra intermediate or final assembly."
+            )
+        required = (
+            "joint/data_vector",
+            "joint/data_vector_raw",
+            "joint/data_vector_valid",
+            "joint/spectrum_names",
+            "joint/slice_start",
+            "joint/slice_stop",
+            "ell_left",
+            "ell_right",
+        )
+        missing = [key for key in required if key not in h5]
+        if missing:
+            raise ValueError(f"Validity-mask measurement is missing required dataset(s): {missing}.")
+        packed = np.asarray(h5["joint/data_vector"][:], dtype=np.float64)
+        raw = np.asarray(h5["joint/data_vector_raw"][:], dtype=np.float64)
+        valid = np.asarray(h5["joint/data_vector_valid"][:], dtype=bool)
+        if packed.shape != raw.shape or packed.shape != valid.shape:
+            raise ValueError("Packed, raw, and validity vectors must have identical shapes.")
+        if not np.array_equal(packed[valid], raw[valid]) or not np.all(packed[~valid] == 0.0):
+            raise ValueError("Packed data-vector values do not obey the saved validity mask.")
+        names = [
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in h5["joint/spectrum_names"][:]
+        ]
+        starts = np.asarray(h5["joint/slice_start"][:], dtype=int)
+        stops = np.asarray(h5["joint/slice_stop"][:], dtype=int)
+        left = np.asarray(h5["ell_left"][:], dtype=np.int64)
+        right = np.asarray(h5["ell_right"][:], dtype=np.int64)
+        canonical_names = [spec.name for spec in default_spectrum_specs()]
+        if names != canonical_names:
+            raise ValueError(
+                "Validity-mask spectrum names/order do not match the canonical 46-spectrum contract."
+            )
+        n_band = int(left.size)
+        canonical_starts = np.arange(len(canonical_names), dtype=int) * n_band
+        canonical_stops = canonical_starts + n_band
+        if not np.array_equal(starts, canonical_starts) or not np.array_equal(
+            stops, canonical_stops
+        ):
+            raise ValueError(
+                "Validity-mask spectrum slices are not the canonical contiguous band-major layout."
+            )
+        expected_vector_size = len(canonical_names) * n_band
+        if packed.shape != (expected_vector_size,):
+            raise ValueError(
+                "Validity-mask archive vectors do not match the canonical spectrum-by-band size."
+            )
+        cutoff = int(measurement_config["kappa_cmb_lmax"])
+        boundary = cutoff + 1
+        if boundary not in set(right.tolist()) or np.any((left < boundary) & (right > boundary)):
+            raise ValueError("Saved band edges do not exactly resolve the ACT kappa response cutoff.")
+        expected_valid = np.ones_like(valid)
+        raw_chunks = []
+        for name, start, stop in zip(names, starts, stops):
+            if stop - start != left.size:
+                raise ValueError(f"Spectrum {name!r} slice is inconsistent with the common ell grid.")
+            group = h5[f"spectra/{name}"]
+            cl = np.asarray(group["cl"][:], dtype=np.float64)
+            if cl.shape != (n_band,):
+                raise ValueError(
+                    f"Spectrum {name!r} cl shape {cl.shape} does not match the common ell grid."
+                )
+            raw_chunks.append(cl)
+            if str(group.attrs.get("family", "")) == "desi_g_act_kappa":
+                expected_valid[start:stop] = right <= boundary
+            if "data_vector_valid" not in group or not np.array_equal(
+                np.asarray(group["data_vector_valid"][:], dtype=bool), expected_valid[start:stop]
+            ):
+                raise ValueError(f"Spectrum {name!r} has missing or inconsistent validity metadata.")
+        if not np.array_equal(valid, expected_valid):
+            raise ValueError("joint/data_vector_valid does not match spectrum families and band support.")
+        if not np.array_equal(raw, np.concatenate(raw_chunks)):
+            raise ValueError("joint/data_vector_raw is not the exact concatenation of spectra/<name>/cl.")
+    if (
+        "desi_galaxy_auto_views_contract_version" in h5.attrs
+        or "joint/views" in h5
+    ):
+        validate_galaxy_auto_views(h5, require=True)
+    return map_product_id
+
+
+def validate_galaxy_auto_views(
+    h5: h5py.File,
+    *,
+    require: bool = False,
+) -> Dict[str, object]:
+    """Validate the two DESI galaxy-auto mean views in an open product.
+
+    The total view is the primary HMC estimator.  The weighted-Poisson-
+    subtracted view is an exact deterministic shift of the four galaxy-auto
+    slices.  Both covariance links must resolve to the same HDF5 object as
+    ``joint/cov`` so the file cannot silently advertise a signal-only
+    covariance.
+    """
+
+    contract = str(h5.attrs.get("desi_galaxy_auto_views_contract_version", ""))
+    present = "joint/views" in h5
+    if not present:
+        if require:
+            raise ValueError("Measurement is missing the required joint/views galaxy-auto contract.")
+        return {"present": False}
+    if contract != DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION:
+        raise ValueError(
+            f"Galaxy-auto views contract={contract!r}, expected "
+            f"{DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION!r}."
+        )
+
+    joint = h5["joint"]
+    views = joint["views"]
+    if str(views.attrs.get("contract_version", "")) != contract:
+        raise ValueError("joint/views contract version disagrees with the root product contract.")
+    if str(views.attrs.get("primary_view", "")) != DESI_GALAXY_AUTO_PRIMARY_VIEW:
+        raise ValueError("joint/views does not identify the total estimator as the primary HMC view.")
+    required_views = {DESI_GALAXY_AUTO_PRIMARY_VIEW, DESI_GALAXY_AUTO_SUBTRACTED_VIEW}
+    if not required_views.issubset(set(views.keys())):
+        raise ValueError("joint/views is missing a required galaxy-auto mean view.")
+
+    total = views[DESI_GALAXY_AUTO_PRIMARY_VIEW]
+    subtracted = views[DESI_GALAXY_AUTO_SUBTRACTED_VIEW]
+    for name in ("data_vector", "data_vector_raw", "data_vector_valid"):
+        if name not in total or name not in subtracted:
+            raise ValueError(f"Galaxy-auto view is missing {name!r}.")
+    if total["data_vector"].id != joint["data_vector"].id:
+        raise ValueError("Total-view data_vector is not a hard link to joint/data_vector.")
+    if total["data_vector_raw"].id != joint["data_vector_raw"].id:
+        raise ValueError("Total-view raw vector is not a hard link to joint/data_vector_raw.")
+    if total["data_vector_valid"].id != joint["data_vector_valid"].id:
+        raise ValueError("Total-view validity is not a hard link to the joint validity mask.")
+    if subtracted["data_vector_valid"].id != joint["data_vector_valid"].id:
+        raise ValueError("Subtracted-view validity is not a hard link to the joint validity mask.")
+
+    raw = np.asarray(joint["data_vector_raw"][:], dtype=np.float64)
+    valid = np.asarray(joint["data_vector_valid"][:], dtype=bool)
+    template_path = "galaxy_auto_weighted_poisson_template"
+    if template_path not in views:
+        raise ValueError("joint/views has no saved galaxy-auto weighted-Poisson template.")
+    template = np.asarray(views[template_path][:], dtype=np.float64)
+    if template.shape != raw.shape or not np.all(np.isfinite(template)):
+        raise ValueError("Joint galaxy-auto weighted-Poisson template has invalid shape or values.")
+
+    names = [
+        item.decode("utf-8") if isinstance(item, bytes) else str(item)
+        for item in joint["spectrum_names"][:]
+    ]
+    starts = np.asarray(joint["slice_start"][:], dtype=int)
+    stops = np.asarray(joint["slice_stop"][:], dtype=int)
+    expected_template = np.zeros_like(raw)
+    galaxy_names: List[str] = []
+    for name, start, stop in zip(names, starts, stops):
+        group = h5[f"spectra/{name}"]
+        if str(group.attrs.get("family", "")) != "desi_g_auto":
+            continue
+        galaxy_names.append(name)
+        component = int(group.attrs["component"])
+        if "noise_decoupled_all_components" not in group:
+            raise ValueError(f"Galaxy auto {name!r} is missing its shot-noise template.")
+        noise_all = np.asarray(group["noise_decoupled_all_components"][:], dtype=np.float64)
+        cl_all = np.asarray(group["cl_all_components"][:], dtype=np.float64)
+        if noise_all.shape != cl_all.shape or not (0 <= component < noise_all.shape[0]):
+            raise ValueError(f"Galaxy auto {name!r} has incompatible component/noise shapes.")
+        expected_template[start:stop] = noise_all[component]
+        expected_cl = np.asarray(group["cl"][:], dtype=np.float64) - noise_all[component]
+        if "cl_weighted_poisson_subtracted" not in group or not np.array_equal(
+            np.asarray(group["cl_weighted_poisson_subtracted"][:], dtype=np.float64),
+            expected_cl,
+        ):
+            raise ValueError(f"Galaxy auto {name!r} has an inconsistent subtracted mean view.")
+        if "cl_all_components_weighted_poisson_subtracted" not in group or not np.array_equal(
+            np.asarray(
+                group["cl_all_components_weighted_poisson_subtracted"][:],
+                dtype=np.float64,
+            ),
+            cl_all - noise_all,
+        ):
+            raise ValueError(f"Galaxy auto {name!r} has an inconsistent all-component subtracted view.")
+    if len(galaxy_names) != 4:
+        raise ValueError(f"Expected four DESI galaxy-auto spectra, found {len(galaxy_names)}.")
+    if not np.array_equal(template, expected_template):
+        raise ValueError("Joint weighted-Poisson template does not match the four saved galaxy autos.")
+
+    expected_subtracted_raw = raw - template
+    expected_subtracted = expected_subtracted_raw.copy()
+    expected_subtracted[~valid] = 0.0
+    if not np.array_equal(
+        np.asarray(subtracted["data_vector_raw"][:], dtype=np.float64),
+        expected_subtracted_raw,
+    ):
+        raise ValueError("Subtracted raw data vector is not total minus the saved template.")
+    if not np.array_equal(
+        np.asarray(subtracted["data_vector"][:], dtype=np.float64),
+        expected_subtracted,
+    ):
+        raise ValueError("Subtracted packed data vector does not obey the common validity mask.")
+
+    covariance_shared = False
+    if "cov" in joint:
+        if "cov" not in total or "cov" not in subtracted:
+            raise ValueError("Both galaxy-auto views must expose the full estimator covariance.")
+        if total["cov"].id != joint["cov"].id or subtracted["cov"].id != joint["cov"].id:
+            raise ValueError("Galaxy-auto view covariance is not the shared joint/cov HDF5 object.")
+        covariance_shared = True
+    elif "cov" in total or "cov" in subtracted:
+        raise ValueError("A spectra-only view must not advertise a covariance that is absent from joint.")
+
+    changed = template != 0.0
+    galaxy_support = np.zeros_like(changed)
+    for name, start, stop in zip(names, starts, stops):
+        if name in galaxy_names:
+            galaxy_support[start:stop] = True
+    if np.any(changed & ~galaxy_support):
+        raise ValueError("The weighted-Poisson view changes a non-galaxy-auto data-vector element.")
+    return {
+        "present": True,
+        "contract_version": contract,
+        "primary_view": DESI_GALAXY_AUTO_PRIMARY_VIEW,
+        "subtracted_view": DESI_GALAXY_AUTO_SUBTRACTED_VIEW,
+        "galaxy_auto_spectra": galaxy_names,
+        "galaxy_auto_elements": int(np.count_nonzero(galaxy_support)),
+        "changed_elements": int(np.count_nonzero(changed)),
+        "covariance_shared_hard_link": covariance_shared,
+    }
 
 
 def gaussian_beam_transfer(lmax: int, fwhm_arcmin: float) -> np.ndarray:
@@ -649,6 +1299,12 @@ def _clean_mask(values: np.ndarray) -> np.ndarray:
     return mask
 
 
+def _clean_bounded_mask(values: np.ndarray) -> np.ndarray:
+    """Clean a mask whose source convention is explicitly bounded in [0, 1]."""
+
+    return np.clip(_clean_mask(values), 0.0, 1.0)
+
+
 def _subtract_masked_mean(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
     good = mask > 0
     if not np.any(good):
@@ -656,6 +1312,25 @@ def _subtract_masked_mean(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
     out = np.asarray(values, dtype=np.float32).copy()
     mean = float(np.sum(out[good] * mask[good]) / np.sum(mask[good]))
     out[good] -= mean
+    out[~good] = 0.0
+    return out
+
+
+def _subtract_premasked_mean(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Remove a monopole from a map that already contains one factor of ``mask``.
+
+    If ``values = mask * signal``, subtracting a bare constant would no longer
+    leave a masked field when the mask is tapered.  The correct fixed-field
+    projection is ``values - <signal> * mask``.
+    """
+
+    good = np.asarray(mask) > 0
+    if not np.any(good):
+        raise ValueError("Cannot subtract a premasked mean from a zero-overlap mask.")
+    out = np.asarray(values, dtype=np.float32).copy()
+    weight = np.asarray(mask, dtype=np.float64)
+    mean = float(np.sum(out[good], dtype=np.float64) / np.sum(weight[good], dtype=np.float64))
+    out[good] -= mean * weight[good]
     out[~good] = 0.0
     return out
 
@@ -673,16 +1348,71 @@ def apply_mask_apodization(
     fields: Mapping[str, FieldMap],
     config: MeasurementConfig,
 ) -> Dict[str, FieldMap]:
-    """Return fields with NaMaster-apodized masks, preserving shared-mask refs."""
+    """Return fields with NaMaster-apodized masks, preserving shared-mask refs.
+
+    DES shear and DESI random-count masks are deliberately left unapodized.
+    They contain isolated zero-count pixels, so treating every zero as an
+    apodization boundary removes most of the effective footprint. ACT T and
+    kappa masks are already tapered in their source products. Keeping these
+    masks unchanged also preserves their catalog/noise normalization.
+    """
 
     apo_deg = float(config.mask_apodization_deg)
     if apo_deg <= 0.0:
-        return dict(fields)
+        out: Dict[str, FieldMap] = {}
+        for name, field_map in fields.items():
+            metadata = dict(field_map.metadata)
+            metadata.update(
+                {
+                    "mask_apodization_applied": False,
+                    "mask_apodization_deg": 0.0,
+                    "mask_apodization_type": "none",
+                    "mask_apodization_note": (
+                        "No additional pipeline apodization was applied; any taper already "
+                        "present in the source mask is preserved."
+                    ),
+                }
+            )
+            out[name] = replace(field_map, metadata=metadata)
+        return out
 
     apotype = str(config.mask_apodization_type)
     apodized_masks: Dict[str, np.ndarray] = {}
     out: Dict[str, FieldMap] = {}
     for name, field_map in fields.items():
+        preserve_reasons = {
+            "des_shear": (
+                "DES Y3 weighted-count shear mask kept unapodized. Apodizing its "
+                "internal zero-count pixels destroys effective area and invalidates "
+                "the catalog-derived shape-noise pseudo-Cl."
+            ),
+            "desi_galaxy": (
+                "DESI random-count mask kept unapodized. Its internal zero-count pixels "
+                "come from a sparse random realization and are not survey boundaries."
+            ),
+            "desi_momentum": (
+                "DESI catalog-momentum selection mask kept unapodized so it remains "
+                "matched to the random catalog used to normalize the estimator."
+            ),
+            "desi_momentum_null": (
+                "DESI shuffled catalog-momentum selection mask kept unapodized so it "
+                "remains matched to the random catalog normalization."
+            ),
+            "act_cmb_temperature": "ACT temperature mask is already apodized upstream.",
+            "act_cmb_lensing_kappa": "ACT lensing mask is already apodized upstream.",
+        }
+        if field_map.kind in preserve_reasons:
+            metadata = dict(field_map.metadata)
+            metadata.update(
+                {
+                    "mask_apodization_applied": False,
+                    "mask_apodization_deg": 0.0,
+                    "mask_apodization_type": "none",
+                    "mask_apodization_note": preserve_reasons[field_map.kind],
+                }
+            )
+            out[name] = replace(field_map, metadata=metadata)
+            continue
         if field_map.mask_name not in apodized_masks:
             mask = np.asarray(field_map.mask, dtype=np.float64)
             print(
@@ -766,12 +1496,39 @@ def make_linear_bandpower_edges(ell_min: int, ell_max: int, n_bins: int) -> Tupl
     return edges[:-1].astype(np.int32), edges[1:].astype(np.int32)
 
 
-MIDRES2048_LOG_ELL_LEFT = np.asarray(
+MIDRES2048_LOG_ELL_LEFT_3000 = np.asarray(
     [128, 160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280],
     dtype=np.int32,
 )
-MIDRES2048_LOG_ELL_RIGHT = np.asarray(
+MIDRES2048_LOG_ELL_RIGHT_3000 = np.asarray(
     [160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280, 3001],
+    dtype=np.int32,
+)
+
+MIDRES2048_LOG_ELL_LEFT_4096 = np.asarray(
+    [128, 160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280, 3001, 3329, 3693],
+    dtype=np.int32,
+)
+MIDRES2048_LOG_ELL_RIGHT_4096 = np.asarray(
+    [160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315, 1730, 2280, 3001, 3329, 3693, 4097],
+    dtype=np.int32,
+)
+
+# Preserve the established thirteen ACT-supported bands through inclusive
+# ell=3000, then extend the common grid with seven nearly equal logarithmic
+# intervals through inclusive ell=8192.  Right edges are exclusive.
+HIGHRES4096_LOG_ELL_LEFT_8192 = np.asarray(
+    [
+        128, 160, 200, 255, 320, 400, 500, 630, 795, 1000,
+        1315, 1730, 2280, 3001, 3464, 3998, 4615, 5327, 6149, 7098,
+    ],
+    dtype=np.int32,
+)
+HIGHRES4096_LOG_ELL_RIGHT_8192 = np.asarray(
+    [
+        160, 200, 255, 320, 400, 500, 630, 795, 1000, 1315,
+        1730, 2280, 3001, 3464, 3998, 4615, 5327, 6149, 7098, 8193,
+    ],
     dtype=np.int32,
 )
 
@@ -779,14 +1536,20 @@ MIDRES2048_LOG_ELL_RIGHT = np.asarray(
 def make_log_bandpower_edges(ell_min: int, ell_max: int, n_bins: int) -> Tuple[np.ndarray, np.ndarray]:
     """Return the Stage-31 midres2048 hybrid-log NaMaster bandpower edges."""
 
-    expected = (128, 3000, 13)
     requested = (int(ell_min), int(ell_max), int(n_bins))
-    if requested != expected:
+    edge_tables = {
+        (128, 3000, 13): (MIDRES2048_LOG_ELL_LEFT_3000, MIDRES2048_LOG_ELL_RIGHT_3000),
+        (128, 4096, 16): (MIDRES2048_LOG_ELL_LEFT_4096, MIDRES2048_LOG_ELL_RIGHT_4096),
+        (128, 8192, 20): (HIGHRES4096_LOG_ELL_LEFT_8192, HIGHRES4096_LOG_ELL_RIGHT_8192),
+    }
+    if requested not in edge_tables:
+        supported = ", ".join(str(key) for key in edge_tables)
         raise ValueError(
-            "binning='log' is currently the explicit Stage-31 midres2048 edge table; "
-            f"expected ell_min/lmax/n_bins={expected}, got {requested}."
+            "binning='log' uses a preregistered xDESI edge table; "
+            f"supported ell_min/lmax/n_bins tuples are {supported}, got {requested}."
         )
-    return MIDRES2048_LOG_ELL_LEFT.copy(), MIDRES2048_LOG_ELL_RIGHT.copy()
+    left, right = edge_tables[requested]
+    return left.copy(), right.copy()
 
 
 def make_bandpower_edges(config: MeasurementConfig) -> Tuple[np.ndarray, np.ndarray]:
@@ -804,6 +1567,139 @@ def make_bins(config: MeasurementConfig) -> nmt.NmtBin:
     config.validate()
     left, right = make_bandpower_edges(config)
     return nmt.NmtBin.from_edges(left, right)
+
+
+def measurement_schema_for_config(config: MeasurementConfig | Mapping[str, object]) -> str:
+    """Return the archive schema required by the configured packing policy.
+
+    Keeping the validity-mask product on a new schema is intentional: an older
+    checkout that knows only v1 must reject, rather than silently fit, the
+    high-ell zero placeholders.
+    """
+
+    if isinstance(config, Mapping):
+        cutoff = config.get("kappa_cmb_lmax")
+    else:
+        cutoff = config.kappa_cmb_lmax
+    return SCHEMA_MEASUREMENT_VALIDITY_MASK if cutoff is not None else SCHEMA_MEASUREMENT
+
+
+def data_vector_validity_by_spectrum(
+    specs: Sequence[SpectrumSpec],
+    config: MeasurementConfig,
+    ell_left: np.ndarray,
+    ell_right: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    """Return the exact band-validity mask for every archived spectrum.
+
+    The ACT lensing response is supported through inclusive ``kappa_cmb_lmax``.
+    Validity is determined from complete band support, never from an effective
+    ell.  A bin that straddles the cutoff is rejected as an invalid product
+    definition rather than assigned ambiguously.
+    """
+
+    left = np.asarray(ell_left, dtype=np.int64)
+    right = np.asarray(ell_right, dtype=np.int64)
+    if left.shape != right.shape or left.ndim != 1:
+        raise ValueError("Bandpower left/right edges must be same-length one-dimensional arrays.")
+    if left.size != int(config.n_bins):
+        raise ValueError(f"Bandpower edge count {left.size} does not match n_bins={config.n_bins}.")
+    if np.any(right <= left):
+        raise ValueError("Every bandpower right edge must exceed its left edge.")
+
+    all_valid = np.ones(left.size, dtype=bool)
+    out = {spec.name: all_valid.copy() for spec in specs}
+    if config.kappa_cmb_lmax is None:
+        return out
+
+    boundary = int(config.kappa_cmb_lmax) + 1
+    if boundary not in set(right.tolist()):
+        raise ValueError(
+            f"kappa_cmb_lmax={config.kappa_cmb_lmax} requires an exact right-exclusive "
+            f"band edge at {boundary}; the common grid would otherwise straddle the ACT response cutoff."
+        )
+    straddles = (left < boundary) & (right > boundary)
+    if np.any(straddles):
+        raise ValueError(
+            f"Band(s) {np.flatnonzero(straddles).tolist()} straddle the ACT kappa cutoff at {boundary}."
+        )
+    kappa_valid = right <= boundary
+    for spec in specs:
+        if str(spec.family) == "desi_g_act_kappa":
+            out[spec.name] = kappa_valid.copy()
+    return out
+
+
+def pack_joint_data_vector(
+    specs: Sequence[SpectrumSpec],
+    spectra: Mapping[str, Mapping[str, object]],
+    config: MeasurementConfig,
+    ell_left: np.ndarray,
+    ell_right: np.ndarray,
+) -> Dict[str, object]:
+    """Pack total and conditional shot-subtracted archival data-vector views.
+
+    ``data_vector`` remains the primary measured estimator: DESI galaxy autos
+    contain weighted Poisson shot noise exactly once.  The secondary view is an
+    affine shift by the saved, already-decoupled catalog template.  Its
+    covariance is therefore the same estimator covariance conditional on the
+    fixed catalog and mask; callers must not remove shot noise from covariance
+    inputs when using that view.
+    """
+
+    validity = data_vector_validity_by_spectrum(specs, config, ell_left, ell_right)
+    raw_chunks: List[np.ndarray] = []
+    shot_subtracted_raw_chunks: List[np.ndarray] = []
+    shot_template_chunks: List[np.ndarray] = []
+    valid_chunks: List[np.ndarray] = []
+    for spec in specs:
+        spectrum = spectra[spec.name]
+        values = np.asarray(spectrum["cl"], dtype=np.float64)
+        valid = np.asarray(validity[spec.name], dtype=bool)
+        if values.shape != valid.shape:
+            raise ValueError(
+                f"Spectrum {spec.name!r} has shape {values.shape}, expected {valid.shape} from the common grid."
+            )
+        shot_template = np.zeros_like(values)
+        if str(spec.family) == "desi_g_auto":
+            noise_all = spectrum.get("noise_decoupled_all_components")
+            if noise_all is None:
+                raise ValueError(
+                    f"DESI galaxy auto {spec.name!r} has no saved decoupled shot-noise template."
+                )
+            noise_all = np.asarray(noise_all, dtype=np.float64)
+            component = int(spec.component)
+            if noise_all.ndim != 2 or not (0 <= component < noise_all.shape[0]):
+                raise ValueError(
+                    f"DESI galaxy auto {spec.name!r} component {component} is incompatible "
+                    f"with shot-noise template shape {noise_all.shape}."
+                )
+            shot_template = np.asarray(noise_all[component], dtype=np.float64)
+            if shot_template.shape != values.shape or not np.all(np.isfinite(shot_template)):
+                raise ValueError(
+                    f"DESI galaxy auto {spec.name!r} shot-noise template has invalid shape or values."
+                )
+        raw_chunks.append(values)
+        shot_subtracted_raw_chunks.append(values - shot_template)
+        shot_template_chunks.append(shot_template)
+        valid_chunks.append(valid)
+    raw = np.concatenate(raw_chunks)
+    shot_subtracted_raw = np.concatenate(shot_subtracted_raw_chunks)
+    shot_template = np.concatenate(shot_template_chunks)
+    valid = np.concatenate(valid_chunks)
+    packed = raw.copy()
+    packed[~valid] = 0.0
+    shot_subtracted_packed = shot_subtracted_raw.copy()
+    shot_subtracted_packed[~valid] = 0.0
+    return {
+        "data_vector": packed,
+        "data_vector_raw": raw,
+        "data_vector_valid": valid,
+        "data_vector_weighted_poisson_subtracted": shot_subtracted_packed,
+        "data_vector_raw_weighted_poisson_subtracted": shot_subtracted_raw,
+        "galaxy_auto_weighted_poisson_template": shot_template,
+        "spectrum_validity": validity,
+    }
 
 
 def component_labels(spin_a: int, spin_b: int) -> List[str]:
@@ -1015,15 +1911,22 @@ def enmap_h5_to_healpix(
     lmax: int,
     downgrade: int,
     subtract_mean: bool,
+    map_is_masked: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     map_em = read_enmap_from_h5(path, map_dataset, map_header_attr, downgrade=downgrade)
     mask_em = read_enmap_from_h5(path, mask_dataset, mask_header_attr, downgrade=downgrade)
-    mask_hp = reproject.map2healpix(mask_em, nside=nside, lmax=lmax)
+    # Harmonic reprojection is appropriate for sky maps, but it rings at mask
+    # edges and creates positive support outside the actual footprint. Pixell
+    # recommends local spline interpolation for masks.
+    mask_hp = reproject.map2healpix(mask_em, nside=nside, method="spline", order=1, spin=[0])
     map_hp = reproject.map2healpix(map_em, nside=nside, lmax=lmax)
-    mask_hp = _clean_mask(mask_hp)
+    mask_hp = _clean_bounded_mask(mask_hp)
     map_hp = _clean_map(map_hp)
     if subtract_mean:
-        map_hp = _subtract_masked_mean(map_hp, mask_hp)
+        if map_is_masked:
+            map_hp = _subtract_premasked_mean(map_hp, mask_hp)
+        else:
+            map_hp = _subtract_masked_mean(map_hp, mask_hp)
     else:
         map_hp[mask_hp <= 0] = 0.0
     return map_hp.astype(np.float32, copy=False), mask_hp.astype(np.float32, copy=False)
@@ -1083,13 +1986,216 @@ def load_dr9_random_counts_with_metadata(
         "random_count_nside": nside,
         "random_count_derivation": "native",
     }
+    random_manifest = bundle.manifest["products"]["desi_dr9_imaging_randoms"]
+    if not isinstance(random_manifest, Mapping):
+        raise ValueError("DESI random-count manifest entry must be a mapping.")
+    strict_multi_random = int(config.minimum_desi_random_realizations) > 1
     with h5py.File(bundle.desi_random_count_maps, "r") as h5:
         ordering = str(h5.attrs.get("ordering", "")).upper()
         if ordering and ordering != "RING":
             raise ValueError(f"DESI DR9 random-count map must be RING ordered, got {ordering!r}.")
         metadata["random_count_ordering"] = ordering or "RING"
+        realization_count = int(h5.attrs.get("n_random_realizations", h5.attrs.get("random_realization_count", 1)))
+        metadata["random_realization_count"] = realization_count
+        if "random_realization_indices" in h5.attrs:
+            realization_indices = [
+                int(value) for value in np.asarray(h5.attrs["random_realization_indices"]).reshape(-1)
+            ]
+        elif "random_realization_indices_json" in h5.attrs:
+            try:
+                realization_indices = [int(value) for value in json.loads(
+                    str(h5.attrs["random_realization_indices_json"])
+                )]
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("DESI random-count product has invalid random_realization_indices_json.") from exc
+        else:
+            realization_indices = []
+        metadata["random_realization_indices"] = realization_indices
+        if realization_indices:
+            if len(realization_indices) != realization_count:
+                raise ValueError(
+                    "DESI random-count realization index count does not match its realization-count attribute."
+                )
+            if len(set(realization_indices)) != len(realization_indices):
+                raise ValueError("DESI random-count realization indices contain duplicates.")
+        if realization_count < int(config.minimum_desi_random_realizations):
+            raise ValueError(
+                f"DESI random-count product has {realization_count} realization(s), but stage "
+                f"{config.stage!r} requires at least {config.minimum_desi_random_realizations}."
+            )
+        expected_count = random_manifest.get("random_realization_count")
+        if expected_count is not None and realization_count != int(expected_count):
+            raise ValueError(
+                f"DESI random-count product records {realization_count} realizations, but the manifest "
+                f"requires {int(expected_count)}."
+            )
+        expected_indices = tuple(int(value) for value in random_manifest.get("random_indices", ()))
+        if expected_indices and tuple(realization_indices) != expected_indices:
+            raise ValueError(
+                f"DESI random-count realization indices {realization_indices} do not match the "
+                f"manifest set {list(expected_indices)}."
+            )
+        expected_identity = str(random_manifest.get("input_identity_sha256", ""))
+        product_identity = str(h5.attrs.get("input_identity_sha256", ""))
+        metadata["random_count_input_identity_sha256"] = product_identity
+        if expected_identity and product_identity != expected_identity:
+            raise ValueError(
+                "DESI random-count input identity does not match the survey manifest."
+            )
+        expected_schema = str(random_manifest.get("random_product_schema", ""))
+        product_schema = str(h5.attrs.get("schema_version", ""))
+        metadata["random_count_schema_version"] = product_schema
+        if expected_schema and product_schema != expected_schema:
+            raise ValueError(
+                f"DESI random-count schema {product_schema!r} does not match manifest "
+                f"schema {expected_schema!r}."
+            )
+        if strict_multi_random:
+            missing_contract = []
+            if not expected_identity or not product_identity:
+                missing_contract.append("input_identity_sha256")
+            if not expected_indices or not realization_indices:
+                missing_contract.append("random realization indices")
+            if not expected_schema or not product_schema:
+                missing_contract.append("random product schema")
+            try:
+                full_source_sha256_verified = int(
+                    h5.attrs.get("full_source_sha256_verified", 0)
+                )
+            except (TypeError, ValueError):
+                full_source_sha256_verified = 0
+            sha256_ledger_sha256_raw = h5.attrs.get("sha256_ledger_sha256", "")
+            if isinstance(sha256_ledger_sha256_raw, bytes):
+                sha256_ledger_sha256_raw = sha256_ledger_sha256_raw.decode("utf-8")
+            sha256_ledger_sha256 = str(sha256_ledger_sha256_raw).strip()
+            full_source_sha256_json_raw = h5.attrs.get("full_source_sha256_json", "")
+            if isinstance(full_source_sha256_json_raw, bytes):
+                full_source_sha256_json_raw = full_source_sha256_json_raw.decode("utf-8")
+            full_source_sha256_json = str(full_source_sha256_json_raw).strip()
+            if full_source_sha256_verified != 1:
+                missing_contract.append("full_source_sha256_verified=1")
+            if not sha256_ledger_sha256:
+                missing_contract.append("sha256_ledger_sha256")
+            elif len(sha256_ledger_sha256) != 64 or any(
+                character not in "0123456789abcdefABCDEF"
+                for character in sha256_ledger_sha256
+            ):
+                raise ValueError(
+                    "Multi-random production has an invalid sha256_ledger_sha256 digest."
+                )
+            full_source_sha256: object = {}
+            if not full_source_sha256_json:
+                missing_contract.append("full_source_sha256_json")
+            else:
+                try:
+                    full_source_sha256 = json.loads(full_source_sha256_json)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "Multi-random production has invalid full_source_sha256_json provenance."
+                    ) from exc
+                if not isinstance(full_source_sha256, Mapping) or not full_source_sha256:
+                    missing_contract.append("nonempty full_source_sha256_json mapping")
+            if missing_contract:
+                raise ValueError(
+                    "Multi-random production requires manifest/HDF provenance for "
+                    + ", ".join(missing_contract)
+                    + "."
+                )
+            expected_source_paths = {
+                *(
+                    f"randoms/resolve/randoms-1-{index}.fits"
+                    for index in expected_indices
+                ),
+                *(
+                    "zhou-lrg-xcorr-2023-v1/catalogs/lrgmask_v1.1/"
+                    f"randoms-1-{index}-lrgmask_v1.1.fits.gz"
+                    for index in expected_indices
+                ),
+                (
+                    "zhou-lrg-xcorr-2023-v1/misc/"
+                    "pixweight-dr7.1-0.22.0_stardens_64_ring.fits"
+                ),
+                "zhou-lrg-xcorr-2023-v1/catalogs/randoms_quality_cuts.py",
+            }
+            if isinstance(full_source_sha256, Mapping) and full_source_sha256:
+                observed_source_paths = {str(key) for key in full_source_sha256}
+                if observed_source_paths != expected_source_paths:
+                    raise ValueError(
+                        "Multi-random production full_source_sha256_json does not contain "
+                        "the exact selected random/mask and shared-source inventory."
+                    )
+                invalid_source_digests = [
+                    str(path)
+                    for path, digest in full_source_sha256.items()
+                    if len(str(digest)) != 64
+                    or any(
+                        character not in "0123456789abcdefABCDEF"
+                        for character in str(digest)
+                    )
+                ]
+                if invalid_source_digests:
+                    raise ValueError(
+                        "Multi-random production has invalid full-source SHA256 digest(s) "
+                        f"for {invalid_source_digests}."
+                    )
+                source_inventory_sha256 = hashlib.sha256(
+                    json.dumps(
+                        dict(full_source_sha256),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                manifest_ledger_sha256 = str(
+                    random_manifest.get("sha256_ledger_sha256", "")
+                )
+                manifest_inventory_sha256 = str(
+                    random_manifest.get("full_source_sha256_inventory_sha256", "")
+                )
+                if not manifest_ledger_sha256:
+                    missing_contract.append("manifest sha256_ledger_sha256")
+                elif manifest_ledger_sha256 != sha256_ledger_sha256:
+                    raise ValueError(
+                        "DESI random-count SHA256-ledger identity does not match the survey manifest."
+                    )
+                if not manifest_inventory_sha256:
+                    missing_contract.append(
+                        "manifest full_source_sha256_inventory_sha256"
+                    )
+                elif manifest_inventory_sha256 != source_inventory_sha256:
+                    raise ValueError(
+                        "DESI random-count full-source inventory does not match the survey manifest."
+                    )
+            if missing_contract:
+                raise ValueError(
+                    "Multi-random production requires manifest/HDF provenance for "
+                    + ", ".join(missing_contract)
+                    + "."
+                )
+            metadata["full_source_sha256_verified"] = True
+            metadata["sha256_ledger_sha256"] = sha256_ledger_sha256
+            metadata["full_source_sha256"] = dict(full_source_sha256)
+            metadata["full_source_sha256_inventory_sha256"] = source_inventory_sha256
         if dataset in h5:
-            counts = np.asarray(h5[dataset][:], dtype=np.float32)
+            raw_counts = np.asarray(h5[dataset][:])
+            expected_digest = str(h5[f"nside{nside}"].attrs.get("random_count_sha256", ""))
+            if strict_multi_random and not expected_digest:
+                raise ValueError(f"DESI random-count dataset {dataset!r} has no content checksum.")
+            if expected_digest:
+                actual_digest = _array_raw_sha256(raw_counts)
+                if actual_digest != expected_digest:
+                    raise ValueError(
+                        f"DESI random-count dataset {dataset!r} failed its content checksum."
+                    )
+                metadata["random_count_sha256"] = actual_digest
+            expected_sum = h5[f"nside{nside}"].attrs.get("count_sum")
+            actual_sum = int(np.sum(raw_counts, dtype=np.uint64))
+            if expected_sum is not None and actual_sum != int(expected_sum):
+                raise ValueError(
+                    f"DESI random-count dataset {dataset!r} sum {actual_sum} does not match "
+                    f"its recorded count_sum={int(expected_sum)}."
+                )
+            counts = np.asarray(raw_counts, dtype=np.float32)
+            metadata["random_count_sum"] = actual_sum
         elif nside == 2048 and "nside4096/random_count" in h5:
             source_dataset = "nside4096/random_count"
             source_counts = np.asarray(h5[source_dataset][:], dtype=np.float64)
@@ -1298,6 +2404,9 @@ def build_desi_fields(
             if pix.size == 0:
                 raise ValueError(f"No DR9 DESI galaxies remain inside the random mask for pz_bin={pz_bin}.")
 
+            mean_vr_weighted, sigma_rec_weighted, rms_rec_weighted = _weighted_mean_std_rms(vr, weights)
+            _, sigma_rec_unweighted, rms_rec_unweighted = _weighted_mean_std_rms(vr, np.ones_like(vr))
+
             counts = np.zeros(npix, dtype=np.float32)
             vsum = np.zeros(npix, dtype=np.float32)
             _accumulate_pixels(counts, pix, weights=weights)
@@ -1319,8 +2428,13 @@ def build_desi_fields(
 
             n_gal = int(pix.size)
             shot = float(area_sr * sumw2 / sumw**2)
-            mean_vr_weighted, sigma_rec_weighted, rms_rec_weighted = _weighted_mean_std_rms(vr, weights)
-            _, sigma_rec_unweighted, rms_rec_unweighted = _weighted_mean_std_rms(vr, np.ones_like(vr))
+            # The observed masked overdensity is G/(alpha*rbar)-R/rbar.
+            # Its conditional galaxy-Poisson bias is therefore a constant
+            # *coupled pseudo-Cl*, not a homogeneous full-sky Cl to be coupled
+            # through the variable random-count mask a second time.
+            shot_pseudo_cl = float(
+                pixarea * sumw2 / (float(npix) * (alpha * random_mean) ** 2)
+            )
             counts_z_unweighted, dndz_unweighted = _hist_density(z, photoz_edges)
             counts_z_weighted, dndz = _hist_density(z, photoz_edges, weights=weights)
             counts_vr, _ = np.histogram(vr[np.isfinite(vr)], bins=vr_edges)
@@ -1358,7 +2472,22 @@ def build_desi_fields(
                 "area_sr": area_sr,
                 "fsky_weighted": float(area_sr / (4.0 * np.pi)),
                 "shot_noise": shot,
-                "shot_noise_convention": "weighted Poisson: area_sr * sum(weight^2) / sum(weight)^2",
+                "shot_noise_convention": (
+                    "full-sky-equivalent weighted Poisson level: "
+                    "area_sr * sum(weight^2) / sum(weight)^2; provenance only"
+                ),
+                "shot_noise_pseudo_cl": shot_pseudo_cl,
+                "shot_noise_pseudo_cl_convention": (
+                    "exact conditional coupled pseudo-Cl for M*delta = "
+                    "G/(alpha*random_mean)-R/random_mean: "
+                    "Omega_pix*sum(weight^2)/(Npix*(alpha*random_mean)^2)"
+                ),
+                "random_catalog_shot_noise_subtracted": False,
+                "random_catalog_shot_noise_note": (
+                    "The transferred random-count realization is conditioned on as the selection mask. "
+                    "Its finite-density uncertainty is not an additive Poisson term in this conditional estimator; "
+                    "denser/independent randoms are required to test that uncertainty."
+                ),
                 "sum_weight": sumw,
                 "sum_weight2": sumw2,
                 "mean_weight": float(np.mean(weights)) if weights.size else np.nan,
@@ -1494,12 +2623,21 @@ def build_desi_fields(
     }
     bin_summary["vr_counts_by_pz"] = np.asarray(vr_counts, dtype=np.int64)
     bin_summary["vr_weighted_counts_by_pz"] = np.asarray(vr_weighted_counts, dtype=np.float64)
+    realization_count = int(random_count_metadata.get("random_realization_count", 1))
+    default_random_caveat = (
+        "The transferred bundle contains one DR9 random realization. Raw high-resolution "
+        "DESI masks are sparse and provisional; combine independent randoms or validate a "
+        "separate completeness-mask construction."
+        if realization_count <= 1
+        else (
+            f"This mask combines {realization_count} independent DR9 random realizations. "
+            "Its saved cumulative-support diagnostics must be retained, and finite-random/"
+            "catalog-selection uncertainty is not part of the Gaussian/iNKA covariance."
+        )
+    )
     bin_summary["desi_random_mask_caveat"] = random_attrs.get(
         "caveat",
-        "The transferred bundle contains one DR9 random realization. "
-        "Raw nside=4096 DESI masks are therefore sparse and should be "
-        "treated as provisional unless more random files are combined or the "
-        "mask is explicitly smoothed/apodized.",
+        default_random_caveat,
     )
     return fields, bin_summary
 
@@ -1513,6 +2651,21 @@ def build_shear_fields(bundle: SurveyBundle, config: MeasurementConfig) -> Dict[
     with h5py.File(path, "r") as h5:
         for tomo in range(4):
             group = h5[f"maps/tomo{tomo}"]
+            expected_noise_attrs = {
+                "mask_weight": "shape_noise_pseudo_cl_normalized_weight_mask",
+                "mask_weight_raw": "shape_noise_pseudo_cl_raw_weight_mask",
+            }
+            expected_noise_attr = expected_noise_attrs.get(str(config.shear_mask_dataset))
+            if expected_noise_attr is None:
+                raise ValueError(
+                    f"Unsupported DES shear mask dataset {config.shear_mask_dataset!r}; "
+                    f"expected one of {sorted(expected_noise_attrs)} so shape noise is unambiguous."
+                )
+            if str(config.shear_noise_attr) != expected_noise_attr:
+                raise ValueError(
+                    f"DES shear mask {config.shear_mask_dataset!r} requires noise attribute "
+                    f"{expected_noise_attr!r}, got {config.shear_noise_attr!r}."
+                )
             mask = _clean_mask(group[config.shear_mask_dataset][:])
             gamma1 = shear_sign * _clean_map(group["gamma1"][:])
             gamma2 = shear_sign * _clean_map(group["gamma2_namaster"][:])
@@ -1600,7 +2753,17 @@ def build_act_fields(bundle: SurveyBundle, config: MeasurementConfig) -> Dict[st
         metadata={
             "source_hdf5": str(bundle.act_cmb),
             "mask_dataset": "maps/analysis_mask",
-            "units": "uK_CMB_likely",
+            "units": (
+                ACT_CMB_TEMPERATURE_UNITS
+                if config.act_cmb_temperature_units_confirmed
+                else "uK_CMB_likely"
+            ),
+            "units_confirmed": bool(config.act_cmb_temperature_units_confirmed),
+            "units_confirmation_source": (
+                "user-supplied source-map provenance"
+                if config.act_cmb_temperature_units_confirmed
+                else "unconfirmed"
+            ),
             "beam_fwhm_arcmin": ACT_CMB_TEMPERATURE_BEAM_FWHM_ARCMIN,
             "beam_transfer_dataset": "transfer_functions/act_cmb_temperature_gaussian_beam",
             "effective_transfer_status": "Default theory wrapper applies a 1.6 arcmin Gaussian beam.",
@@ -1618,6 +2781,7 @@ def build_act_fields(bundle: SurveyBundle, config: MeasurementConfig) -> Dict[st
         config.lmax,
         max(1, config.act_downgrade // 2),
         config.subtract_masked_mean,
+        map_is_masked=True,
     )
     fields["kappa"] = FieldMap(
         name="kappa",
@@ -1631,6 +2795,18 @@ def build_act_fields(bundle: SurveyBundle, config: MeasurementConfig) -> Dict[st
             "source_hdf5": str(bundle.act_kappa),
             "mask_dataset": "masks/lensing_mask_apodized",
             "map_note": "Transferred map is the ACTxDESI baseline masked CAR kappa product.",
+            "analysis_lmax_inclusive": (
+                None if config.kappa_cmb_lmax is None else int(config.kappa_cmb_lmax)
+            ),
+            "transfer_null_from_ell": (
+                None if config.kappa_cmb_lmax is None else int(config.kappa_cmb_lmax) + 1
+            ),
+            "namaster_masked_on_input": True,
+            "masked_on_input_caveat": (
+                "The available ACT kappa CAR map already contains the upstream lensing mask. "
+                "NaMaster must not multiply it by the mask a second time. The projected mask "
+                "is used for mode coupling; an unmasked kappa source would be preferable."
+            ),
         },
     )
     return fields
@@ -1658,17 +2834,37 @@ def build_probe_maps(bundle: SurveyBundle, config: MeasurementConfig) -> Tuple[D
     metadata = {
         "schema": SCHEMA_MAPS,
         "created_utc": utc_now(),
+        "pipeline_version": MEASUREMENT_PIPELINE_VERSION,
+        "map_construction_version": MAP_CONSTRUCTION_VERSION,
+        "spectrum_estimator_version": SPECTRUM_ESTIMATOR_VERSION,
+        "covariance_estimator_version": COVARIANCE_ESTIMATOR_VERSION,
         "bundle_root": str(bundle.root),
         "input_files": bundle_meta,
-        "config": asdict(config),
+        "config": config.to_dict(),
         "desi_summary": desi_summary,
         "des_y3_source_nz": des_source_nz,
-        "missing_inputs": missing_inputs_metadata(),
+        "missing_inputs": missing_inputs_metadata(
+            config=config,
+            random_realization_count=int(
+                desi_summary.get("random_count_metadata", {}).get("random_realization_count", 1)
+            ),
+        ),
     }
-    return fields, metadata
+    return fields, map_metadata_with_content_identity(fields, metadata)
 
 
-def missing_inputs_metadata() -> Dict[str, object]:
+def missing_inputs_metadata(
+    *,
+    config: Optional[MeasurementConfig] = None,
+    random_realization_count: int = 1,
+) -> Dict[str, object]:
+    temperature_units_confirmed = bool(
+        config is not None and config.act_cmb_temperature_units_confirmed
+    )
+    required_randoms = int(
+        1 if config is None else config.minimum_desi_random_realizations
+    )
+    randoms_present = int(random_realization_count) >= required_randoms
     return {
         "des_y3_source_nz": {
             "present": True,
@@ -1692,6 +2888,17 @@ def missing_inputs_metadata() -> Dict[str, object]:
             "needed_for": "Exact kSZ theory comparison.",
             "note": "The kSZ reference paper uses ACT DR6 hILC temperature maps with effective FWHM 1.6 arcmin. Supply an additional transfer only if applying extra temperature filtering.",
         },
+        "act_cmb_temperature_unit_validation": {
+            "present": temperature_units_confirmed,
+            "needed_for": "Absolute kSZ amplitude calibration.",
+            "units": ACT_CMB_TEMPERATURE_UNITS if temperature_units_confirmed else "uK_CMB_likely",
+            "confirmation_source": "user-supplied source-map provenance" if temperature_units_confirmed else "unconfirmed",
+            "fallback": (
+                "Confirmed for this product."
+                if temperature_units_confirmed
+                else "Verify the transferred source-map units before quoting a physical kSZ amplitude."
+            ),
+        },
         "ksz_velocity_calibration": {
             "present": True,
             "needed_for": "Convert C_ell^g,tau into C_ell^pi,T without fitting free A_v per bin.",
@@ -1705,9 +2912,27 @@ def missing_inputs_metadata() -> Dict[str, object]:
             "fallback": "Fit A_v_bin as a free amplitude.",
         },
         "additional_desi_randoms_for_nside4096": {
-            "present": False,
+            "present": randoms_present,
             "needed_for": "Production raw nside=4096 DESI high-ell mask stability.",
-            "fallback": "Use the provided DR9 one-random count map as provisional, or rerun after adding more DR9 random realizations.",
+            "random_realization_count": int(random_realization_count),
+            "minimum_required_by_stage": required_randoms,
+            "fallback": (
+                "Requirement satisfied; retain mask-convergence diagnostics in product provenance."
+                if randoms_present
+                else "Use the provided DR9 one-random count map as provisional, or rerun after adding more DR9 random realizations."
+            ),
+        },
+        "non_gaussian_and_mock_covariance_validation": {
+            "present": False,
+            "needed_for": "Final full-data-vector errors and detection significance.",
+            "current_model": "Gaussian improved narrow-kernel approximation (iNKA)",
+            "omitted": [
+                "connected non-Gaussian covariance",
+                "super-sample covariance",
+                "foreground covariance",
+                "finite-random/catalog-selection uncertainty",
+                "mock calibration",
+            ],
         },
         "desi_dr9_imaging_weights": {
             "present": True,
@@ -1785,6 +3010,8 @@ def save_map_product(
     overwrite: bool = False,
 ) -> Path:
     path = Path(path)
+    product_id = validate_map_metadata_identity(metadata)
+    validate_loaded_map_content(fields, metadata)
     if path.exists() and not overwrite:
         raise FileExistsError(f"{path} exists; pass overwrite=True to replace it.")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1800,6 +3027,11 @@ def save_map_product(
     with h5py.File(tmp, "w", track_order=True) as h5:
         h5.attrs["schema"] = SCHEMA_MAPS
         h5.attrs["created_utc"] = utc_now()
+        h5.attrs["pipeline_version"] = str(metadata.get("pipeline_version", MEASUREMENT_PIPELINE_VERSION))
+        h5.attrs["map_construction_version"] = str(
+            metadata.get("map_construction_version", MAP_CONSTRUCTION_VERSION)
+        )
+        h5.attrs["map_product_id"] = product_id
         h5.attrs["metadata_json"] = _json_dumps(metadata)
         cfg = metadata.get("config", {})
         if isinstance(cfg, Mapping):
@@ -1930,8 +3162,7 @@ def load_map_product(
     path = Path(path)
     want = None if field_names is None else {str(n) for n in field_names}
     with h5py.File(path, "r") as h5:
-        if h5.attrs.get("schema") != SCHEMA_MAPS:
-            raise ValueError(f"{path} is not a {SCHEMA_MAPS} product.")
+        validate_map_product_hdf_identity(h5)
         metadata = json.loads(h5.attrs["metadata_json"])
         selected = [name for name in h5["fields"] if want is None or name in want]
         if want is not None:
@@ -1960,6 +3191,7 @@ def load_map_product(
                 metadata=json.loads(g.attrs["metadata_json"]),
                 catalog=catalog,
             )
+    validate_loaded_map_content(fields, metadata)
     return fields, metadata
 
 
@@ -1976,7 +3208,7 @@ def build_nmt_fields(fields: Mapping[str, FieldMap], config: MeasurementConfig) 
                 None,
                 None,
                 lmax=config.lmax,
-                lmax_mask=config.lmax,
+                lmax_mask=config.effective_lmax_mask,
                 spin=field_map.spin,
                 field_is_weighted=bool(field_map.metadata.get("catalog_field_is_weighted", False)),
                 lonlat=bool(field_map.metadata.get("catalog_lonlat", True)),
@@ -1990,7 +3222,7 @@ def build_nmt_fields(fields: Mapping[str, FieldMap], config: MeasurementConfig) 
                 n_iter=config.n_iter,
                 n_iter_mask=config.n_iter_mask,
                 lmax=config.lmax,
-                lmax_mask=config.lmax,
+                lmax_mask=config.effective_lmax_mask,
                 lite=True,
             )
             out[name] = NmtProbeField(info=field_map, field=cat_field, covariance_field=cov_mask_field)
@@ -2006,8 +3238,9 @@ def build_nmt_fields(fields: Mapping[str, FieldMap], config: MeasurementConfig) 
                 n_iter=config.n_iter,
                 n_iter_mask=config.n_iter_mask,
                 lmax=config.lmax,
-                lmax_mask=config.lmax,
+                lmax_mask=config.effective_lmax_mask,
                 lite=True,
+                masked_on_input=bool(field_map.metadata.get("namaster_masked_on_input", False)),
             ),
         )
     return out
@@ -2023,8 +3256,9 @@ def _new_map_nmt_field(info: FieldMap, maps: Sequence[np.ndarray], config: Measu
         n_iter=config.n_iter,
         n_iter_mask=config.n_iter_mask,
         lmax=config.lmax,
-        lmax_mask=config.lmax,
+        lmax_mask=config.effective_lmax_mask,
         lite=True,
+        masked_on_input=bool(info.metadata.get("namaster_masked_on_input", False)),
     )
 
 
@@ -2231,39 +3465,45 @@ def compute_input_cl_for_covariance(
     full-ell spectra.  The measurement files do not yet carry a cosmological
     covariance model, so we build local data-derived total spectra.
 
-    For NaMaster catalog-momentum kSZ fields we follow the official kSZ
-    tutorial convention: estimate the full-ell input from the coupled pseudo-Cl
-    divided by the relevant mask-overlap fsky, and add back the catalog
-    zero-lag ``Nf`` term for momentum autos.  NaMaster subtracts ``Nf`` from
-    catalog autos in ``compute_coupled_cell`` by default, but that term is a
-    real noise contribution to the covariance.
+    The default ``inka_data`` mode follows NaMaster's improved narrow-kernel
+    approximation: ordinary map pairs use :func:`nmt.get_iNKA_cell`, i.e. the
+    measured coupled pseudo-spectrum divided by the mean mask product.  Inputs
+    involving catalog-momentum fields use the equivalent explicit pseudo-Cl /<
+    mask-product> construction and add back the catalog zero-lag ``Nf`` term
+    for momentum autos.  NaMaster subtracts ``Nf`` from catalog autos in
+    ``compute_coupled_cell`` by default, but it is a real covariance noise term.
 
-    For ordinary map fields, we use the decoupled-bandpower convention:
-
-    1. Decouple the measured pseudo-spectrum into bandpowers.
-    2. Subtract auto-noise for the signal estimate, exactly as in the saved
-       measurement.
-    3. Add the same auto-noise back to form total covariance bandpowers.
-    4. Smooth/sanitize the total bandpowers and unbin them to full ell.
-
-    This avoids the incorrect pseudo-Cl covariance input convention while
-    keeping the covariance in the same decoupled bandpower space as the data
-    vector.
+    The legacy decouple/smooth/unbin construction remains available only for
+    reproducing old products; it is no longer the default covariance model.
     """
 
-    if str(config.covariance_input_mode) != "decoupled_total_bandpowers_unbinned":
+    input_mode = str(config.covariance_input_mode)
+    supported_modes = {"inka_data", "decoupled_total_bandpowers_unbinned"}
+    if input_mode not in supported_modes:
         raise ValueError(
             "Unsupported covariance_input_mode "
-            f"{config.covariance_input_mode!r}; expected 'decoupled_total_bandpowers_unbinned'."
+            f"{config.covariance_input_mode!r}; expected one of {sorted(supported_modes)}."
         )
     use_pseudo_over_fsky = bool(force_pseudo_over_fsky) or fields[a].is_catalog_momentum or fields[b].is_catalog_momentum
-    mode = "pseudo_over_fsky" if use_pseudo_over_fsky else "decoupled_total"
+    if use_pseudo_over_fsky:
+        mode = "pseudo_over_fsky"
+    elif input_mode == "inka_data":
+        mode = "inka_data"
+    else:
+        mode = "decoupled_total"
     key = (mode, a, b)
     if key not in cache:
         if use_pseudo_over_fsky:
             cache[key] = compute_pseudo_over_fsky_input_cl_for_covariance(a, b, fields, config)
             return cache[key]
         fa, fb, _ = get_pair_probe_fields(a, b, fields, config)
+        if input_mode == "inka_data":
+            inka_cl = nmt.get_iNKA_cell(fa.field, fb.field)
+            inka_cl = _pad_or_trim_full_ell(np.asarray(inka_cl, dtype=np.float64), config.lmax)
+            if not np.all(np.isfinite(inka_cl)):
+                raise ValueError(f"Non-finite iNKA covariance input for fields {a!r} x {b!r}.")
+            cache[key] = inka_cl
+            return cache[key]
         workspace = get_workspace(a, b, fields, bins, workspace_cache, config)
         pcl = nmt.compute_coupled_cell(fa.field, fb.field)
         noise_coupled, noise_decoupled = coupled_noise_for_field_pair(a, b, fields, workspace, config, pcl=pcl)
@@ -2332,49 +3572,6 @@ def compute_catalog_momentum_input_cl_for_covariance(
     return compute_pseudo_over_fsky_input_cl_for_covariance(a, b, fields, config)
 
 
-SHEAR_NOISE_PLATEAU_ELL_FRAC = 0.8
-
-
-def estimate_shear_white_noise_from_pcl(
-    pcl: np.ndarray,
-    config: MeasurementConfig,
-    ell_frac: float = SHEAR_NOISE_PLATEAU_ELL_FRAC,
-    min_modes: int = 50,
-) -> float:
-    """Estimate the white shear shape-noise *coupled* pseudo-Cl from the high-ell plateau.
-
-    For a spin-2 shear auto, the coupled pseudo-Cl is signal + a flat (white) shape-noise
-    bias.  At ell > ``ell_frac * lmax`` the shear signal is negligible compared with the
-    shape noise, so the median of the EE and BB pseudo-Cl over that range is the coupled
-    white-noise bias to subtract directly.
-
-    This replaces using the stored ``shape_noise_pseudo_cl`` attribute: that value is a
-    coupled pseudo-Cl computed for the *un-apodized* ``mask_weight`` (mean(w^2)=0.147),
-    but ``nmt.mask_apodization`` applied to the weighted mask collapses mean(w^2) by ~10^3,
-    so the stored value no longer matches the mask actually used.  The plateau estimate is
-    agnostic to mask normalization and apodization.
-    """
-
-    arr = np.asarray(pcl, dtype=np.float64)
-    if arr.ndim != 2 or arr.shape[0] != 4:
-        raise ValueError(
-            f"Shear shape-noise estimate expects a spin-2 pseudo-Cl of shape (4, lmax+1), got {arr.shape}."
-        )
-    lmax = arr.shape[1] - 1
-    ell_lo = int(np.clip(round(float(ell_frac) * lmax), 0, lmax))
-    if lmax - ell_lo < int(min_modes):
-        ell_lo = max(0, lmax - int(min_modes))
-    ee = arr[0, ell_lo:]
-    bb = arr[3, ell_lo:]
-    vals = np.concatenate([ee[np.isfinite(ee)], bb[np.isfinite(bb)]])
-    if vals.size == 0:
-        raise ValueError("No finite high-ell shear pseudo-Cl values available to estimate shape noise.")
-    n_white = float(np.median(vals))
-    if not np.isfinite(n_white) or n_white < 0.0:
-        n_white = 0.0
-    return n_white
-
-
 def coupled_noise_for_field_pair(
     a: str,
     b: str,
@@ -2391,17 +3588,14 @@ def coupled_noise_for_field_pair(
     labels = component_labels(fa.spin, fb.spin)
     ncls = len(labels)
     if fa.kind == "des_shear":
-        # The coupled white shape-noise bias is estimated from the high-ell pseudo-Cl
-        # plateau and subtracted DIRECTLY (it is already a coupled pseudo-Cl).  Do NOT
-        # couple_cell it, and do NOT use the stored shape_noise_pseudo_cl attribute: that
-        # attribute is the coupled pseudo-Cl for the un-apodized mask_weight, which does
-        # not match the apodized weighted mask actually used by the NaMaster field.
-        if pcl is None:
+        if bool(fa.metadata.get("mask_apodization_applied", False)):
             raise ValueError(
-                f"Shear shape-noise estimation for field {a!r} requires the coupled pseudo-Cl; "
-                "pass pcl=compute_coupled_cell(field, field)."
+                f"DES shear field {a!r} is apodized, but its saved analytic shape-noise "
+                "pseudo-Cl is defined for the original weighted-count mask."
             )
-        n_white = estimate_shear_white_noise_from_pcl(pcl, config)
+        n_white = float(fa.metadata["shape_noise_pseudo_cl"])
+        if not np.isfinite(n_white) or n_white < 0.0:
+            raise ValueError(f"Invalid catalog-derived DES shear shape noise for field {a!r}: {n_white}")
         full = np.zeros((ncls, config.lmax + 1), dtype=np.float64)
         full[0, :] = n_white
         if ncls == 4:
@@ -2409,11 +3603,10 @@ def coupled_noise_for_field_pair(
         return full, workspace.decouple_cell(full)
 
     if fa.kind == "desi_galaxy":
-        shot = float(fa.metadata["shot_noise"])
-        if not np.isfinite(shot) or shot < 0.0:
-            raise ValueError(f"Invalid DESI weighted shot-noise level for field {a!r}: {shot}")
-        full = np.full((1, config.lmax + 1), shot, dtype=np.float64)
-        coupled = workspace.couple_cell(full)
+        shot_pseudo = float(fa.metadata["shot_noise_pseudo_cl"])
+        if not np.isfinite(shot_pseudo) or shot_pseudo < 0.0:
+            raise ValueError(f"Invalid DESI coupled shot-noise pseudo-Cl for field {a!r}: {shot_pseudo}")
+        coupled = np.full((1, config.lmax + 1), shot_pseudo, dtype=np.float64)
         return coupled, workspace.decouple_cell(coupled)
 
     return None, None
@@ -2529,6 +3722,7 @@ def covariance_input_noise_policy(
     b: str,
     field_metadata: Mapping[str, object],
     zero_parity_odd: bool = True,
+    input_mode: str = "inka_data",
 ) -> str:
     """Describe the total-spectrum convention used for one covariance input pair."""
 
@@ -2536,25 +3730,35 @@ def covariance_input_noise_policy(
     meta_b_outer = field_metadata.get(b, {})
     kind_a = str(meta_a_outer.get("kind", "")) if isinstance(meta_a_outer, Mapping) else ""
     kind_b = str(meta_b_outer.get("kind", "")) if isinstance(meta_b_outer, Mapping) else ""
-    suffix = (
-        " Parity-odd or B-mode cross components are set to zero before smoothing/unbinning."
-        if zero_parity_odd
-        else ""
-    )
+    is_catalog = kind_a in {"desi_momentum", "desi_momentum_null"} or kind_b in {
+        "desi_momentum",
+        "desi_momentum_null",
+    }
+    if str(input_mode) != "inka_data" and not is_catalog:
+        suffix = (
+            " Parity-odd/B cross components are set to zero before smoothing."
+            if zero_parity_odd
+            else " All measured components are retained."
+        )
+        return (
+            "Legacy covariance input: measured decoupled bandpowers are converted to total spectra "
+            "by restoring same-field noise, sanitizing/smoothing, and unbinning to full ell."
+            + suffix
+        )
+    suffix = " Coupled spin components are retained because mask mixing is part of the iNKA input."
     if a == b and kind_a == "des_shear":
         return (
-            "DES shear auto: measured decoupled signal bandpowers plus the same-field "
-            "shape-noise template coupled through the NaMaster workspace and then "
-            "decoupled into EE and BB total bandpowers."
+            "DES shear auto: data-derived NaMaster iNKA total pseudo-spectrum; the map auto "
+            "contains the catalog shape noise that was subtracted only from the saved mean bandpowers."
             + suffix
         )
     if a == b and kind_a == "desi_galaxy":
         return (
-            "DESI galaxy auto: measured weighted overdensity bandpowers plus weighted "
-            "Poisson shot noise N_ell = area_sr * sum(w^2) / sum(w)^2 as the total input."
+            "DESI galaxy auto: data-derived NaMaster iNKA total pseudo-spectrum; the map auto "
+            "and saved mean bandpowers both contain the weighted Poisson shot noise exactly once."
             + suffix
         )
-    if kind_a in {"desi_momentum", "desi_momentum_null"} or kind_b in {"desi_momentum", "desi_momentum_null"}:
+    if is_catalog:
         if a == b:
             return (
                 "DESI kSZ catalog-momentum auto: covariance input follows the NaMaster kSZ tutorial, "
@@ -2571,12 +3775,12 @@ def covariance_input_noise_policy(
     if a == b:
         return (
             f"{kind_a or 'field'} auto: no explicit noise template is subtracted in the data vector; "
-            "the measured map auto-spectrum is used as a data-derived total covariance input."
+            "the measured map auto-spectrum is converted with NaMaster's data-derived iNKA rule."
             + suffix
         )
     return (
         f"{kind_a or a} x {kind_b or b} cross: no explicit cross-noise template is subtracted; "
-        "the measured cross-spectrum is used as the total cross covariance input."
+        "the measured coupled cross-spectrum divided by mask overlap is used as the iNKA input."
         + suffix
     )
 
@@ -2619,7 +3823,14 @@ def measure_spectrum(
     workspace = get_workspace(a, b, fields, bins, workspace_cache, config)
     pcl = nmt.compute_coupled_cell(pair_fa.field, pair_fb.field)
     noise_coupled, noise_decoupled = coupled_noise_for_spectrum(spec, fields, workspace, config, pcl=pcl)
-    cl_all = workspace.decouple_cell(pcl, cl_noise=noise_coupled)
+    # DESI galaxy autos are deliberately saved as raw total bandpowers.  Keep the
+    # catalog-derived template in the product for provenance and nuisance modelling,
+    # but do not pass it as ``cl_noise`` here: that would turn the saved mean back into
+    # a signal-only estimator.  DES shear shape-noise subtraction remains unchanged.
+    mean_noise_coupled = noise_coupled
+    if a == b and fa.info.kind == "desi_galaxy":
+        mean_noise_coupled = None
+    cl_all = workspace.decouple_cell(pcl, cl_noise=mean_noise_coupled)
     windows = workspace.get_bandpower_windows()
     selected_window = windows[spec.component, :, spec.component, :]
     result = {
@@ -2700,7 +3911,6 @@ def compute_covariance_block(
     wa = get_workspace(a1, a2, fields, bins, workspace_cache, config)
     wb = get_workspace(b1, b2, fields, bins, workspace_cache, config)
     cw = get_covariance_workspace(spec_a, spec_b, fields, cov_workspace_cache, config)
-    force_pseudo_over_fsky = any(fields[name].is_catalog_momentum for name in (a1, a2, b1, b2))
     cov = nmt.gaussian_covariance(
         cw,
         fields[a1].spin,
@@ -2715,7 +3925,6 @@ def compute_covariance_block(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         compute_input_cl_for_covariance(
             a1,
@@ -2725,7 +3934,6 @@ def compute_covariance_block(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         compute_input_cl_for_covariance(
             a2,
@@ -2735,7 +3943,6 @@ def compute_covariance_block(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         compute_input_cl_for_covariance(
             a2,
@@ -2745,7 +3952,6 @@ def compute_covariance_block(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         wa,
         wb,
@@ -2785,7 +3991,6 @@ def compute_covariance_block_with_workspace(
     b1, b2 = spec_b.fields
     wa = get_workspace(a1, a2, fields, bins, workspace_cache, config)
     wb = get_workspace(b1, b2, fields, bins, workspace_cache, config)
-    force_pseudo_over_fsky = any(fields[name].is_catalog_momentum for name in (a1, a2, b1, b2))
     cov = nmt.gaussian_covariance(
         covariance_workspace,
         fields[a1].spin,
@@ -2800,7 +4005,6 @@ def compute_covariance_block_with_workspace(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         compute_input_cl_for_covariance(
             a1,
@@ -2810,7 +4014,6 @@ def compute_covariance_block_with_workspace(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         compute_input_cl_for_covariance(
             a2,
@@ -2820,7 +4023,6 @@ def compute_covariance_block_with_workspace(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         compute_input_cl_for_covariance(
             a2,
@@ -2830,7 +4032,6 @@ def compute_covariance_block_with_workspace(
             workspace_cache,
             input_cl_cache,
             config,
-            force_pseudo_over_fsky=force_pseudo_over_fsky,
         ),
         wa,
         wb,
@@ -2861,22 +4062,32 @@ def _corr_from_cov(cov: np.ndarray) -> np.ndarray:
 
 def covariance_diagnostics(cov: np.ndarray, compute_eig: bool = True) -> Dict[str, object]:
     diag = np.diag(cov)
+    symmetric_cov = 0.5 * (np.asarray(cov, dtype=np.float64) + np.asarray(cov, dtype=np.float64).T)
     out: Dict[str, object] = {
         "shape": tuple(int(x) for x in cov.shape),
         "finite": bool(np.all(np.isfinite(cov))),
+        "symmetric": bool(np.allclose(cov, np.asarray(cov).T, rtol=1.0e-8, atol=1.0e-20)),
+        "diag_strictly_positive": bool(np.all(np.isfinite(diag)) and np.all(diag > 0.0)),
         "diag_min": float(np.nanmin(diag)),
         "diag_max": float(np.nanmax(diag)),
     }
     if compute_eig:
         try:
-            evals = np.linalg.eigvalsh(0.5 * (cov + cov.T))
+            evals = np.linalg.eigvalsh(symmetric_cov)
+            corr = _corr_from_cov(symmetric_cov)
+            corr_evals = np.linalg.eigvalsh(0.5 * (corr + corr.T))
             positive = evals[evals > 0]
+            eig_scale = max(float(np.max(np.abs(evals))), np.finfo(np.float64).tiny)
             out.update(
                 {
                     "eig_min": float(evals[0]),
                     "eig_max": float(evals[-1]),
-                    "n_negative_eig": int(np.count_nonzero(evals < -1e-12 * max(abs(evals[-1]), 1.0))),
+                    "n_negative_eig": int(np.count_nonzero(evals < 0.0)),
+                    "n_negative_eig_relative_1e-12": int(np.count_nonzero(evals < -1.0e-12 * eig_scale)),
                     "condition_positive": float(positive[-1] / positive[0]) if positive.size else np.inf,
+                    "corr_eig_min": float(corr_evals[0]),
+                    "corr_eig_max": float(corr_evals[-1]),
+                    "n_negative_corr_eig": int(np.count_nonzero(corr_evals < 0.0)),
                 }
             )
         except np.linalg.LinAlgError as exc:
@@ -2947,11 +4158,24 @@ def measure_all(
     slices: Dict[str, Tuple[int, int]] = {
         spec.name: (i * n_per, (i + 1) * n_per) for i, spec in enumerate(specs)
     }
-    data_vector = np.concatenate([np.asarray(spectra[spec.name]["cl"]) for spec in specs])
+    ell_left, ell_right = make_bandpower_edges(config)
+    packed = pack_joint_data_vector(specs, spectra, config, ell_left, ell_right)
     joint = {
         "spectrum_names": [spec.name for spec in specs],
         "ell": ell,
-        "data_vector": data_vector,
+        "data_vector": packed["data_vector"],
+        "data_vector_raw": packed["data_vector_raw"],
+        "data_vector_valid": packed["data_vector_valid"],
+        "data_vector_weighted_poisson_subtracted": packed[
+            "data_vector_weighted_poisson_subtracted"
+        ],
+        "data_vector_raw_weighted_poisson_subtracted": packed[
+            "data_vector_raw_weighted_poisson_subtracted"
+        ],
+        "galaxy_auto_weighted_poisson_template": packed[
+            "galaxy_auto_weighted_poisson_template"
+        ],
+        "spectrum_validity": packed["spectrum_validity"],
         "cov": None,
         "corr": None,
         "slices": slices,
@@ -2989,11 +4213,10 @@ def measure_all(
         joint["diagnostics"]["covariance_computed"] = True
 
     null_tests = measure_ksz_nulls(fields, bins, workspace_cache, config, spectra)
-    ell_left, ell_right = make_bandpower_edges(config)
     return {
-        "schema": SCHEMA_MEASUREMENT,
+        "schema": measurement_schema_for_config(config),
         "created_utc": utc_now(),
-        "config": asdict(config),
+        "config": config.to_dict(),
         "ell": bins.get_effective_ells(),
         "ell_left": ell_left,
         "ell_right": ell_right,
@@ -3043,6 +4266,7 @@ def save_measurement_product(
     overwrite: bool = False,
 ) -> Path:
     path = Path(path)
+    map_product_id = validate_map_metadata_identity(map_metadata)
     if path.exists() and not overwrite:
         raise FileExistsError(f"{path} exists; pass overwrite=True to replace it.")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3051,15 +4275,39 @@ def save_measurement_product(
         tmp.unlink()
 
     with h5py.File(tmp, "w", track_order=True) as h5:
-        h5.attrs["schema"] = SCHEMA_MEASUREMENT
+        schema = str(result.get("schema", measurement_schema_for_config(result["config"])))
+        h5.attrs["schema"] = schema
         h5.attrs["created_utc"] = str(result["created_utc"])
+        h5.attrs["pipeline_version"] = MEASUREMENT_PIPELINE_VERSION
+        h5.attrs["map_construction_version"] = str(
+            map_metadata.get("map_construction_version", MAP_CONSTRUCTION_VERSION)
+        )
+        h5.attrs["spectrum_estimator_version"] = SPECTRUM_ESTIMATOR_VERSION
+        h5.attrs["covariance_estimator_version"] = COVARIANCE_ESTIMATOR_VERSION
+        h5.attrs["desi_galaxy_auto_mean_convention"] = DESI_GALAXY_AUTO_MEAN_CONVENTION
+        joint_for_views = result.get("joint")
+        has_galaxy_auto_views = isinstance(joint_for_views, Mapping) and all(
+            key in joint_for_views
+            for key in (
+                "data_vector_weighted_poisson_subtracted",
+                "data_vector_raw_weighted_poisson_subtracted",
+                "galaxy_auto_weighted_poisson_template",
+            )
+        )
+        if has_galaxy_auto_views:
+            h5.attrs["desi_galaxy_auto_views_contract_version"] = (
+                DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION
+            )
+        h5.attrs["map_product_id"] = map_product_id
         h5.attrs["config_json"] = _json_dumps(result["config"])
         h5.attrs["map_metadata_json"] = _json_dumps(map_metadata)
         if "sim_measurement_mask_mode" in map_metadata:
             h5.attrs["sim_measurement_mask_mode"] = str(map_metadata["sim_measurement_mask_mode"])
         if "sim_measurement_common_cap_mask" in map_metadata:
             h5.attrs["sim_measurement_common_cap_mask"] = bool(map_metadata["sim_measurement_common_cap_mask"])
-        h5.attrs["missing_inputs_json"] = _json_dumps(missing_inputs_metadata())
+        h5.attrs["missing_inputs_json"] = _json_dumps(
+            map_metadata.get("missing_inputs", missing_inputs_metadata())
+        )
         h5.attrs["binning"] = str(result.get("binning", result["config"].get("binning", "sqrt")))
         h5.attrs["ell_max_inclusive"] = int(result.get("ell_max_inclusive", result["config"].get("lmax", 0)))
 
@@ -3079,15 +4327,45 @@ def save_measurement_product(
             if "pair_overlap_mean_subtraction" in spec:
                 g.attrs["pair_overlap_mean_subtraction_json"] = _json_dumps(spec["pair_overlap_mean_subtraction"])
             if str(spec.get("family", "")) == "desi_g_auto":
-                g.attrs["cl_convention"] = "shot_noise_subtracted_signal"
+                g.attrs["cl_convention"] = DESI_GALAXY_AUTO_MEAN_CONVENTION
                 g.attrs["shot_noise_plotting_note"] = (
-                    "The saved spectra/<name>/cl values are the DESI galaxy signal bandpowers "
-                    "with weighted Poisson shot noise subtracted. Add "
-                    "noise_decoupled_all_components[component] back only for plotting or "
-                    "external comparisons that include shot noise."
+                    "The saved spectra/<name>/cl values already contain clustering signal plus "
+                    "the weighted Poisson shot noise exactly once. The saved "
+                    "noise_decoupled_all_components[component] is a provenance/nuisance template; "
+                    "do not add it to the measured bandpowers a second time."
                 )
             _write_dataset(g, "ell", spec["ell"], dtype="f8")
             _write_dataset(g, "cl", spec["cl"], dtype="f8")
+            if str(spec.get("family", "")) == "desi_g_auto":
+                noise_all = spec.get("noise_decoupled_all_components")
+                if noise_all is None:
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} has no saved decoupled shot-noise template."
+                    )
+                noise_all = np.asarray(noise_all, dtype=np.float64)
+                cl_all = np.asarray(spec["cl_all_components"], dtype=np.float64)
+                component = int(spec["component"])
+                if noise_all.shape != cl_all.shape or not (0 <= component < noise_all.shape[0]):
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} has incompatible total/noise component shapes."
+                    )
+                _write_dataset(
+                    g,
+                    "cl_weighted_poisson_subtracted",
+                    np.asarray(spec["cl"], dtype=np.float64) - noise_all[component],
+                    dtype="f8",
+                )
+                _write_dataset(
+                    g,
+                    "cl_all_components_weighted_poisson_subtracted",
+                    cl_all - noise_all,
+                    dtype="f8",
+                )
+            joint_result = result.get("joint")
+            if isinstance(joint_result, Mapping):
+                per_spectrum_validity = joint_result.get("spectrum_validity", {})
+                if isinstance(per_spectrum_validity, Mapping) and name in per_spectrum_validity:
+                    _write_dataset(g, "data_vector_valid", per_spectrum_validity[name], dtype="?")
             _write_dataset(g, "cl_all_components", spec["cl_all_components"], dtype="f8")
             _write_dataset(g, "pcl_all_components", spec["pcl_all_components"], dtype="f8")
             _write_dataset(g, "bandpower_window_selected", spec["bandpower_window_selected"], dtype="f8")
@@ -3104,6 +4382,13 @@ def save_measurement_product(
             _write_dataset(jg, "spectrum_names", _string_array(joint["spectrum_names"]))
             _write_dataset(jg, "ell", joint["ell"], dtype="f8")
             _write_dataset(jg, "data_vector", joint["data_vector"], dtype="f8")
+            _write_dataset(jg, "data_vector_raw", joint.get("data_vector_raw", joint["data_vector"]), dtype="f8")
+            _write_dataset(
+                jg,
+                "data_vector_valid",
+                joint.get("data_vector_valid", np.ones_like(joint["data_vector"], dtype=bool)),
+                dtype="?",
+            )
             if joint.get("cov") is not None:
                 _write_dataset(jg, "cov", joint["cov"], dtype="f8")
             else:
@@ -3115,12 +4400,83 @@ def save_measurement_product(
             _write_dataset(jg, "slice_start", np.asarray(starts, dtype=np.int64), dtype="i8")
             _write_dataset(jg, "slice_stop", np.asarray(stops, dtype=np.int64), dtype="i8")
             jg.attrs["diagnostics_json"] = _json_dumps(joint["diagnostics"])
-            jg.attrs["data_vector_convention"] = (
-                "joint/data_vector is assembled from spectra/<name>/cl. DESI galaxy auto entries "
-                "are shot-noise-subtracted signal bandpowers. Plotting helpers may add the saved "
-                "DESI shot-noise template back in memory for published clustering overlays, but "
-                "that total is not the theory-comparison vector."
+            jg.attrs["data_vector_validity_contract_version"] = (
+                DATA_VECTOR_VALIDITY_CONTRACT_VERSION
+                if schema == SCHEMA_MEASUREMENT_VALIDITY_MASK
+                else "all_bands_valid"
             )
+            jg.attrs["covariance_basis"] = "joint/data_vector_raw full estimator bandpowers"
+            jg.attrs["active_covariance_rule"] = (
+                "Use joint/cov[np.ix_(joint/data_vector_valid, joint/data_vector_valid)]; "
+                "this is the ordinary principal submatrix, not a Schur complement."
+            )
+            default_valid = np.ones(np.asarray(joint["data_vector"]).shape, dtype=bool)
+            saved_valid = np.asarray(joint.get("data_vector_valid", default_valid), dtype=bool)
+            jg.attrs["n_archive"] = int(np.asarray(joint["data_vector"]).size)
+            jg.attrs["n_active"] = int(np.count_nonzero(saved_valid))
+            jg.attrs["n_zero_placeholders"] = int(np.count_nonzero(~saved_valid))
+            jg.attrs["data_vector_convention"] = (
+                "joint/data_vector is assembled from spectra/<name>/cl, except explicitly invalid "
+                "ACT-kappa transfer-null bands are exact zero placeholders and are marked false in "
+                "joint/data_vector_valid; joint/data_vector_raw preserves every raw estimator band. "
+                "DESI galaxy auto entries "
+                "contain clustering signal plus the weighted Poisson shot noise exactly once. "
+                "Theory comparisons window the clustering signal normally, then add their freely "
+                "modelled amplitude times the saved, already-decoupled shot-noise template in "
+                "bandpower space. Measurement readers must not add that template a second time."
+            )
+            if has_galaxy_auto_views:
+                views = jg.create_group("views")
+                views.attrs["contract_version"] = DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION
+                views.attrs["primary_view"] = DESI_GALAXY_AUTO_PRIMARY_VIEW
+                views.attrs["covariance_conditioning"] = (
+                    "Conditional on the fixed catalog, imaging weights, and random-mask realization. "
+                    "Subtracting the deterministic weighted-Poisson template shifts the mean only; "
+                    "both views therefore share the identical full Gaussian/iNKA estimator covariance."
+                )
+                template = np.asarray(
+                    joint["galaxy_auto_weighted_poisson_template"], dtype=np.float64
+                )
+                if template.shape != np.asarray(joint["data_vector"]).shape:
+                    raise ValueError("Joint galaxy-auto shot template has the wrong shape.")
+                _write_dataset(
+                    views,
+                    "galaxy_auto_weighted_poisson_template",
+                    template,
+                    dtype="f8",
+                )
+                total_view = views.create_group(DESI_GALAXY_AUTO_PRIMARY_VIEW)
+                subtracted_view = views.create_group(DESI_GALAXY_AUTO_SUBTRACTED_VIEW)
+                total_view.attrs["mean_convention"] = DESI_GALAXY_AUTO_MEAN_CONVENTION
+                total_view.attrs["hmc_primary"] = True
+                subtracted_view.attrs["mean_convention"] = (
+                    "total estimator minus the fixed saved weighted-Poisson bandpower template"
+                )
+                subtracted_view.attrs["hmc_primary"] = False
+                for view in (total_view, subtracted_view):
+                    view["data_vector_valid"] = jg["data_vector_valid"]
+                    view["spectrum_names"] = jg["spectrum_names"]
+                    view["slice_start"] = jg["slice_start"]
+                    view["slice_stop"] = jg["slice_stop"]
+                    view["ell"] = jg["ell"]
+                    if "cov" in jg:
+                        view["cov"] = jg["cov"]
+                    if "corr" in jg:
+                        view["corr"] = jg["corr"]
+                total_view["data_vector"] = jg["data_vector"]
+                total_view["data_vector_raw"] = jg["data_vector_raw"]
+                _write_dataset(
+                    subtracted_view,
+                    "data_vector",
+                    joint["data_vector_weighted_poisson_subtracted"],
+                    dtype="f8",
+                )
+                _write_dataset(
+                    subtracted_view,
+                    "data_vector_raw",
+                    joint["data_vector_raw_weighted_poisson_subtracted"],
+                    dtype="f8",
+                )
 
         bg = h5.create_group("covariance_blocks")
         for (name_i, name_j), block in result["covariance_blocks"].items():
@@ -3139,18 +4495,30 @@ def save_measurement_product(
 
         ig = h5.create_group("input_cls_for_covariance")
         cfg = result["config"]
-        ig.attrs["mode"] = str(cfg.get("covariance_input_mode", "decoupled_total_bandpowers_unbinned"))
+        covariance_input_mode = str(cfg.get("covariance_input_mode", "inka_data"))
+        ig.attrs["mode"] = covariance_input_mode
         ig.attrs["namaster_coupled_argument"] = False
-        ig.attrs["description"] = (
-            "Full-ell total spectra passed to nmt.gaussian_covariance with coupled=False. "
-            "Map-field inputs are built from decoupled measured bandpowers, with auto noise added back, "
-            "then sanitized/smoothed and unbinned to full ell. Inputs involving DESI kSZ catalog-momentum "
-            "fields follow the NaMaster kSZ tutorial: coupled pseudo-Cls divided by the relevant "
-            "mask-overlap fsky, with catalog Nf added back for momentum autos."
+        if covariance_input_mode == "inka_data":
+            ig.attrs["description"] = (
+                "Full-ell total spectra passed to nmt.gaussian_covariance with coupled=False. "
+                "Ordinary map pairs use nmt.get_iNKA_cell (measured coupled pseudo-Cl divided "
+                "by mean mask product). Inputs involving DESI catalog-momentum fields use the "
+                "equivalent explicit pseudo-Cl/mask-overlap form, with catalog Nf added back "
+                "for momentum autos."
+            )
+        else:
+            ig.attrs["description"] = (
+                "Legacy full-ell inputs built from decoupled measured bandpowers, with auto noise "
+                "added back, sanitized/smoothed, and unbinned. Retained only for reproducing old products."
+            )
+        ig.attrs["smooth_bandpowers"] = bool(
+            covariance_input_mode != "inka_data" and cfg.get("covariance_input_smooth_bandpowers", True)
         )
-        ig.attrs["smooth_bandpowers"] = bool(cfg.get("covariance_input_smooth_bandpowers", True))
         ig.attrs["smooth_window"] = int(cfg.get("covariance_input_smooth_window", 5))
-        ig.attrs["zero_parity_odd_inputs"] = bool(cfg.get("covariance_zero_parity_odd_inputs", True))
+        zero_parity_odd_inputs = bool(
+            covariance_input_mode != "inka_data" and cfg.get("covariance_zero_parity_odd_inputs", True)
+        )
+        ig.attrs["zero_parity_odd_inputs"] = zero_parity_odd_inputs
         field_meta_for_cov = result.get("field_metadata", {})
         for key, cl in result["input_cls_for_covariance"].items():
             if len(key) == 3:
@@ -3180,7 +4548,8 @@ def save_measurement_product(
                     a,
                     b,
                     field_meta_for_cov,
-                    zero_parity_odd=bool(cfg.get("covariance_zero_parity_odd_inputs", True)),
+                    zero_parity_odd=zero_parity_odd_inputs,
+                    input_mode=covariance_input_mode,
                 )
 
         fg = h5.create_group("fields")
@@ -3221,6 +4590,18 @@ def save_measurement_product(
         tig.attrs["description"] = (
             "Use theory_to_data_vector(measurement_path, theory_cls, ...) to apply "
             "saved bandpower windows, default pixel-window transfers, and ACT Gaussian beams."
+        )
+        tig.attrs["desi_galaxy_auto_mean_convention"] = DESI_GALAXY_AUTO_MEAN_CONVENTION
+        if has_galaxy_auto_views:
+            tig.attrs["desi_galaxy_auto_views_contract_version"] = (
+                DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION
+            )
+            tig.attrs["desi_galaxy_auto_primary_hmc_view"] = (
+                f"joint/views/{DESI_GALAXY_AUTO_PRIMARY_VIEW}; identical hard links to "
+                "joint/data_vector and joint/cov"
+            )
+        tig.attrs["desi_galaxy_auto_shot_noise_nuisance"] = (
+            DESI_GALAXY_AUTO_THEORY_INTERFACE_NOTE
         )
         tig.attrs["act_y_beam_fwhm_arcmin"] = ACT_TSZ_BEAM_FWHM_ARCMIN
         tig.attrs["act_cmb_temperature_beam_fwhm_arcmin"] = ACT_CMB_TEMPERATURE_BEAM_FWHM_ARCMIN
@@ -3460,8 +4841,19 @@ def _load_default_transfers(
     field_meta = json.loads(h5["fields"].attrs["metadata_json"])
     transfers: Dict[str, np.ndarray] = {}
     for name, meta in field_meta.items():
-        spin = int(meta["spin"])
-        transfers[name] = pix_p if spin == 2 else pix_t
+        kind = str(meta.get("kind", ""))
+        if not include_pixel_windows:
+            transfers[name] = np.ones(lmax + 1, dtype=np.float64)
+        elif kind == "des_shear":
+            transfers[name] = pix_p
+        elif kind == "desi_galaxy":
+            transfers[name] = pix_t
+        else:
+            # ACT maps are harmonically reprojected to HEALPix samples (no
+            # output HEALPix pixel window), and catalog momentum fields are
+            # measured directly from object positions. Applying hp.pixwin to
+            # either class would spuriously damp their theory templates.
+            transfers[name] = np.ones(lmax + 1, dtype=np.float64)
     if include_act_beams:
         if "y" in transfers:
             transfers["y"] = transfers["y"] * _beam_transfer_from_h5_or_default(
@@ -3499,11 +4891,14 @@ def theory_to_data_vector(
     ksz_velocity_amplitudes: Optional[Mapping[int, float]] = None,
     ksz_sigma_true_over_c: Optional[object] = None,
     ksz_velocity_correlation: object = KSZ_PHOTOZ_VELOCITY_CORRELATION_R,
+    desi_galaxy_shot_noise_amplitudes: Optional[object] = 1.0,
     shear_m_bias: Optional[object] = None,
     theory_shear_e_is_positive_kappa: bool = True,
     tcmb_uk: float = TCMB_UK,
     include_default_pixel_windows: bool = True,
     include_default_act_beams: bool = True,
+    include_invalid_placeholders: bool = False,
+    allow_legacy_product: bool = False,
 ) -> Tuple[np.ndarray, List[str]]:
     """Convolve smooth theory spectra with the saved measurement windows.
 
@@ -3517,14 +4912,31 @@ def theory_to_data_vector(
     By default, DES shear theory inputs are interpreted as positive-convergence
     E-mode spectra; the wrapper converts them to the saved E-mode sign
     convention recorded in the measurement metadata.
+    Current DESI galaxy-auto measurements contain signal plus weighted Poisson
+    shot noise.  Supply their ``theory_cls`` arrays as clustering signal only;
+    after windowing that signal, this wrapper adds
+    ``desi_galaxy_shot_noise_amplitudes[pz]`` times the saved, estimator-matched
+    decoupled shot-noise template.  The default amplitude 1 reproduces the
+    catalog Poisson prediction and the amplitudes can be varied as nuisance
+    parameters.  Do not put a flat shot term into ``theory_cls``: the ordinary
+    galaxy pixel transfer is not the response of this conditional pseudo-Cl
+    noise template.
+    Legacy products are rejected unless ``allow_legacy_product=True`` is supplied
+    explicitly for a historical-only comparison.
+    Products carrying ``joint/data_vector_valid`` return only the statistically
+    active entries by default.  Set ``include_invalid_placeholders=True`` only
+    for archive-layout diagnostics; the returned invalid entries are exact zeros.
     """
 
     measurement_path = Path(measurement_path)
     out: List[np.ndarray] = []
     names: List[str] = []
+    data_vector_valid: Optional[np.ndarray] = None
     with h5py.File(measurement_path, "r") as h5:
-        if h5.attrs.get("schema") != SCHEMA_MEASUREMENT:
-            raise ValueError(f"{measurement_path} is not a {SCHEMA_MEASUREMENT} product.")
+        validate_measurement_product_identity(
+            h5,
+            allow_legacy_product=allow_legacy_product,
+        )
         config = json.loads(h5.attrs["config_json"])
         lmax = int(config["lmax"])
         field_meta = json.loads(h5["fields"].attrs["metadata_json"])
@@ -3542,6 +4954,8 @@ def theory_to_data_vector(
         ksz_amps: Optional[Dict[int, float]] = None
 
         spectrum_names = [x.decode("utf-8") if isinstance(x, bytes) else str(x) for x in h5["joint/spectrum_names"][:]]
+        if "joint/data_vector_valid" in h5:
+            data_vector_valid = np.asarray(h5["joint/data_vector_valid"][:], dtype=bool)
         for name in spectrum_names:
             g = h5[f"spectra/{name}"]
             fields = json.loads(g.attrs["fields"])
@@ -3578,17 +4992,71 @@ def theory_to_data_vector(
             cl = cl * _shear_multiplicative_factor(fields, shear_m_bias)
             tf = transfers.get(fields[0], np.ones(lmax + 1)) * transfers.get(fields[1], np.ones(lmax + 1))
             window = g["bandpower_window_selected"][:]
-            out.append(window @ (cl[: window.shape[1]] * tf[: window.shape[1]]))
+            bandpower = window @ (cl[: window.shape[1]] * tf[: window.shape[1]])
+            family = str(g.attrs["family"])
+            if family == "desi_g_auto":
+                cl_convention = str(g.attrs.get("cl_convention", ""))
+                if cl_convention == DESI_GALAXY_AUTO_MEAN_CONVENTION:
+                    if desi_galaxy_shot_noise_amplitudes is None:
+                        raise ValueError(
+                            "Current DESI galaxy-auto data include shot noise. Provide "
+                            "desi_galaxy_shot_noise_amplitudes (1 matches the catalog "
+                            "Poisson template) rather than comparing to signal-only theory."
+                        )
+                    if "noise_decoupled_all_components" not in g:
+                        raise ValueError(f"DESI galaxy auto {name!r} has no saved shot-noise template.")
+                    component = int(g.attrs["component"])
+                    noise_all = np.asarray(g["noise_decoupled_all_components"][:], dtype=np.float64)
+                    if not (0 <= component < noise_all.shape[0]):
+                        raise ValueError(
+                            f"DESI galaxy auto {name!r} component {component} is outside "
+                            f"saved noise shape {noise_all.shape}."
+                        )
+                    shot_template = np.asarray(noise_all[component], dtype=np.float64)
+                    if shot_template.shape != bandpower.shape:
+                        raise ValueError(
+                            f"DESI galaxy auto {name!r} shot template has shape "
+                            f"{shot_template.shape}, expected {bandpower.shape}."
+                        )
+                    pz_bin = int(meta["desi_pz"])
+                    shot_amplitude = _value_for_pz(
+                        desi_galaxy_shot_noise_amplitudes,
+                        pz_bin,
+                        "desi_galaxy_shot_noise_amplitudes",
+                    )
+                    bandpower = bandpower + shot_amplitude * shot_template
+                elif not allow_legacy_product:
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} has cl_convention={cl_convention!r}, "
+                        f"expected {DESI_GALAXY_AUTO_MEAN_CONVENTION!r}."
+                    )
+            out.append(bandpower)
             names.append(name)
-    return np.concatenate(out), names
+    vector = np.concatenate(out)
+    if data_vector_valid is not None:
+        if data_vector_valid.shape != vector.shape:
+            raise ValueError(
+                f"Saved data-vector validity shape {data_vector_valid.shape} does not match theory shape {vector.shape}."
+            )
+        if include_invalid_placeholders:
+            vector = vector.copy()
+            vector[~data_vector_valid] = 0.0
+        else:
+            vector = vector[data_vector_valid]
+    return vector, names
 
 
 def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--stage", choices=["lowres", "fast1024", "midres2048", "full"], default="lowres")
+    parser.add_argument(
+        "--stage",
+        choices=["lowres", "fast1024", "midres2048", "full", "highres4096"],
+        default="lowres",
+    )
     parser.add_argument("--survey-root", default="data/xDESI/survey_data")
     parser.add_argument("--output-dir", default="data/xDESI/processed/multiprobe_namaster")
     parser.add_argument("--nside", type=int, default=None)
     parser.add_argument("--lmax", type=int, default=None)
+    parser.add_argument("--lmax-mask", type=int, default=None)
     parser.add_argument("--ell-min", type=int, default=None)
     parser.add_argument("--n-bins", type=int, default=None)
     parser.add_argument("--binning", choices=["sqrt", "linear", "log"], default=None)
@@ -3627,6 +5095,8 @@ def config_from_args(args: argparse.Namespace) -> MeasurementConfig:
         config.nside = int(args.nside)
     if args.lmax is not None:
         config.lmax = int(args.lmax)
+    if args.lmax_mask is not None:
+        config.lmax_mask = int(args.lmax_mask)
     if args.ell_min is not None:
         config.ell_min = int(args.ell_min)
     if args.n_bins is not None:

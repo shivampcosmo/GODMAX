@@ -3,20 +3,21 @@ id: kb.arch.params-dicts
 title: The four parameter dicts and the deep-merge config convention
 layer: 10-architecture
 owner: godmax-core
-status: draft
+status: verified
 confidence: medium
 scope:
   - param_files/params_default.yaml
   - param_files/xDESI/params_multiprobe_fast1024_true_nz_theory.yaml
+  - param_files/xDESI/params_multiprobe_midres2048_true_nz_theory.yaml
   - param_files/xDESI/priors_multiprobe_fast1024_hmc_stage31.yaml
 invariants:
   - INV-PHYS-UNITS-01
 checks:
   - "TODO(godmax-core): assert every key used by src/ exists in params_default.yaml"
-verified_at_commit: 43e07ca
-verified_on: 2026-08-03
+verified_at_commit: cf72943
+verified_on: 2026-08-05
 see_also: [kb.arch.class-chain, kb.xdesi.analysis-state]
-scope_digest: sha256:75a98b9480d6510908ac79d83ac18d36
+scope_digest: sha256:178fae5e413c11cbc80336393e1fac74
 ---
 
 ## Claim
@@ -54,6 +55,13 @@ only its differences.
 Some `xDESI` configs are **path-backed** — they merge `params_default.yaml` with
 `param_files/xDESI/params_fit_abacus.yaml` and then apply fixed overrides
 (`BACKLIGHT_PASTE_HANDOFF_SUMMARY.md`, "Theory Configuration").
+
+The current path-backed measurement/map pairs are deliberately asymmetric in their suffixes:
+the measurement is `_pipev2_gshot.h5`, because its saved galaxy-auto mean contains weighted
+Poisson shot noise, while the matching map/n(z) product remains `_pipev2.h5`, because no map
+bytes changed. The canonical fast1024 and midres2048 true-n(z) theory YAMLs name those exact
+pairs. Reverting either measurement path to an untagged or signal-only product is not a
+historical reproduction switch: current Stage-31 likelihood construction rejects it.
 
 Recorded xDESI settings that are physics choices rather than implementation details, per the
 same source:

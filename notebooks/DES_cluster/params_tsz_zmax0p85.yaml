@@ -1,0 +1,23 @@
+# Production override for the requested low-redshift NSIDE-2048 tSZ map.
+# The merged configuration and both source-file hashes are embedded in the output.
+base_params: params_tsz.yaml
+
+catalog:
+  selection:
+    redshift_max: 0.85
+    expected_rows: 1299336
+
+map:
+  nside: 2048
+
+runtime:
+  halo_chunk_size: 10000
+  pixel_batch_size: 2000
+  pair_batch_size: 1000000
+  pixel_workers: 8
+  jax_platforms: cuda
+  verbose: true
+
+output:
+  run_name: c000_ph000_Mgt1e13_zle0p85
+  overwrite: false

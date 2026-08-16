@@ -636,6 +636,10 @@ class Profiles(base_class):
         num = log10mthresh - log10Mstar
         denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
         val = self.fcen_z[jz] * (0.5 * (1 - jax.lax.erf(num / denom)))
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_Nsat(self, jz, jM):
         log10mthresh = jnp.log10(self.Mthresh_array[jz])
         Mval = self.M_array[jM]
         Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
@@ -693,6 +697,7 @@ class Profiles(base_class):
             num = log10mthresh - log10Mstar
             denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
             val = self.fcen_z[jz] * (0.5 * (1 - jax.lax.erf(num / denom)))
+            return val
         
         log10mthresh = jnp.log10(self.Mthresh_array[jz])
         # Clamp lower limit so the integration grid is always ascending and within SHMR support

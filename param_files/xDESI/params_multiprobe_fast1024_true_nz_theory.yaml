@@ -7,8 +7,8 @@ description: >
 base_params: param_files/params_default.yaml
 xdesi_params: param_files/xDESI/params_fit_abacus.yaml
 
-measurement_h5: data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_cls_cov_nside1024_lmax1024_nbin10_linear.h5
-map_h5: data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_maps_nside1024_lmax1024_nbin10_linear.h5
+measurement_h5: data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_cls_cov_nside1024_lmax1024_nbin10_linear_pipev2_gshot.h5
+map_h5: data/xDESI/processed/multiprobe_namaster_true_nz/fast1024/xdesi_multiprobe_maps_nside1024_lmax1024_nbin10_linear_pipev2.h5
 
 stage: fast1024_true_nz
 output_dir: notebooks/xDESI/survey_measure/outputs/godmax_multiprobe_fast1024_true_nz

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -38,6 +39,16 @@ HOD_ARRAY_BASE_NAMES = (
     "fcen",
 )
 
+MEASUREMENT_FAMILY_ORDER: Tuple[str, ...] = (
+    "des_shear_EE",
+    "act_y_des_shear_E",
+    "desi_g_auto",
+    "desi_g_act_y",
+    "desi_g_des_shear_E",
+    "desi_g_act_kappa",
+    "desi_pi_act_T",
+)
+
 
 @dataclass(frozen=True)
 class MeasurementData:
@@ -53,6 +64,245 @@ class MeasurementData:
     theory_keys: Dict[str, str]
     ell_left: Optional[np.ndarray] = None
     ell_right: Optional[np.ndarray] = None
+    transfer_null_from: Dict[str, float] = field(default_factory=dict)
+    data_vector_valid: Optional[np.ndarray] = None
+    archive_indices: Optional[np.ndarray] = None
+    archive_data_vector_size: Optional[int] = None
+    galaxy_auto_view: str = "total"
+
+
+def measurement_data_identity_sha256(
+    *,
+    names: Sequence[str],
+    ell: object,
+    data_vector: object,
+    covariance: object,
+    starts: object,
+    stops: object,
+    data_vector_valid: Optional[object] = None,
+    archive_indices: Optional[object] = None,
+) -> str:
+    """Content fingerprint for a cached vector's exact measurement basis."""
+
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(list(names), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+    digest.update(b"\0")
+    for label, value in (
+        ("ell", ell),
+        ("data_vector", data_vector),
+        ("covariance", covariance),
+        ("starts", starts),
+        ("stops", stops),
+        ("data_vector_valid", np.ones(np.asarray(data_vector).shape, dtype=bool) if data_vector_valid is None else data_vector_valid),
+        ("archive_indices", np.arange(np.asarray(data_vector).size, dtype=np.int64) if archive_indices is None else archive_indices),
+    ):
+        array = np.ascontiguousarray(np.asarray(value))
+        header = json.dumps(
+            {"label": label, "dtype": array.dtype.str, "shape": list(array.shape)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(header + b"\0" + array.tobytes(order="C") + b"\0")
+    return digest.hexdigest()
+
+
+def measurement_identity_sha256(measurement: MeasurementData) -> str:
+    return measurement_data_identity_sha256(
+        names=measurement.names,
+        ell=measurement.ell,
+        data_vector=measurement.data_vector,
+        covariance=measurement.covariance,
+        starts=measurement.starts,
+        stops=measurement.stops,
+        data_vector_valid=measurement.data_vector_valid,
+        archive_indices=measurement.archive_indices,
+    )
+
+
+def theory_vector_cache_fields(
+    theory_vector: object,
+    measurement_identity_sha256: str,
+    generation_metadata: Mapping[str, object],
+) -> Dict[str, np.ndarray]:
+    """Return self-verifying NPZ fields for a cached theory vector."""
+
+    generation = dict(generation_metadata)
+    generation["measurement_identity_sha256"] = str(measurement_identity_sha256)
+    generation_json = json.dumps(
+        generation,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    array = np.ascontiguousarray(np.asarray(theory_vector))
+    digest = hashlib.sha256()
+    digest.update(str(measurement_identity_sha256).encode("utf-8") + b"\0")
+    digest.update(generation_json.encode("utf-8") + b"\0")
+    digest.update(
+        json.dumps(
+            {"dtype": array.dtype.str, "shape": list(array.shape)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\0"
+    )
+    digest.update(array.tobytes(order="C"))
+    return {
+        "theory_vector_generation_json": np.asarray(generation_json),
+        "theory_vector_identity_sha256": np.asarray(digest.hexdigest()),
+    }
+
+
+def comparison_config_identity_sha256(config: Mapping[str, object]) -> str:
+    """Fingerprint the materialized inputs that define a comparison theory.
+
+    Output locations and accumulated warning text are deliberately excluded: neither
+    changes the computed theory.  The fingerprint does include the merged parameter
+    dictionaries, materialized n(z)/number-density metadata, raw wrapper options, and
+    the exact source-product paths.
+    """
+
+    paths = config.get("paths", {})
+    raw = dict(config.get("raw", {}))
+    raw.pop("output_dir", None)
+    payload = {
+        "raw": raw,
+        "params": config.get("params", {}),
+        "metadata": config.get("metadata", {}),
+        "source_paths": {
+            str(key): value
+            for key, value in paths.items()
+            if str(key) != "output_dir"
+        },
+    }
+    canonical = json.dumps(
+        _serializable(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def theory_response_identity_sha256(config: Mapping[str, object]) -> str:
+    """Fingerprint the effective saved response used to window a theory vector."""
+
+    ensure_godmax_import_paths(Path(config["repo_root"]))
+    from multiprobe_namaster import (
+        DESI_GALAXY_AUTO_MEAN_CONVENTION,
+        _load_default_transfers,
+        validate_measurement_product_identity,
+    )
+
+    digest = hashlib.sha256()
+
+    def update_json(label: str, value: object) -> None:
+        payload = json.dumps(
+            _serializable(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        digest.update(label.encode("utf-8") + b"\0" + payload + b"\0")
+
+    def update_array(label: str, value: object) -> None:
+        array = np.ascontiguousarray(np.asarray(value))
+        header = json.dumps(
+            {"dtype": array.dtype.str, "shape": list(array.shape)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(label.encode("utf-8") + b"\0" + header + b"\0")
+        digest.update(array.tobytes(order="C") + b"\0")
+
+    raw_wrapper = config.get("raw", {}).get("theory_to_data_vector", {})
+    include_pixel_windows = bool(raw_wrapper.get("include_default_pixel_windows", True))
+    include_act_beams = bool(raw_wrapper.get("include_default_act_beams", True))
+    measurement_path = Path(config["paths"]["measurement_h5"])
+    with h5py.File(measurement_path, "r") as h5:
+        validate_measurement_product_identity(
+            h5,
+            allow_legacy_product=allow_legacy_product_from_config(config),
+        )
+        measurement_config = json.loads(str(h5.attrs["config_json"]))
+        lmax = int(measurement_config["lmax"])
+        field_metadata = _json_load_attr(h5["fields"].attrs, "metadata_json", {})
+        transfers = _load_default_transfers(
+            h5,
+            lmax,
+            include_pixel_windows=include_pixel_windows,
+            include_act_beams=include_act_beams,
+        )
+        update_json("contract", "xdesi_theory_response_v1")
+        update_json(
+            "wrapper_options",
+            {
+                "include_default_pixel_windows": include_pixel_windows,
+                "include_default_act_beams": include_act_beams,
+                "theory_shear_e_is_positive_kappa": bool(
+                    raw_wrapper.get("theory_shear_e_is_positive_kappa", True)
+                ),
+                "ksz_velocity_correlation": float(
+                    raw_wrapper.get("ksz_velocity_correlation", 0.3)
+                ),
+                "shear_m_bias_means": config.get("metadata", {}).get(
+                    "shear_m_bias_means", {}
+                ),
+            },
+        )
+        update_json(
+            "measurement_config",
+            {"nside": int(measurement_config["nside"]), "lmax": lmax},
+        )
+        update_json("field_metadata", field_metadata)
+        for field_name in sorted(transfers):
+            update_array(f"transfer[{field_name}]", transfers[field_name])
+
+        spectrum_names = [
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in h5["joint/spectrum_names"][:]
+        ]
+        update_json("spectrum_names", spectrum_names)
+        if "joint/data_vector_valid" in h5:
+            update_array("data_vector_valid", h5["joint/data_vector_valid"][:])
+        for index, name in enumerate(spectrum_names):
+            group = h5[f"spectra/{name}"]
+            fields = json.loads(str(group.attrs["fields"]))
+            family = str(group.attrs["family"])
+            component = int(group.attrs.get("component", 0))
+            update_json(
+                f"spectrum[{index}].metadata",
+                {
+                    "name": name,
+                    "fields": fields,
+                    "family": family,
+                    "theory_key": str(group.attrs["theory_key"]),
+                    "metadata": json.loads(str(group.attrs["metadata_json"])),
+                    "component": component,
+                    "cl_convention": str(group.attrs.get("cl_convention", "")),
+                },
+            )
+            update_array(
+                f"spectrum[{index}].bandpower_window_selected",
+                group["bandpower_window_selected"][:],
+            )
+            if family == "desi_g_auto":
+                convention = str(group.attrs.get("cl_convention", ""))
+                if convention == DESI_GALAXY_AUTO_MEAN_CONVENTION:
+                    if "noise_decoupled_all_components" not in group:
+                        raise ValueError(
+                            f"DESI galaxy auto {name!r} has no saved shot-noise template."
+                        )
+                    noise = np.asarray(group["noise_decoupled_all_components"][:])
+                    if not 0 <= component < noise.shape[0]:
+                        raise ValueError(
+                            f"DESI galaxy auto {name!r} component {component} is outside "
+                            f"saved noise shape {noise.shape}."
+                        )
+                    update_array(f"spectrum[{index}].shot_noise_template", noise[component])
+    return digest.hexdigest()
 
 
 def repo_root() -> Path:
@@ -88,6 +338,87 @@ def _json_load_attr(attrs: h5py.AttributeManager, key: str, default):
     if isinstance(value, bytes):
         value = value.decode("utf-8")
     return json.loads(str(value))
+
+
+def allow_legacy_product_from_config(config: Mapping[str, object]) -> bool:
+    """Return the explicit historical-product opt-in from a comparison config."""
+
+    raw = config.get("raw", {})
+    wrapper = raw.get("theory_to_data_vector", {}) if isinstance(raw, Mapping) else {}
+    return bool(wrapper.get("allow_legacy_product", False)) if isinstance(wrapper, Mapping) else False
+
+
+def validate_measurement_map_identity(
+    measurement_h5: h5py.File,
+    map_h5: h5py.File,
+    *,
+    allow_legacy_product: bool = False,
+) -> str:
+    """Require a measurement and n(z) map file from the same pipeline-v2 map product."""
+
+    from multiprobe_namaster import (
+        MEASUREMENT_PIPELINE_VERSION,
+        validate_map_product_hdf_identity,
+        validate_measurement_product_identity,
+    )
+
+    measurement_id = validate_measurement_product_identity(
+        measurement_h5,
+        allow_legacy_product=allow_legacy_product,
+    )
+    map_id = validate_map_product_hdf_identity(
+        map_h5,
+        allow_legacy_product=allow_legacy_product,
+    )
+    if measurement_id and map_id and measurement_id != map_id:
+        raise ValueError(
+            "Measurement and map_h5 have different map_product_id values; their masks, "
+            "n(z), windows or estimator settings may not describe the same data vector."
+        )
+    both_current = (
+        str(measurement_h5.attrs.get("pipeline_version", "")) == MEASUREMENT_PIPELINE_VERSION
+        and str(map_h5.attrs.get("pipeline_version", "")) == MEASUREMENT_PIPELINE_VERSION
+    )
+    if both_current and (not measurement_id or not map_id):
+        raise ValueError("Pipeline-v2 measurement/map products require non-empty map_product_id values.")
+    return measurement_id or map_id
+
+
+def _validate_theory_nz_content(
+    measurement_h5: h5py.File,
+    map_h5: h5py.File,
+) -> None:
+    """Bind the HDF5 n(z) arrays consumed by theory to the embedded map metadata."""
+
+    raw = measurement_h5.attrs.get("map_metadata_json")
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    metadata = json.loads(str(raw))
+
+    def check_dataset(h5: h5py.File, dataset: str, expected: object, label: str) -> None:
+        if dataset not in h5:
+            raise ValueError(f"Pipeline-v2 product is missing {label} dataset {dataset!r}.")
+        actual = np.asarray(h5[dataset][:])
+        expected_array = np.asarray(expected)
+        if actual.shape != expected_array.shape or not np.array_equal(
+            actual,
+            expected_array,
+            equal_nan=True,
+        ):
+            raise ValueError(
+                f"{label} dataset {dataset!r} does not match the content-addressed map metadata."
+            )
+
+    des_source = metadata.get("des_y3_source_nz")
+    if isinstance(des_source, Mapping):
+        for key in ("z_mid", "dndz_by_bin"):
+            if key in des_source:
+                check_dataset(measurement_h5, f"nz/des_shear/{key}", des_source[key], "DES source n(z)")
+    desi = metadata.get("desi_summary")
+    if isinstance(desi, Mapping):
+        for key in ("z_mid", "z_edges", "nz_dndz_by_pz"):
+            if key in desi:
+                check_dataset(map_h5, f"nz/desi/{key}", desi[key], "DESI lens n(z)")
 
 
 def _trapz(y: np.ndarray, x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -247,12 +578,45 @@ def load_comparison_config(config_path: str | Path) -> dict:
     }
 
 
-def load_measurement_data(measurement_path: str | Path) -> MeasurementData:
+def load_measurement_data(
+    measurement_path: str | Path,
+    *,
+    include_invalid_placeholders: bool = False,
+    allow_legacy_product: bool = False,
+    galaxy_auto_view: str = "total",
+) -> MeasurementData:
     path = resolve_repo_path(measurement_path)
     with h5py.File(path, "r") as h5:
-        schema = str(h5.attrs.get("schema", ""))
-        if schema != SCHEMA_MEASUREMENT:
-            raise ValueError(f"{path} is not a {SCHEMA_MEASUREMENT} product; schema={schema!r}.")
+        from multiprobe_namaster import (
+            DESI_GALAXY_AUTO_PRIMARY_VIEW,
+            DESI_GALAXY_AUTO_SUBTRACTED_VIEW,
+            validate_galaxy_auto_views,
+            validate_measurement_product_identity,
+        )
+
+        validate_measurement_product_identity(
+            h5,
+            allow_legacy_product=allow_legacy_product,
+        )
+        aliases = {
+            "total": DESI_GALAXY_AUTO_PRIMARY_VIEW,
+            "cl_gg_plus_sn": DESI_GALAXY_AUTO_PRIMARY_VIEW,
+            "weighted_poisson_subtracted": DESI_GALAXY_AUTO_SUBTRACTED_VIEW,
+            "shot_subtracted": DESI_GALAXY_AUTO_SUBTRACTED_VIEW,
+        }
+        requested_view = aliases.get(str(galaxy_auto_view).strip().lower())
+        if requested_view is None:
+            raise ValueError(
+                "galaxy_auto_view must be 'total' or 'weighted_poisson_subtracted'."
+            )
+        if requested_view == DESI_GALAXY_AUTO_PRIMARY_VIEW:
+            data_path = "joint/data_vector"
+            covariance_path = "joint/cov"
+        else:
+            validate_galaxy_auto_views(h5, require=True)
+            view_root = f"joint/views/{DESI_GALAXY_AUTO_SUBTRACTED_VIEW}"
+            data_path = f"{view_root}/data_vector"
+            covariance_path = f"{view_root}/cov"
         names = [x.decode("utf-8") if isinstance(x, bytes) else str(x) for x in h5["joint/spectrum_names"][:]]
         starts = h5["joint/slice_start"][:].astype(int)
         stops = h5["joint/slice_stop"][:].astype(int)
@@ -264,19 +628,87 @@ def load_measurement_data(measurement_path: str | Path) -> MeasurementData:
             families[name] = str(group.attrs.get("family", "unknown"))
             labels[name] = str(group.attrs.get("label", name))
             theory_keys[name] = str(group.attrs.get("theory_key", name))
+        transfer_null_from: Dict[str, float] = {}
+        kappa_curve_path = "transfer_functions/act_kappa_filter_baseline"
+        if kappa_curve_path in h5:
+            curve = np.asarray(h5[kappa_curve_path][:], dtype=np.float64)
+            if curve.ndim == 2 and curve.shape[1] >= 2 and curve.shape[0] > 1:
+                amplitude = np.abs(curve[:, 1])
+                scale = float(np.max(amplitude))
+                nonzero = amplitude > max(np.finfo(np.float64).tiny, scale * 1.0e-12)
+                nonzero_indices = np.flatnonzero(nonzero)
+                if nonzero_indices.size:
+                    first_trailing = int(nonzero_indices[-1]) + 1
+                    if first_trailing < curve.shape[0] and not np.any(nonzero[first_trailing:]):
+                        transfer_null_from["desi_g_act_kappa"] = float(curve[first_trailing, 0])
+        archive_data = np.asarray(h5[data_path][:], dtype=np.float64)
+        archive_cov = np.asarray(h5[covariance_path][:], dtype=np.float64)
+        archive_valid = (
+            np.asarray(h5["joint/data_vector_valid"][:], dtype=bool)
+            if "joint/data_vector_valid" in h5
+            else np.ones(archive_data.size, dtype=bool)
+        )
+        if archive_valid.shape != archive_data.shape:
+            raise ValueError("Saved data-vector validity mask has the wrong shape.")
+        archive_indices = np.arange(archive_data.size, dtype=np.int64)
+        ell_common = np.asarray(h5["joint/ell"][:], dtype=np.float64)
+        ell_left_common = np.asarray(h5["ell_left"][:]) if "ell_left" in h5 else None
+        ell_right_common = np.asarray(h5["ell_right"][:]) if "ell_right" in h5 else None
+        if include_invalid_placeholders or np.all(archive_valid):
+            data_vector = archive_data
+            covariance = archive_cov
+            ell_out = ell_common
+            starts_out = starts
+            stops_out = stops
+            valid_out = archive_valid
+            ell_left_out = ell_left_common
+            ell_right_out = ell_right_common
+            selected_archive_indices = archive_indices
+        else:
+            selected_archive_indices = archive_indices[archive_valid]
+            data_vector = archive_data[archive_valid]
+            covariance = archive_cov[np.ix_(archive_valid, archive_valid)]
+            starts_active: List[int] = []
+            stops_active: List[int] = []
+            ell_chunks: List[np.ndarray] = []
+            left_chunks: List[np.ndarray] = []
+            right_chunks: List[np.ndarray] = []
+            cursor = 0
+            for start, stop in zip(starts, stops):
+                local_valid = archive_valid[int(start) : int(stop)]
+                if not np.any(local_valid):
+                    raise ValueError("A saved spectrum has no statistically valid bandpowers.")
+                starts_active.append(cursor)
+                cursor += int(np.count_nonzero(local_valid))
+                stops_active.append(cursor)
+                ell_chunks.append(ell_common[local_valid])
+                if ell_left_common is not None and ell_right_common is not None:
+                    left_chunks.append(ell_left_common[local_valid])
+                    right_chunks.append(ell_right_common[local_valid])
+            ell_out = np.concatenate(ell_chunks)
+            starts_out = np.asarray(starts_active, dtype=int)
+            stops_out = np.asarray(stops_active, dtype=int)
+            valid_out = np.ones(data_vector.size, dtype=bool)
+            ell_left_out = np.concatenate(left_chunks) if left_chunks else None
+            ell_right_out = np.concatenate(right_chunks) if right_chunks else None
         return MeasurementData(
             path=path,
             names=names,
-            ell=h5["joint/ell"][:],
-            data_vector=h5["joint/data_vector"][:],
-            covariance=h5["joint/cov"][:],
-            starts=starts,
-            stops=stops,
+            ell=ell_out,
+            data_vector=data_vector,
+            covariance=covariance,
+            starts=starts_out,
+            stops=stops_out,
             families=families,
             labels=labels,
             theory_keys=theory_keys,
-            ell_left=h5["ell_left"][:] if "ell_left" in h5 else None,
-            ell_right=h5["ell_right"][:] if "ell_right" in h5 else None,
+            ell_left=ell_left_out,
+            ell_right=ell_right_out,
+            transfer_null_from=transfer_null_from,
+            data_vector_valid=valid_out,
+            archive_indices=selected_archive_indices,
+            archive_data_vector_size=int(archive_data.size),
+            galaxy_auto_view=requested_view,
         )
 
 
@@ -296,9 +728,14 @@ def materialize_nz_inputs(config: Mapping[str, object]) -> dict:
 
     warnings = list(cfg.get("warnings", []))
     with h5py.File(measurement_path, "r") as mh5, h5py.File(map_path, "r") as map_h5:
-        schema = str(mh5.attrs.get("schema", ""))
-        if schema != SCHEMA_MEASUREMENT:
-            raise ValueError(f"{measurement_path} schema={schema!r}, expected {SCHEMA_MEASUREMENT!r}.")
+        allow_legacy_product = allow_legacy_product_from_config(cfg)
+        map_product_id = validate_measurement_map_identity(
+            mh5,
+            map_h5,
+            allow_legacy_product=allow_legacy_product,
+        )
+        if not allow_legacy_product:
+            _validate_theory_nz_content(mh5, map_h5)
         measurement_config = json.loads(str(mh5.attrs["config_json"]))
         field_meta = _json_load_attr(mh5["fields"].attrs, "metadata_json", {})
         priors = _priors_from_measurement(measurement_path)
@@ -400,6 +837,7 @@ def materialize_nz_inputs(config: Mapping[str, object]) -> dict:
             "ksz_default_A_v_by_pz": np.asarray(ksz_default_a_v, dtype=np.float64),
             "ksz_sigma_true_gas_over_c_by_pz": np.asarray(ksz_sigma_true, dtype=np.float64),
             "lmax": int(measurement_config["lmax"]),
+            "map_product_id": map_product_id,
         }
     )
     cfg["metadata"] = metadata
@@ -863,9 +1301,20 @@ def extract_theory_cls(
     return theory, diagnostics
 
 
-def validate_theory_keys(measurement_path: str | Path, theory_cls: Mapping[str, np.ndarray]) -> List[str]:
+def validate_theory_keys(
+    measurement_path: str | Path,
+    theory_cls: Mapping[str, np.ndarray],
+    *,
+    allow_legacy_product: bool = False,
+) -> List[str]:
     missing = []
     with h5py.File(resolve_repo_path(measurement_path), "r") as h5:
+        from multiprobe_namaster import validate_measurement_product_identity
+
+        validate_measurement_product_identity(
+            h5,
+            allow_legacy_product=allow_legacy_product,
+        )
         for raw_name in h5["joint/spectrum_names"][:]:
             name = raw_name.decode("utf-8") if isinstance(raw_name, bytes) else str(raw_name)
             group = h5[f"spectra/{name}"]
@@ -874,6 +1323,34 @@ def validate_theory_keys(measurement_path: str | Path, theory_cls: Mapping[str, 
             if name not in theory_cls and not (family == "desi_pi_act_T" and theory_key in theory_cls):
                 missing.append(f"{name} or {theory_key}")
     return missing
+
+
+def desi_galaxy_shot_noise_amplitudes_from_config(config: Mapping[str, object]) -> object:
+    """Resolve one unambiguous fixed or saved/best-fit shot-amplitude source."""
+
+    raw = config.get("raw", {}).get("theory_to_data_vector", {})
+    has_explicit_wrapper_value = "desi_galaxy_shot_noise_amplitudes" in raw
+    other_params = config.get("params", {}).get("other_params", {})
+    sampled_or_saved = {
+        pz_bin: other_params[f"desi_galaxy_shot_noise_amplitude_pz{pz_bin}"]
+        for pz_bin in range(1, 5)
+        if f"desi_galaxy_shot_noise_amplitude_pz{pz_bin}" in other_params
+    }
+    if has_explicit_wrapper_value and sampled_or_saved:
+        raise ValueError(
+            "Ambiguous DESI galaxy shot-noise amplitudes: remove either "
+            "raw.theory_to_data_vector.desi_galaxy_shot_noise_amplitudes or the "
+            "params.other_params.desi_galaxy_shot_noise_amplitude_pz{1..4} values. "
+            "Sampled/saved amplitudes and a fixed wrapper override cannot coexist."
+        )
+    if has_explicit_wrapper_value:
+        return raw["desi_galaxy_shot_noise_amplitudes"]
+    if sampled_or_saved:
+        return {
+            pz_bin: sampled_or_saved.get(pz_bin, 1.0)
+            for pz_bin in range(1, 5)
+        }
+    return 1.0
 
 
 def theory_data_vector(config: Mapping[str, object], theory_cls: Mapping[str, np.ndarray], ell: np.ndarray):
@@ -894,9 +1371,11 @@ def theory_data_vector(config: Mapping[str, object], theory_cls: Mapping[str, np
         ell=np.asarray(ell, dtype=np.float64),
         shear_m_bias=shear_m_bias,
         ksz_velocity_correlation=float(raw.get("ksz_velocity_correlation", 0.3)),
+        desi_galaxy_shot_noise_amplitudes=desi_galaxy_shot_noise_amplitudes_from_config(config),
         include_default_pixel_windows=bool(raw.get("include_default_pixel_windows", True)),
         include_default_act_beams=bool(raw.get("include_default_act_beams", True)),
         theory_shear_e_is_positive_kappa=bool(raw.get("theory_shear_e_is_positive_kappa", True)),
+        allow_legacy_product=bool(raw.get("allow_legacy_product", False)),
     )
 
 
@@ -905,11 +1384,20 @@ def comparison_statistics(measurement: MeasurementData, theory_vector: np.ndarra
         raise ValueError(
             f"Theory vector shape {theory_vector.shape} does not match data shape {measurement.data_vector.shape}."
         )
-    resid = measurement.data_vector - theory_vector
+    valid = (
+        np.ones(measurement.data_vector.size, dtype=bool)
+        if measurement.data_vector_valid is None
+        else np.asarray(measurement.data_vector_valid, dtype=bool)
+    )
+    if valid.shape != measurement.data_vector.shape:
+        raise ValueError("Measurement validity mask does not match its data-vector shape.")
+    resid_full = measurement.data_vector - theory_vector
+    resid = resid_full[valid]
+    covariance = measurement.covariance[np.ix_(valid, valid)]
     try:
-        alpha = np.linalg.solve(measurement.covariance, resid)
+        alpha = np.linalg.solve(covariance, resid)
     except np.linalg.LinAlgError:
-        alpha = np.linalg.pinv(measurement.covariance) @ resid
+        alpha = np.linalg.pinv(covariance) @ resid
     stats = {
         "full": {
             "chi2": float(resid @ alpha),
@@ -921,11 +1409,12 @@ def comparison_statistics(measurement: MeasurementData, theory_vector: np.ndarra
         idx_chunks = []
         for name, start, stop in zip(measurement.names, measurement.starts, measurement.stops):
             if measurement.families[name] == family:
-                idx_chunks.append(np.arange(start, stop, dtype=int))
+                indices = np.arange(start, stop, dtype=int)
+                idx_chunks.append(indices[valid[indices]])
         if not idx_chunks:
             continue
         idx = np.concatenate(idx_chunks)
-        sub_resid = resid[idx]
+        sub_resid = resid_full[idx]
         sub_cov = measurement.covariance[np.ix_(idx, idx)]
         try:
             sub_alpha = np.linalg.solve(sub_cov, sub_resid)
@@ -987,6 +1476,111 @@ def _safe_family_png(output_dir, filename_prefix: str, family: str, max_basename
     return output_dir / f"{filename_prefix[:keep]}{h}_{family}.png"
 
 
+def _configure_ell_axis(
+    ax,
+    ell: np.ndarray,
+    *,
+    ell_left: Optional[np.ndarray],
+    xscale: str,
+    ell_max: Optional[float],
+    xlim: Optional[Tuple[float, float]],
+) -> None:
+    """Apply an ell-axis scale and limits using positive saved band support."""
+
+    scale = str(xscale)
+    if scale != "linear":
+        ax.set_xscale(scale)
+
+    if xlim is not None:
+        left, right = float(xlim[0]), float(xlim[1])
+        if not np.isfinite(left) or not np.isfinite(right) or left >= right:
+            raise ValueError(f"xlim must be finite and increasing, got {xlim!r}.")
+        if scale == "log" and left <= 0.0:
+            raise ValueError(f"A logarithmic ell axis requires xlim[0] > 0, got {left!r}.")
+        ax.set_xlim(left, right)
+    elif ell_max is not None:
+        right = float(ell_max)
+        if not np.isfinite(right) or (scale == "log" and right <= 0.0):
+            raise ValueError(
+                f"ell_max must be finite and positive for a logarithmic ell axis, got {ell_max!r}."
+            )
+        if scale == "log":
+            support = np.asarray(
+                ell if ell_left is None else ell_left,
+                dtype=np.float64,
+            )
+            positive = support[np.isfinite(support) & (support > 0.0)]
+            if positive.size == 0:
+                raise ValueError(
+                    "A logarithmic ell axis requires at least one finite positive band support value."
+                )
+            left = float(np.min(positive))
+            if left >= right:
+                raise ValueError(
+                    f"Logarithmic ell limits must be increasing, got {(left, right)!r}."
+                )
+            ax.set_xlim(left, right)
+        else:
+            ax.set_xlim(right=right)
+    elif scale == "log":
+        support = np.asarray(
+            ell if ell_left is None else ell_left,
+            dtype=np.float64,
+        )
+        positive = support[np.isfinite(support) & (support > 0.0)]
+        if positive.size == 0:
+            raise ValueError(
+                "A logarithmic ell axis requires at least one finite positive band support value."
+            )
+        ax.set_xlim(left=float(np.min(positive)))
+
+    if scale == "log":
+        left, right = (float(value) for value in ax.get_xlim())
+        if not np.isfinite(left) or not np.isfinite(right) or left <= 0.0 or left >= right:
+            raise ValueError(
+                "A logarithmic ell axis did not resolve to finite, positive, increasing limits: "
+                f"{(left, right)!r}."
+            )
+
+
+def validate_measurement_plot_family_coverage(measurement: MeasurementData) -> None:
+    """Refuse plots that would silently omit or misclassify a saved spectrum."""
+
+    missing_metadata = [name for name in measurement.names if name not in measurement.families]
+    if missing_metadata:
+        raise ValueError(f"Measurement spectra lack family metadata: {missing_metadata}")
+    actual = {measurement.families[name] for name in measurement.names}
+    allowed = set(MEASUREMENT_FAMILY_ORDER)
+    unknown = sorted(actual - allowed)
+    missing = sorted(allowed - actual)
+    if unknown or missing:
+        raise ValueError(
+            "Measurement family coverage is incomplete or unknown: "
+            f"missing={missing}, unknown={unknown}."
+        )
+
+
+def _shade_transfer_null_region(ax, measurement: MeasurementData, family: str) -> None:
+    cutoff = measurement.transfer_null_from.get(family)
+    if cutoff is None:
+        return
+    if measurement.ell_right is not None and np.asarray(measurement.ell_right).size:
+        right = float(np.max(measurement.ell_right))
+    else:
+        right = float(np.max(measurement.ell))
+    if not np.isfinite(cutoff) or not np.isfinite(right) or cutoff >= right:
+        return
+    ax.axvspan(
+        float(cutoff),
+        right,
+        color="#c9b36a",
+        alpha=0.20,
+        lw=0,
+        zorder=0,
+        label=r"ACT $\kappa$ transfer = 0",
+    )
+
+
 def plot_family_comparisons(
     measurement: MeasurementData,
     theory_vector: np.ndarray,
@@ -1042,7 +1636,7 @@ def plot_family_comparisons(
                     y_data = data_cl
                     y_theory = theory_cl
                     y_err = err
-                    ylabel = r"$C_\ell$ signal"
+                    ylabel = r"$C_\ell$ (signal + shot noise)"
                 else:
                     fac = dell_factor(ell)
                     sign = -1.0 if family == "desi_pi_act_T" else 1.0
@@ -1195,15 +1789,17 @@ def plot_family_dell_comparisons(
                 ax.errorbar(ell, y_data, yerr=y_err, fmt="o", ms=3.2, lw=1.0, color=colors.get(family, "#333333"), label="data", zorder=2)
                 ax.plot(ell, y_theory, "-", lw=1.6, color="#111111", label="bestfit theory", zorder=3)
                 ax.axhline(0.0, color="#777777", lw=0.7, alpha=0.55)
-                if ell_max is not None:
-                    ax.set_xlim(right=float(ell_max))
                 if family == "desi_pi_act_T" and ksz_ylim is not None:
                     ax.set_ylim(float(ksz_ylim[0]), float(ksz_ylim[1]))
                 ax.grid(True, color="#d8dbe2", lw=0.7, alpha=0.75)
-                if str(xscale) != "linear":
-                    ax.set_xscale(str(xscale))
-                if xlim is not None:
-                    ax.set_xlim(float(xlim[0]), float(xlim[1]))
+                _configure_ell_axis(
+                    ax,
+                    ell,
+                    ell_left=ell_left,
+                    xscale=xscale,
+                    ell_max=ell_max,
+                    xlim=xlim,
+                )
                 ax.set_xlabel(r"$\ell$")
                 ax.set_ylabel(ylabel)
                 ax.set_title(measurement.labels.get(name, name), fontsize=9)
@@ -1344,12 +1940,14 @@ def plot_family_dell_residual_comparisons(
                 ax.axhline(1.0, color="#4f4f4f", lw=1.6, ls="--", alpha=0.95, zorder=1, label=r"$\pm 1\sigma$")
                 ax.axhline(-1.0, color="#4f4f4f", lw=1.6, ls="--", alpha=0.95, zorder=1)
                 ax.plot(ell, residual, "o-", ms=3.2, lw=1.1, color=colors.get(family, "#333333"), label=r"$(\mathrm{bestfit}-\mathrm{data})/\sigma$", zorder=3)
-                if ell_max is not None:
-                    ax.set_xlim(right=float(ell_max))
-                if str(xscale) != "linear":
-                    ax.set_xscale(str(xscale))
-                if xlim is not None:
-                    ax.set_xlim(float(xlim[0]), float(xlim[1]))
+                _configure_ell_axis(
+                    ax,
+                    ell,
+                    ell_left=ell_left,
+                    xscale=xscale,
+                    ell_max=ell_max,
+                    xlim=xlim,
+                )
                 if ylim is not None:
                     ax.set_ylim(float(ylim[0]), float(ylim[1]))
                 ax.grid(True, color="#d8dbe2", lw=0.7, alpha=0.75)
@@ -1379,12 +1977,66 @@ def plot_family_dell_residual_comparisons(
     return outputs
 
 
-def plot_measurement_dell(
+def measurement_plot_values(
+    ell: np.ndarray,
+    cl: np.ndarray,
+    err: np.ndarray,
+    *,
+    family: str,
+    quantity: str,
+    ksz_scale: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray, str]:
+    """Return plotting values without changing the saved measurement convention.
+
+    The HDF5 product always stores raw ``C_ell`` values, including raw
+    ``C_ell^{pi,T}`` for kSZ.  The paper-style kSZ sign flip is therefore a
+    display convention applied only to ``D_ell`` plots.  Means and one-sigma
+    errors receive the same positive ``C_ell -> D_ell`` scale factor.
+    """
+
+    quantity = str(quantity).lower()
+    if quantity not in {"cl", "dell"}:
+        raise ValueError(f"quantity must be 'cl' or 'dell', got {quantity!r}.")
+    ell = np.asarray(ell, dtype=np.float64)
+    cl = np.asarray(cl, dtype=np.float64)
+    err = np.asarray(err, dtype=np.float64)
+    if ell.shape != cl.shape or cl.shape != err.shape:
+        raise ValueError("ell, cl and err must have identical shapes.")
+
+    is_ksz = family == "desi_pi_act_T"
+    scale = float(ksz_scale) if is_ksz else 1.0
+    if is_ksz and (not np.isfinite(scale) or scale <= 0.0):
+        raise ValueError(f"ksz_scale must be finite and positive, got {ksz_scale!r}.")
+    if np.isclose(scale, 1.0):
+        scale_prefix = ""
+    else:
+        exponent = int(round(math.log10(scale)))
+        if np.isclose(scale, 10.0**exponent):
+            scale_prefix = rf"10^{{{exponent}}}\,"
+        else:
+            scale_prefix = rf"{scale:g}\,"
+    if quantity == "cl":
+        factor = np.ones_like(ell)
+        sign = 1.0
+        ylabel = r"$C_\ell$"
+        if is_ksz:
+            ylabel = rf"${scale_prefix}C_\ell^{{\pi T}}$"
+    else:
+        factor = dell_factor(ell)
+        sign = -1.0 if is_ksz else 1.0
+        ylabel = r"$D_\ell$"
+        if is_ksz:
+            ylabel = rf"$-{scale_prefix}D_\ell^{{\pi T}}$"
+    return sign * scale * factor * cl, abs(scale) * factor * err, ylabel
+
+
+def plot_measurement_bandpowers(
     measurement: MeasurementData,
     output_dir: str | Path,
     *,
+    quantity: str,
     pdf_path: Optional[str | Path] = None,
-    filename_prefix: str = "measurement_dell",
+    filename_prefix: Optional[str] = None,
     ell_max: Optional[float] = None,
     ksz_ylim: Optional[Tuple[float, float]] = None,
     ksz_scale: float = 1.0,
@@ -1397,19 +2049,16 @@ def plot_measurement_dell(
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
+    quantity = str(quantity).lower()
+    if quantity not in {"cl", "dell"}:
+        raise ValueError(f"quantity must be 'cl' or 'dell', got {quantity!r}.")
+    if filename_prefix is None:
+        filename_prefix = f"measurement_{quantity}"
+    validate_measurement_plot_family_coverage(measurement)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     pdf = PdfPages(pdf_path) if pdf_path is not None else None
     outputs: List[Path] = []
-    family_order = [
-        "des_shear_EE",
-        "act_y_des_shear_E",
-        "desi_g_auto",
-        "desi_g_act_y",
-        "desi_g_des_shear_E",
-        "desi_g_act_kappa",
-        "desi_pi_act_T",
-    ]
     colors = {
         "des_shear_EE": "#2457a6",
         "act_y_des_shear_E": "#b43c2f",
@@ -1420,7 +2069,7 @@ def plot_measurement_dell(
         "desi_pi_act_T": "#5e5147",
     }
     try:
-        for family in family_order:
+        for family in MEASUREMENT_FAMILY_ORDER:
             names = [name for name in measurement.names if measurement.families[name] == family]
             if not names:
                 continue
@@ -1432,41 +2081,73 @@ def plot_measurement_dell(
                 start = int(measurement.starts[index])
                 stop = int(measurement.stops[index])
                 ell = measurement_ell_slice(measurement, start, stop)
+                ell_left, ell_right = measurement_ell_edge_slice(
+                    measurement,
+                    start,
+                    stop,
+                )
                 data_cl = measurement.data_vector[start:stop]
                 err = np.sqrt(np.clip(np.diag(measurement.covariance[start:stop, start:stop]), 0.0, np.inf))
                 if ell_max is not None:
                     keep = ell <= float(ell_max)
                     ell = ell[keep]
+                    if ell_left is not None and ell_right is not None:
+                        ell_left = ell_left[keep]
+                        ell_right = ell_right[keep]
                     data_cl = data_cl[keep]
                     err = err[keep]
-                fac = dell_factor(ell)
-                sign = -1.0 if family == "desi_pi_act_T" else 1.0
-                scale = float(ksz_scale) if family == "desi_pi_act_T" else 1.0
-                y_data = sign * scale * fac * data_cl
-                y_err = scale * fac * err
-                ylabel = r"$D_\ell$"
-                if family == "desi_pi_act_T":
-                    ylabel = r"$-D_\ell^{\pi T}$" if np.isclose(scale, 1.0) else r"$-10^3 D_\ell^{\pi T}$"
+                y_data, y_err, ylabel = measurement_plot_values(
+                    ell,
+                    data_cl,
+                    err,
+                    family=family,
+                    quantity=quantity,
+                    ksz_scale=ksz_scale,
+                )
+                if family == "desi_g_auto":
+                    if measurement.galaxy_auto_view == "total":
+                        ylabel = (
+                            r"$C_\ell^{gg}+N_\ell^{\rm shot}$"
+                            if quantity == "cl"
+                            else r"$\ell(\ell+1)(C_\ell^{gg}+N_\ell^{\rm shot})/(2\pi)$"
+                        )
+                    else:
+                        ylabel = (
+                            r"$C_\ell^{gg}\;(\widehat N_\ell^{\rm P}\ {\rm subtracted})$"
+                            if quantity == "cl"
+                            else r"$D_\ell^{gg}\;(\widehat N_\ell^{\rm P}\ {\rm subtracted})$"
+                        )
+                _shade_transfer_null_region(ax, measurement, family)
                 ax.errorbar(ell, y_data, yerr=y_err, fmt="o", ms=3.2, lw=1.0, color=colors.get(family, "#333333"), label="measurement")
                 ax.axhline(0.0, color="#777777", lw=0.7, alpha=0.55)
-                if ell_max is not None:
-                    ax.set_xlim(right=float(ell_max))
                 if family == "desi_pi_act_T" and ksz_ylim is not None:
                     ax.set_ylim(float(ksz_ylim[0]), float(ksz_ylim[1]))
                 ax.grid(True, color="#d8dbe2", lw=0.7, alpha=0.75)
-                if str(xscale) != "linear":
-                    ax.set_xscale(str(xscale))
-                if xlim is not None:
-                    ax.set_xlim(float(xlim[0]), float(xlim[1]))
+                _configure_ell_axis(
+                    ax,
+                    ell,
+                    ell_left=ell_left,
+                    xscale=xscale,
+                    ell_max=ell_max,
+                    xlim=xlim,
+                )
                 ax.set_xlabel(r"$\ell$")
                 ax.set_ylabel(ylabel)
                 ax.set_title(measurement.labels.get(name, name), fontsize=9)
                 ax.legend(loc="best", fontsize=7, frameon=False)
             for ax in axes.flat[len(names) :]:
                 ax.set_visible(False)
-            title = f"{family}: measurement in D_ell"
-            if family == "desi_pi_act_T":
+            quantity_title = r"$C_\ell$" if quantity == "cl" else r"$D_\ell$"
+            title = f"{family}: measurement in {quantity_title}"
+            if family == "desi_g_auto":
+                if measurement.galaxy_auto_view == "total":
+                    title += " (total clustering + weighted-Poisson shot noise)"
+                else:
+                    title += " (weighted-Poisson template subtracted)"
+            if family == "desi_pi_act_T" and quantity == "dell":
                 title += " (positive kSZ convention)"
+            if family in measurement.transfer_null_from:
+                title += rf" (shaded: transfer null from $\ell={measurement.transfer_null_from[family]:g}$)"
             fig.suptitle(title, fontsize=13)
             out = _safe_family_png(output_dir, filename_prefix, family)
             fig.savefig(out, dpi=180)
@@ -1478,6 +2159,57 @@ def plot_measurement_dell(
         if pdf is not None:
             pdf.close()
     return outputs
+
+
+def plot_measurement_dell(
+    measurement: MeasurementData,
+    output_dir: str | Path,
+    *,
+    pdf_path: Optional[str | Path] = None,
+    filename_prefix: str = "measurement_dell",
+    ell_max: Optional[float] = None,
+    ksz_ylim: Optional[Tuple[float, float]] = None,
+    ksz_scale: float = 1.0,
+    xscale: str = "linear",
+    xlim: Optional[Tuple[float, float]] = None,
+) -> List[Path]:
+    return plot_measurement_bandpowers(
+        measurement,
+        output_dir,
+        quantity="dell",
+        pdf_path=pdf_path,
+        filename_prefix=filename_prefix,
+        ell_max=ell_max,
+        ksz_ylim=ksz_ylim,
+        ksz_scale=ksz_scale,
+        xscale=xscale,
+        xlim=xlim,
+    )
+
+
+def plot_measurement_cl(
+    measurement: MeasurementData,
+    output_dir: str | Path,
+    *,
+    pdf_path: Optional[str | Path] = None,
+    filename_prefix: str = "measurement_cl",
+    ell_max: Optional[float] = None,
+    ksz_scale: float = 1.0,
+    xscale: str = "linear",
+    xlim: Optional[Tuple[float, float]] = None,
+) -> List[Path]:
+    return plot_measurement_bandpowers(
+        measurement,
+        output_dir,
+        quantity="cl",
+        pdf_path=pdf_path,
+        filename_prefix=filename_prefix,
+        ell_max=ell_max,
+        ksz_ylim=None,
+        ksz_scale=ksz_scale,
+        xscale=xscale,
+        xlim=xlim,
+    )
 
 
 def save_outputs(
@@ -1493,6 +2225,20 @@ def save_outputs(
     output_dir = Path(config["paths"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     npz_path = output_dir / "theory_data_vector_fast1024.npz"
+    measurement_identity = measurement_identity_sha256(measurement)
+    comparison_config_identity = comparison_config_identity_sha256(config)
+    theory_response_identity = theory_response_identity_sha256(config)
+    vector_cache_fields = theory_vector_cache_fields(
+        theory_vector,
+        measurement_identity,
+        {
+            "product_kind": "configured_theory_vector",
+            "config_path": str(config["paths"]["config"]),
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "theory_names": list(theory_names),
+        },
+    )
     np.savez_compressed(
         npz_path,
         ell_band=measurement.ell,
@@ -1500,10 +2246,15 @@ def save_outputs(
         theory_vector=theory_vector,
         covariance=measurement.covariance,
         spectrum_names=np.asarray(measurement.names),
+        slice_start=np.asarray(measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(measurement_identity),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
         theory_names=np.asarray(list(theory_names)),
         ell_theory=np.asarray(ell_theory, dtype=np.float64),
         theory_cls_keys=np.asarray(sorted(theory_cls)),
         ksz_default_A_v_by_pz=np.asarray(config["metadata"]["ksz_default_A_v_by_pz"], dtype=np.float64),
+        **vector_cache_fields,
     )
     summary_path = output_dir / "comparison_summary_fast1024.json"
     summary = {
@@ -1511,6 +2262,9 @@ def save_outputs(
         "measurement_path": measurement.path,
         "map_path": config["paths"]["map_h5"],
         "npz_path": npz_path,
+        "measurement_identity_sha256": measurement_identity,
+        "comparison_config_identity_sha256": comparison_config_identity,
+        "theory_response_identity_sha256": theory_response_identity,
         "stats": stats,
         "validation": validation_summary(config),
     }

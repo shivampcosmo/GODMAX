@@ -19,6 +19,8 @@ DEFAULT_PLOT_ELL_MAX = 2800.0
 DEFAULT_KSZ_YLIM = (-5.0e-5, 5.0e-5)
 DEFAULT_KSZ_YLIM_ARG = f"{DEFAULT_KSZ_YLIM[0]},{DEFAULT_KSZ_YLIM[1]}"
 DEFAULT_PLOT_XSCALE = "linear"
+CHAIN_CHI2_RTOL = 1.0e-8
+CHAIN_CHI2_ATOL = 1.0e-8
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -113,6 +115,123 @@ def _load_chain(path: Path) -> dict:
 
 def _sample_keys(payload: dict) -> list[str]:
     return sorted(key for key in payload if key.startswith("sample__"))
+
+
+def _scalar_text(value: object, label: str) -> str:
+    array = np.asarray(value)
+    if array.size != 1:
+        raise ValueError(f"{label} must contain exactly one scalar string, got {array.shape}.")
+    item = array.reshape(-1)[0]
+    if isinstance(item, bytes):
+        item = item.decode("utf-8")
+    return str(item)
+
+
+def _validate_chain_payload(
+    path: Path,
+    payload: dict,
+    context: hmc31.FitContext,
+    *,
+    expected_static_summary: Optional[dict] = None,
+) -> dict:
+    """Fail closed unless a worker chain is bound to this exact likelihood."""
+
+    expected_names = [spec.name for spec in context.parameter_specs]
+    if "parameter_names" not in payload:
+        raise ValueError(f"{path} has no parameter_names contract.")
+    actual_names = [
+        item.decode("utf-8") if isinstance(item, bytes) else str(item)
+        for item in np.asarray(payload["parameter_names"]).reshape(-1)
+    ]
+    if actual_names != expected_names:
+        raise ValueError(
+            f"{path} parameter_names do not match the current ordered parameter contract: "
+            f"saved={actual_names}, current={expected_names}."
+        )
+
+    required_sample_keys = {f"sample__{name}" for name in expected_names}
+    required_sample_keys.add("sample__chi2")
+    actual_sample_keys = set(_sample_keys(payload))
+    if actual_sample_keys != required_sample_keys:
+        raise ValueError(
+            f"{path} sample keys do not match the current chain contract: "
+            f"missing={sorted(required_sample_keys - actual_sample_keys)}, "
+            f"unexpected={sorted(actual_sample_keys - required_sample_keys)}."
+        )
+    sample_lengths = {}
+    for key in sorted(required_sample_keys):
+        array = np.asarray(payload[key])
+        if array.ndim != 1 or array.size == 0:
+            raise ValueError(f"{path}:{key} must be a non-empty 1D flattened chain.")
+        if not np.all(np.isfinite(array)):
+            raise ValueError(f"{path}:{key} contains non-finite samples.")
+        sample_lengths[key] = int(array.size)
+    if len(set(sample_lengths.values())) != 1:
+        raise ValueError(f"{path} has inconsistent sample lengths: {sample_lengths}.")
+
+    if "metadata_json" not in payload:
+        raise ValueError(f"{path} has no metadata_json likelihood identity.")
+    try:
+        metadata = json.loads(_scalar_text(payload["metadata_json"], f"{path}:metadata_json"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path} metadata_json is not valid JSON.") from exc
+    static = metadata.get("static_summary")
+    if not isinstance(static, dict):
+        raise ValueError(f"{path} metadata_json has no static_summary mapping.")
+    expected = expected_static_summary or hmc31.static_summary(context)
+    identity_keys = (
+        "chain_contract_version",
+        "likelihood_identity_sha256",
+        "theory_response_identity_sha256",
+        "parameter_contract_identity_sha256",
+        "measurement_path",
+        "measurement_map_product_id",
+        "desi_galaxy_auto_mean_convention",
+    )
+    for key in identity_keys:
+        if key not in static:
+            raise ValueError(f"{path} static_summary is missing required identity key {key!r}.")
+        if static[key] != expected.get(key):
+            raise ValueError(
+                f"{path} likelihood identity mismatch for {key}: "
+                f"saved={static[key]!r}, current={expected.get(key)!r}."
+            )
+    if list(static.get("parameter_names", [])) != expected_names:
+        raise ValueError(f"{path} static_summary parameter_names do not match the current fit.")
+    expected_parameter_specs = hmc31.parameter_specs_jsonable(context.parameter_specs)
+    expected_parameter_contract = hmc31.parameter_contract_identity_sha256(
+        context.parameter_specs
+    )
+    if metadata.get("parameter_specs") != expected_parameter_specs:
+        raise ValueError(f"{path} parameter_specs do not match the current prior contract.")
+    if "parameter_contract_identity_sha256" not in payload:
+        raise ValueError(f"{path} has no parameter-contract fingerprint.")
+    saved_parameter_contract = _scalar_text(
+        payload["parameter_contract_identity_sha256"],
+        f"{path}:parameter_contract_identity_sha256",
+    )
+    if saved_parameter_contract != expected_parameter_contract:
+        raise ValueError(f"{path} was built with a different parameter/prior contract.")
+    return metadata
+
+
+def _validated_recomputed_chi2(cached: float, recomputed: float) -> float:
+    if not np.isfinite(cached) or not np.isfinite(recomputed):
+        raise ValueError(
+            f"Best-fit chi2 must be finite: cached={cached!r}, recomputed={recomputed!r}."
+        )
+    if not np.isclose(
+        cached,
+        recomputed,
+        rtol=CHAIN_CHI2_RTOL,
+        atol=CHAIN_CHI2_ATOL,
+    ):
+        raise ValueError(
+            "Cached worker chi2 does not reproduce under the current likelihood: "
+            f"cached={cached:.17g}, recomputed={recomputed:.17g}, "
+            f"abs_delta={abs(cached - recomputed):.6g}."
+        )
+    return float(recomputed)
 
 
 def _split_rhat(chains: np.ndarray) -> float:
@@ -213,11 +332,15 @@ def combine_worker_chains(
         raise FileNotFoundError("No worker chain files found.")
 
     payloads = [_load_chain(path) for path in chain_paths]
-    keys = _sample_keys(payloads[0])
+    expected_static_summary = hmc31.static_summary(context)
     for path, payload in zip(chain_paths, payloads):
-        missing = sorted(set(keys) - set(payload))
-        if missing:
-            raise KeyError(f"{path} missing sample keys: {missing}")
+        _validate_chain_payload(
+            path,
+            payload,
+            context,
+            expected_static_summary=expected_static_summary,
+        )
+    keys = _sample_keys(payloads[0])
 
     output_dir.mkdir(parents=True, exist_ok=True)
     combined = {key: np.concatenate([payload[key] for payload in payloads], axis=0) for key in keys}
@@ -225,17 +348,28 @@ def combine_worker_chains(
         if all(key in payload for payload in payloads):
             combined[key] = np.concatenate([payload[key] for payload in payloads], axis=0)
     combined["parameter_names"] = np.asarray([spec.name for spec in context.parameter_specs])
+    combined["parameter_contract_identity_sha256"] = np.asarray(
+        hmc31.parameter_contract_identity_sha256(context.parameter_specs)
+    )
     combined["worker_chain_paths"] = np.asarray([str(path) for path in chain_paths])
 
     if "sample__chi2" not in combined:
         raise KeyError("Combined chains do not contain sample__chi2.")
     chi2 = np.asarray(combined["sample__chi2"], dtype=np.float64)
     best_idx = int(np.nanargmin(chi2))
-    best_chi2 = float(chi2[best_idx])
+    cached_best_chi2 = float(chi2[best_idx])
     best_sample = {
         spec.name: float(np.asarray(combined[f"sample__{spec.name}"])[best_idx])
         for spec in context.parameter_specs
     }
+    best_theory = np.asarray(hmc31.evaluate_sample_theory_vector(context, best_sample))
+    recomputed_best_chi2 = float(
+        np.asarray(hmc31.whitened_chi2(context.likelihood, best_theory))
+    )
+    best_chi2 = _validated_recomputed_chi2(
+        cached_best_chi2,
+        recomputed_best_chi2,
+    )
     chi2_n_modes = int(context.likelihood.rank)
     n_fit_parameters = len(context.parameter_specs)
     chi2_dof = max(chi2_n_modes - n_fit_parameters, 1)
@@ -248,6 +382,9 @@ def combine_worker_chains(
         json.dumps(
             {
                 "best_sample_index": best_idx,
+                "best_cached_whitened_chi2": cached_best_chi2,
+                "best_recomputed_whitened_chi2": recomputed_best_chi2,
+                "best_chi2_abs_delta": abs(cached_best_chi2 - recomputed_best_chi2),
                 "best_whitened_chi2": best_chi2,
                 "best_reduced_chi2": reduced_chi2,
                 "best_chi2_dof": chi2_dof,
@@ -257,7 +394,7 @@ def combine_worker_chains(
                 "convergence": convergence,
                 "worker_chain_paths": [str(path) for path in chain_paths],
                 "convergence_diagnostics": convergence,
-                "static_summary": hmc31.static_summary(context),
+                "static_summary": expected_static_summary,
                 "parameter_specs": hmc31.parameter_specs_jsonable(context.parameter_specs),
             }
         )
@@ -271,12 +408,59 @@ def combine_worker_chains(
 
     models = hmc31.build_models_from_sample(context, best_sample)
     theory_cls = hmc31._dense_theory_cls_from_models(context, models)
-    best_theory = np.asarray(hmc31.theory_data_vector_jax(context.likelihood, theory_cls))
+    best_shot_noise = hmc31._sampled_shot_noise_amplitudes(best_sample)
     measurement = hmc31.measurement_for_plots(context)
     stats = gmt.comparison_statistics(measurement, best_theory)
     full_likelihood = hmc31.full_likelihood_for_plots(context)
     full_measurement = hmc31.measurement_from_likelihood(context, full_likelihood)
-    full_best_theory = np.asarray(hmc31.theory_data_vector_jax(full_likelihood, theory_cls))
+    full_best_theory = np.asarray(
+        hmc31.theory_data_vector_jax(
+            full_likelihood,
+            theory_cls,
+            desi_galaxy_shot_noise_amplitudes=best_shot_noise,
+        )
+    )
+    measurement_identity = gmt.measurement_identity_sha256(measurement)
+    full_measurement_identity = gmt.measurement_identity_sha256(full_measurement)
+    active_likelihood_identity = hmc31.likelihood_identity(context.likelihood)
+    full_likelihood_identity = hmc31.likelihood_identity(full_likelihood)
+    comparison_config_identity = gmt.comparison_config_identity_sha256(context.config)
+    theory_response_identity = gmt.theory_response_identity_sha256(context.config)
+    parameter_names = [spec.name for spec in context.parameter_specs]
+    parameter_contract_identity = hmc31.parameter_contract_identity_sha256(
+        context.parameter_specs
+    )
+    active_vector_cache_fields = gmt.theory_vector_cache_fields(
+        best_theory,
+        measurement_identity,
+        {
+            "product_kind": "stage31_combined_bestfit_active",
+            "chain_contract_version": hmc31.STAGE31_CHAIN_CONTRACT_VERSION,
+            "likelihood_identity_sha256": active_likelihood_identity,
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "parameter_names": parameter_names,
+            "parameter_contract_identity_sha256": parameter_contract_identity,
+            "best_sample": best_sample,
+            "best_whitened_chi2": float(best_chi2),
+        },
+    )
+    full_vector_cache_fields = gmt.theory_vector_cache_fields(
+        full_best_theory,
+        full_measurement_identity,
+        {
+            "product_kind": "stage31_combined_bestfit_full",
+            "chain_contract_version": hmc31.STAGE31_CHAIN_CONTRACT_VERSION,
+            "likelihood_identity_sha256": full_likelihood_identity,
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "parameter_names": parameter_names,
+            "parameter_contract_identity_sha256": parameter_contract_identity,
+            "source_active_likelihood_identity_sha256": active_likelihood_identity,
+            "best_sample": best_sample,
+            "best_whitened_chi2": float(best_chi2),
+        },
+    )
 
     theory_path = output_dir / f"bestfit_theory_data_vector_{suffix}.npz"
     np.savez_compressed(
@@ -286,8 +470,17 @@ def combine_worker_chains(
         theory_vector=best_theory,
         covariance=np.asarray(measurement.covariance),
         spectrum_names=np.asarray(measurement.names),
+        slice_start=np.asarray(measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(measurement_identity),
+        likelihood_identity_sha256=np.asarray(active_likelihood_identity),
+        chain_contract_version=np.asarray(hmc31.STAGE31_CHAIN_CONTRACT_VERSION),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
+        parameter_names=np.asarray(parameter_names),
+        parameter_contract_identity_sha256=np.asarray(parameter_contract_identity),
         best_sample_json=np.asarray(json.dumps(best_sample)),
         best_whitened_chi2=np.asarray(best_chi2),
+        **active_vector_cache_fields,
     )
 
     full_theory_path = output_dir / f"bestfit_full_theory_data_vector_{suffix}.npz"
@@ -298,9 +491,19 @@ def combine_worker_chains(
         theory_vector=full_best_theory,
         covariance=np.asarray(full_measurement.covariance),
         spectrum_names=np.asarray(full_measurement.names),
+        slice_start=np.asarray(full_measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(full_measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(full_measurement_identity),
+        likelihood_identity_sha256=np.asarray(full_likelihood_identity),
+        source_active_likelihood_identity_sha256=np.asarray(active_likelihood_identity),
+        chain_contract_version=np.asarray(hmc31.STAGE31_CHAIN_CONTRACT_VERSION),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
+        parameter_names=np.asarray(parameter_names),
+        parameter_contract_identity_sha256=np.asarray(parameter_contract_identity),
         best_sample_json=np.asarray(json.dumps(best_sample)),
         best_whitened_chi2=np.asarray(best_chi2),
         likelihood_bestfit_theory_vector=np.asarray(str(theory_path)),
+        **full_vector_cache_fields,
     )
 
     pdf_path = output_dir / f"posterior_predictive_comparison_{suffix}.pdf"
@@ -351,6 +554,9 @@ def combine_worker_chains(
         "full_dell_plot_paths": full_dell_plot_paths,
         "best_sample_index": best_idx,
         "best_sample": best_sample,
+        "best_cached_whitened_chi2": cached_best_chi2,
+        "best_recomputed_whitened_chi2": recomputed_best_chi2,
+        "best_chi2_abs_delta": abs(cached_best_chi2 - recomputed_best_chi2),
         "best_whitened_chi2": best_chi2,
         "best_reduced_chi2": reduced_chi2,
         "best_chi2_dof": chi2_dof,
@@ -370,7 +576,7 @@ def combine_worker_chains(
             "xscale": plot_xscale,
             "xlim": plot_xlim,
         },
-        "static_summary": hmc31.static_summary(context),
+        "static_summary": expected_static_summary,
         "parameter_specs": hmc31.parameter_specs_jsonable(context.parameter_specs),
         "priors": context.prior_config,
     }

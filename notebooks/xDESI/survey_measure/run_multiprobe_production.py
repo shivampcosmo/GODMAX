@@ -13,15 +13,24 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 import h5py
 import numpy as np
 import pymaster as nmt
 
 from multiprobe_namaster import (
+    COVARIANCE_ESTIMATOR_VERSION,
+    DESI_GALAXY_AUTO_MEAN_CONVENTION,
+    DESI_GALAXY_AUTO_PRIMARY_VIEW,
+    DESI_GALAXY_AUTO_SUBTRACTED_VIEW,
+    DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION,
+    MAP_CONSTRUCTION_VERSION,
+    MEASUREMENT_PIPELINE_VERSION,
     SCHEMA_MAPS,
     SCHEMA_MEASUREMENT,
+    SCHEMA_MEASUREMENT_VALIDITY_MASK,
+    SPECTRUM_ESTIMATOR_VERSION,
     SurveyBundle,
     MeasurementConfig,
     SpectrumSpec,
@@ -40,7 +49,13 @@ from multiprobe_namaster import (
     covariance_input_noise_policy,
     default_spectrum_specs,
     load_map_product,
+    make_bandpower_edges,
     make_bins,
+    measurement_schema_for_config,
+    pack_joint_data_vector,
+    validate_map_metadata_identity,
+    validate_galaxy_auto_views,
+    validate_measurement_product_identity,
     save_map_product,
     save_measurement_product,
     utc_now,
@@ -48,22 +63,46 @@ from multiprobe_namaster import (
 
 
 def _config_from_map_metadata(config: MeasurementConfig, map_metadata: Mapping[str, object]) -> MeasurementConfig:
+    _required_map_product_id(map_metadata)
     map_config = map_metadata.get("config", {})
-    if isinstance(map_config, Mapping):
-        for key in (
-            "stage",
-            "nside",
-            "act_downgrade",
-            "shear_e_to_kappa_sign",
-            "shear_mask_dataset",
-            "shear_noise_attr",
-            "mask_apodization_deg",
-            "mask_apodization_type",
-        ):
-            if key in map_config:
-                setattr(config, key, map_config[key])
-        if "lmax" in map_config and int(config.lmax) > int(map_config["lmax"]):
-            raise ValueError(f"Requested lmax={config.lmax} exceeds cached-map lmax={map_config['lmax']}.")
+    if not isinstance(map_config, Mapping):
+        raise ValueError("Map product metadata has no valid config mapping.")
+    required_keys = (
+        "pipeline_version",
+        "stage",
+        "nside",
+        "lmax_mask",
+        "act_downgrade",
+        "shear_e_to_kappa_sign",
+        "shear_mask_dataset",
+        "shear_noise_attr",
+        "subtract_masked_mean",
+        "mask_apodization_deg",
+        "mask_apodization_type",
+        "pair_overlap_mean_subtract",
+    )
+    if str(config.stage) == "highres4096":
+        required_keys += (
+            "kappa_cmb_lmax",
+            "act_cmb_temperature_units_confirmed",
+            "minimum_desi_random_realizations",
+        )
+    for key in required_keys:
+        if key not in map_config:
+            raise ValueError(f"Map product is missing construction config key {key!r}; regenerate it.")
+        expected = _resolved_config_value(config, key)
+        actual = map_config[key]
+        if key == "lmax_mask" and actual is None:
+            actual = map_config.get("lmax")
+        if not _config_value_matches(actual, expected):
+            raise ValueError(
+                f"Requested {key}={expected!r} does not match cached map value "
+                f"{map_config[key]!r}. Use the matching stage/options or regenerate maps."
+            )
+    if "lmax" not in map_config:
+        raise ValueError("Map product is missing construction config key 'lmax'; regenerate it.")
+    if int(config.lmax) > int(map_config["lmax"]):
+        raise ValueError(f"Requested lmax={config.lmax} exceeds cached-map lmax={map_config['lmax']}.")
     config.validate()
     return config
 
@@ -73,11 +112,15 @@ def spectra_path(config: MeasurementConfig) -> Path:
 
 
 def manifest_path(config: MeasurementConfig) -> Path:
-    return config.output_root / f"covariance_manifest_{config.product_tag}.json"
+    return config.output_root / f"covariance_manifest_{config.covariance_product_tag}.json"
+
+
+def covariance_work_plan_path(config: MeasurementConfig) -> Path:
+    return config.output_root / f"covariance_work_plan_{config.covariance_product_tag}.json"
 
 
 def block_dir(config: MeasurementConfig) -> Path:
-    return config.output_root / f"covariance_blocks_{config.product_tag}"
+    return config.output_root / f"covariance_blocks_{config.covariance_product_tag}"
 
 
 def block_shard_path(config: MeasurementConfig, group: Mapping[str, object]) -> Path:
@@ -86,6 +129,144 @@ def block_shard_path(config: MeasurementConfig, group: Mapping[str, object]) -> 
 
 def cov_workspace_cache_dir(config: MeasurementConfig) -> Path:
     return block_dir(config) / "cov_workspaces"
+
+
+COVARIANCE_CONFIG_KEYS = (
+    "pipeline_version",
+    "stage",
+    "nside",
+    "lmax",
+    "lmax_mask",
+    "ell_min",
+    "n_bins",
+    "binning",
+    "act_downgrade",
+    "shear_mask_dataset",
+    "shear_noise_attr",
+    "shear_e_to_kappa_sign",
+    "subtract_masked_mean",
+    "mask_apodization_deg",
+    "mask_apodization_type",
+    "pair_overlap_mean_subtract",
+    "n_iter",
+    "n_iter_mask",
+    "covariance_l_toeplitz",
+    "covariance_l_exact",
+    "covariance_dl_band",
+    "covariance_input_mode",
+    "covariance_input_smooth_bandpowers",
+    "covariance_input_smooth_window",
+    "covariance_zero_parity_odd_inputs",
+)
+
+SPECTRUM_CONFIG_KEYS = (
+    "pipeline_version",
+    "stage",
+    "nside",
+    "lmax",
+    "lmax_mask",
+    "ell_min",
+    "n_bins",
+    "binning",
+    "kappa_cmb_lmax",
+    "act_downgrade",
+    "shear_mask_dataset",
+    "shear_noise_attr",
+    "shear_e_to_kappa_sign",
+    "subtract_masked_mean",
+    "mask_apodization_deg",
+    "mask_apodization_type",
+    "pair_overlap_mean_subtract",
+    "n_iter",
+    "n_iter_mask",
+    "include_ksz_velocity_shuffle",
+    "ksz_shuffle_seed",
+)
+
+
+def _sha256_json(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def covariance_config_payload(config: MeasurementConfig | Mapping[str, object]) -> Dict[str, object]:
+    if isinstance(config, Mapping):
+        source = config
+        payload = {key: source.get(key) for key in COVARIANCE_CONFIG_KEYS}
+        if payload.get("lmax_mask") is None:
+            payload["lmax_mask"] = source.get("lmax")
+        return payload
+    return {key: _resolved_config_value(config, key) for key in COVARIANCE_CONFIG_KEYS}
+
+
+def covariance_config_digest(config: MeasurementConfig | Mapping[str, object]) -> str:
+    return _sha256_json(covariance_config_payload(config))
+
+
+def _group_digest(group: Mapping[str, object]) -> str:
+    return _sha256_json(group)
+
+
+def _required_map_product_id(map_metadata: Mapping[str, object]) -> str:
+    pipeline = str(map_metadata.get("pipeline_version", ""))
+    construction = str(map_metadata.get("map_construction_version", ""))
+    if pipeline != MEASUREMENT_PIPELINE_VERSION:
+        raise ValueError(
+            f"Map product pipeline_version={pipeline!r}; expected {MEASUREMENT_PIPELINE_VERSION!r}. "
+            "Regenerate maps with the current estimator."
+        )
+    if construction != MAP_CONSTRUCTION_VERSION:
+        raise ValueError(
+            f"Map construction version={construction!r}; expected {MAP_CONSTRUCTION_VERSION!r}. "
+            "Regenerate maps with the current estimator."
+        )
+    return validate_map_metadata_identity(map_metadata)
+
+
+def _array_digest(values: np.ndarray) -> str:
+    arr = np.ascontiguousarray(np.asarray(values))
+    digest = hashlib.sha256()
+    digest.update(str(arr.shape).encode("ascii"))
+    digest.update(arr.dtype.str.encode("ascii"))
+    digest.update(memoryview(arr).cast("B"))
+    return digest.hexdigest()
+
+
+def _group_mask_digest_from_fields(
+    group: Mapping[str, object],
+    fields: Mapping[str, object],
+) -> str:
+    payload = [
+        {
+            "field": str(name),
+            "mask_digest": _array_digest(fields[str(name)].mask),
+        }
+        for name in group.get("representative_fields", [])
+    ]
+    return _sha256_json(payload)
+
+
+def _group_mask_digest_from_metadata(
+    group: Mapping[str, object],
+    map_metadata: Mapping[str, object],
+) -> str:
+    content = map_metadata.get("map_content_digests", {})
+    if not isinstance(content, Mapping):
+        raise ValueError("Map metadata has no content digests for covariance assembly.")
+    field_mask_names = content.get("field_mask_names", {})
+    masks = content.get("masks", {})
+    if not isinstance(field_mask_names, Mapping) or not isinstance(masks, Mapping):
+        raise ValueError("Map metadata mask-content identities are incomplete.")
+    payload = []
+    for name_raw in group.get("representative_fields", []):
+        name = str(name_raw)
+        if name not in field_mask_names:
+            raise ValueError(f"Map metadata has no mask identity for field {name!r}.")
+        mask_name = str(field_mask_names[name])
+        if mask_name not in masks:
+            raise ValueError(f"Map metadata has no content digest for mask {mask_name!r}.")
+        payload.append({"field": name, "mask_digest": str(masks[mask_name])})
+    return _sha256_json(payload)
 
 
 def _field_names_for_groups(groups: Iterable[Mapping[str, object]]) -> Set[str]:
@@ -121,25 +302,34 @@ def _build_cov_fields(
     return build_nmt_fields(subset, config)
 
 
-def _cov_workspace_cache_path(config: MeasurementConfig, group: Mapping[str, object]) -> Path:
+def _cov_workspace_cache_path(
+    config: MeasurementConfig,
+    group: Mapping[str, object],
+    fields: Mapping[str, object],
+) -> Path:
     """Path of the on-disk covariance workspace for a group's mask/spin signature.
 
     The covariance workspace depends only on the four masks (the alias key), the spins,
-    and lmax/Toeplitz settings -- never on the field data or the noise model. So it is
-    valid across any rerun that keeps the same map product (masks) and binning, e.g. a
-    shape-noise/data-vector change. It is scoped under the tag-specific block dir, so a
-    different product (different nside/apodization) gets a separate cache.
+    and lmax/Toeplitz settings -- never on the field data or the noise model. The actual
+    mask bytes are part of the signature so an estimator change cannot accidentally reuse
+    a workspace built from a stale mask under the same human-readable tag.
     """
 
     signature = {
         "key": [str(k) for k in group.get("key", [])],
         "spins": [int(s) for s in group.get("spins", [])],
         "lmax": int(config.lmax),
+        "lmax_mask": int(config.effective_lmax_mask),
         "l_toeplitz": int(config.covariance_l_toeplitz),
         "l_exact": int(config.covariance_l_exact),
         "dl_band": int(config.covariance_dl_band),
+        "pipeline_version": MEASUREMENT_PIPELINE_VERSION,
+        "covariance_estimator_version": COVARIANCE_ESTIMATOR_VERSION,
+        "mask_digests": [
+            _array_digest(fields[name].mask) for name in group.get("representative_fields", [])
+        ],
     }
-    digest = hashlib.md5(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:16]
+    digest = _sha256_json(signature)[:20]
     return cov_workspace_cache_dir(config) / f"cw_{digest}.fits"
 
 
@@ -153,7 +343,7 @@ def _get_or_build_cov_workspace(
     """Load the group's covariance workspace from disk if cached, else build and cache it."""
 
     representatives = list(group["representative_fields"])
-    path = _cov_workspace_cache_path(config, group)
+    path = _cov_workspace_cache_path(config, group, fields)
     if use_cache and path.exists():
         try:
             cw = nmt.NmtCovarianceWorkspace.from_file(str(path))
@@ -197,37 +387,110 @@ def _config_value_matches(actual: object, expected: object) -> bool:
     return str(actual) == str(expected)
 
 
-def _existing_product_matches_config(path: Path, schema: str, config: MeasurementConfig) -> Tuple[bool, str]:
+def _resolved_config_value(config: MeasurementConfig, key: str) -> object:
+    """Return the value actually executed for a possibly defaulted option."""
+
+    if key == "lmax_mask":
+        return int(config.effective_lmax_mask)
+    return getattr(config, key)
+
+
+def _existing_product_matches_config(
+    path: Path,
+    schema: str,
+    config: MeasurementConfig,
+    *,
+    expected_map_product_id: Optional[str] = None,
+) -> Tuple[bool, str]:
     if not path.exists():
         return False, "file does not exist"
+    stored_ell_left: Optional[np.ndarray] = None
+    stored_ell_right: Optional[np.ndarray] = None
     try:
         with h5py.File(path, "r") as h5:
             if h5.attrs.get("schema") != schema:
                 return False, f"schema is {h5.attrs.get('schema')!r}, expected {schema!r}"
+            pipeline_version = str(h5.attrs.get("pipeline_version", ""))
+            if pipeline_version != MEASUREMENT_PIPELINE_VERSION:
+                return False, (
+                    f"pipeline_version is {pipeline_version!r}, expected "
+                    f"{MEASUREMENT_PIPELINE_VERSION!r}"
+                )
             if schema == SCHEMA_MAPS:
+                construction_version = str(h5.attrs.get("map_construction_version", ""))
+                if construction_version != MAP_CONSTRUCTION_VERSION:
+                    return False, (
+                        f"map_construction_version is {construction_version!r}, expected "
+                        f"{MAP_CONSTRUCTION_VERSION!r}"
+                    )
+                if not str(h5.attrs.get("map_product_id", "")):
+                    return False, "map_product_id is missing"
                 metadata = json.loads(h5.attrs["metadata_json"])
+                try:
+                    metadata_product_id = _required_map_product_id(metadata)
+                except ValueError as exc:
+                    return False, str(exc)
+                if str(h5.attrs.get("map_product_id", "")) != metadata_product_id:
+                    return False, "map_product_id attribute does not match content-addressed metadata"
                 cfg = metadata.get("config", {})
             else:
+                spectrum_version = str(h5.attrs.get("spectrum_estimator_version", ""))
+                if spectrum_version != SPECTRUM_ESTIMATOR_VERSION:
+                    return False, (
+                        f"spectrum_estimator_version is {spectrum_version!r}, expected "
+                        f"{SPECTRUM_ESTIMATOR_VERSION!r}"
+                    )
+                mean_convention = str(h5.attrs.get("desi_galaxy_auto_mean_convention", ""))
+                if mean_convention != DESI_GALAXY_AUTO_MEAN_CONVENTION:
+                    return False, (
+                        "desi_galaxy_auto_mean_convention is "
+                        f"{mean_convention!r}, expected {DESI_GALAXY_AUTO_MEAN_CONVENTION!r}"
+                    )
+                stored_map_product_id = str(h5.attrs.get("map_product_id", ""))
+                if not stored_map_product_id:
+                    return False, "measurement map_product_id is missing"
+                embedded_map_metadata = json.loads(h5.attrs["map_metadata_json"])
+                try:
+                    embedded_map_product_id = _required_map_product_id(embedded_map_metadata)
+                except ValueError as exc:
+                    return False, f"embedded map metadata is incompatible: {exc}"
+                if stored_map_product_id != embedded_map_product_id:
+                    return False, "measurement map_product_id does not match embedded map metadata"
+                if expected_map_product_id is not None and stored_map_product_id != str(expected_map_product_id):
+                    return False, (
+                        f"map_product_id is {stored_map_product_id!r}, expected "
+                        f"{str(expected_map_product_id)!r}"
+                    )
                 cfg = json.loads(h5.attrs["config_json"])
+                if "ell_left" not in h5 or "ell_right" not in h5:
+                    return False, "measurement bandpower-edge arrays are missing"
+                stored_ell_left = np.asarray(h5["ell_left"][:], dtype=np.int64)
+                stored_ell_right = np.asarray(h5["ell_right"][:], dtype=np.int64)
     except Exception as exc:
         return False, f"could not read product metadata: {exc}"
-    for key in (
-        "stage",
-        "nside",
-        "lmax",
-        "ell_min",
-        "n_bins",
-        "binning",
-        "act_downgrade",
-        "mask_apodization_deg",
-        "mask_apodization_type",
-        "pair_overlap_mean_subtract",
-    ):
-        expected = getattr(config, key)
+    config_keys = SPECTRUM_CONFIG_KEYS
+    if str(config.stage) == "highres4096":
+        config_keys += (
+            "act_cmb_temperature_units_confirmed",
+            "minimum_desi_random_realizations",
+        )
+    for key in config_keys:
+        expected = _resolved_config_value(config, key)
         if key not in cfg:
+            if key == "kappa_cmb_lmax" and expected is None:
+                continue
             return False, f"missing config key {key!r}"
-        if not _config_value_matches(cfg[key], expected):
+        actual = cfg[key]
+        if key == "lmax_mask" and actual is None:
+            actual = cfg.get("lmax")
+        if not _config_value_matches(actual, expected):
             return False, f"config {key}={cfg[key]!r}, expected {expected!r}"
+    if schema in {SCHEMA_MEASUREMENT, SCHEMA_MEASUREMENT_VALIDITY_MASK}:
+        expected_left, expected_right = make_bandpower_edges(config)
+        if not np.array_equal(stored_ell_left, np.asarray(expected_left, dtype=np.int64)):
+            return False, "measurement ell_left does not match the current exact edge table"
+        if not np.array_equal(stored_ell_right, np.asarray(expected_right, dtype=np.int64)):
+            return False, "measurement ell_right does not match the current exact edge table"
     return True, "compatible"
 
 
@@ -236,6 +499,8 @@ def _field_spin_from_name(name: str) -> int:
 
 
 def build_covariance_manifest(config: MeasurementConfig) -> Dict[str, object]:
+    config.validate()
+    ell_left, ell_right = make_bandpower_edges(config)
     specs = default_spectrum_specs()
     groups: Dict[Tuple[str, str, str, str], Dict[str, object]] = {}
     for i, spec_i in enumerate(specs):
@@ -271,20 +536,15 @@ def build_covariance_manifest(config: MeasurementConfig) -> Dict[str, object]:
         "scalar": int(sum(1 for group in out_groups if group["class"] == "scalar")),
         "spin2": int(sum(1 for group in out_groups if group["class"] == "spin2")),
     }
-    return {
+    manifest = {
         "created_utc": utc_now(),
+        "pipeline_version": MEASUREMENT_PIPELINE_VERSION,
+        "covariance_estimator_version": COVARIANCE_ESTIMATOR_VERSION,
+        "covariance_config_digest": covariance_config_digest(config),
         "stage": config.stage,
-        "config": {
-            "stage": config.stage,
-            "nside": int(config.nside),
-            "lmax": int(config.lmax),
-            "ell_min": int(config.ell_min),
-            "n_bins": int(config.n_bins),
-            "binning": str(config.binning),
-            "mask_apodization_deg": float(config.mask_apodization_deg),
-            "mask_apodization_type": str(config.mask_apodization_type),
-            "pair_overlap_mean_subtract": bool(config.pair_overlap_mean_subtract),
-        },
+        "config": covariance_config_payload(config),
+        "ell_left": np.asarray(ell_left, dtype=np.int64).tolist(),
+        "ell_right": np.asarray(ell_right, dtype=np.int64).tolist(),
         "n_spectra": len(specs),
         "n_covariance_blocks": len(specs) * (len(specs) + 1) // 2,
         "n_covariance_groups": len(out_groups),
@@ -292,13 +552,66 @@ def build_covariance_manifest(config: MeasurementConfig) -> Dict[str, object]:
         "spectrum_names": [spec.name for spec in specs],
         "groups": out_groups,
     }
+    digest_payload = {key: value for key, value in manifest.items() if key != "created_utc"}
+    manifest["manifest_digest"] = _sha256_json(digest_payload)
+    return manifest
+
+
+def validate_covariance_manifest(manifest: Mapping[str, object], config: MeasurementConfig) -> None:
+    expected_config_digest = covariance_config_digest(config)
+    if str(manifest.get("pipeline_version", "")) != MEASUREMENT_PIPELINE_VERSION:
+        raise ValueError("Covariance manifest was built by a different measurement pipeline version.")
+    if str(manifest.get("covariance_estimator_version", "")) != COVARIANCE_ESTIMATOR_VERSION:
+        raise ValueError("Covariance manifest was built for a different covariance estimator version.")
+    if str(manifest.get("covariance_config_digest", "")) != expected_config_digest:
+        raise ValueError("Covariance manifest config does not match the requested covariance configuration.")
+    expected_left, expected_right = make_bandpower_edges(config)
+    if not np.array_equal(
+        np.asarray(manifest.get("ell_left", []), dtype=np.int64),
+        np.asarray(expected_left, dtype=np.int64),
+    ):
+        raise ValueError("Covariance manifest ell_left does not match the requested exact edge table.")
+    if not np.array_equal(
+        np.asarray(manifest.get("ell_right", []), dtype=np.int64),
+        np.asarray(expected_right, dtype=np.int64),
+    ):
+        raise ValueError("Covariance manifest ell_right does not match the requested exact edge table.")
+    digest_payload = {
+        key: value for key, value in manifest.items() if key not in {"created_utc", "manifest_digest"}
+    }
+    expected_manifest_digest = _sha256_json(digest_payload)
+    if str(manifest.get("manifest_digest", "")) != expected_manifest_digest:
+        raise ValueError("Covariance manifest digest is missing or does not match its contents.")
+    expected_manifest = build_covariance_manifest(config)
+    semantic_payload = {
+        key: value
+        for key, value in manifest.items()
+        if key not in {"created_utc", "manifest_digest"}
+    }
+    expected_semantic_payload = {
+        key: value
+        for key, value in expected_manifest.items()
+        if key not in {"created_utc", "manifest_digest"}
+    }
+    if semantic_payload != expected_semantic_payload:
+        raise ValueError(
+            "Covariance manifest does not match the canonical covariance-group contract."
+        )
+    specs = default_spectrum_specs()
+    expected_blocks = len(specs) * (len(specs) + 1) // 2
+    if int(manifest.get("n_spectra", -1)) != len(specs):
+        raise ValueError("Covariance manifest spectrum count is inconsistent with the current inventory.")
+    if int(manifest.get("n_covariance_blocks", -1)) != expected_blocks:
+        raise ValueError("Covariance manifest block count is inconsistent with the current inventory.")
 
 
 def write_covariance_manifest(path: Path, config: MeasurementConfig, overwrite: bool = False) -> Dict[str, object]:
     manifest = build_covariance_manifest(config)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not overwrite:
-        return json.loads(path.read_text())
+        existing = json.loads(path.read_text())
+        validate_covariance_manifest(existing, config)
+        return existing
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True))
     os.replace(tmp, path)
@@ -309,6 +622,315 @@ def load_covariance_manifest(path: Path) -> Dict[str, object]:
     if not path.exists():
         raise FileNotFoundError(f"Missing covariance manifest: {path}")
     return json.loads(path.read_text())
+
+
+COVARIANCE_WORK_PLAN_VERSION = "xdesi_covariance_work_plan_v1"
+HIGHRES_RESOURCE_STRESS_GROUP_INDICES = (
+    29,
+    47,
+    65,
+    157,
+    218,
+    219,
+    223,
+    224,
+    226,
+    230,
+    231,
+)
+
+
+def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _map_metadata_for_work_plan(path: Path) -> Dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing prepared map product: {path}")
+    with h5py.File(path, "r") as h5:
+        if str(h5.attrs.get("schema", "")) != SCHEMA_MAPS:
+            raise ValueError(f"Prepared map {path} has the wrong schema.")
+        if "metadata_json" not in h5.attrs:
+            raise ValueError(f"Prepared map {path} has no embedded metadata_json.")
+        raw_metadata = h5.attrs["metadata_json"]
+        if isinstance(raw_metadata, bytes):
+            raw_metadata = raw_metadata.decode("utf-8")
+        metadata = json.loads(str(raw_metadata))
+        if str(h5.attrs.get("map_product_id", "")) != validate_map_metadata_identity(metadata):
+            raise ValueError(f"Prepared map {path} has inconsistent map-product identity metadata.")
+    return metadata
+
+
+def _balanced_covariance_bundles(
+    groups: Sequence[Mapping[str, object]],
+    groups_per_bundle: int,
+    *,
+    stress_group_indices: Sequence[int] = (),
+) -> List[List[Mapping[str, object]]]:
+    if groups_per_bundle <= 0:
+        raise ValueError("groups_per_bundle must be positive.")
+    if not groups:
+        return []
+    by_index = {int(group["index"]): group for group in groups}
+    stress = [by_index[index] for index in stress_group_indices if index in by_index]
+    stress_ids = {int(group["index"]) for group in stress}
+    remaining = [group for group in groups if int(group["index"]) not in stress_ids]
+    if stress and len(stress) < groups_per_bundle:
+        risk_sorted = sorted(
+            remaining,
+            key=lambda group: (
+                -sum(str(value).startswith("s") for value in group.get("representative_fields", [])),
+                -int(group.get("n_blocks", 0)),
+                int(group["index"]),
+            ),
+        )
+        fill = risk_sorted[: groups_per_bundle - len(stress)]
+        stress.extend(fill)
+        fill_ids = {int(group["index"]) for group in fill}
+        remaining = [group for group in remaining if int(group["index"]) not in fill_ids]
+
+    n_regular_bundles = (
+        (len(remaining) + groups_per_bundle - 1) // groups_per_bundle if remaining else 0
+    )
+    ordered = sorted(
+        remaining,
+        key=lambda group: (
+            -int(group.get("n_blocks", 0)),
+            -len(set(str(value) for value in group.get("representative_fields", []))),
+            int(group["index"]),
+        ),
+    )
+    bundles: List[List[Mapping[str, object]]] = [stress] if stress else []
+    regular_bundles: List[List[Mapping[str, object]]] = [
+        [] for _ in range(n_regular_bundles)
+    ]
+    # Round-robin after sorting by a deterministic cost proxy spreads expensive
+    # groups while keeping bundle sizes within one of each other.
+    for position, group in enumerate(ordered):
+        regular_bundles[position % n_regular_bundles].append(group)
+    bundles.extend(regular_bundles)
+    if max(len(bundle) for bundle in bundles) > groups_per_bundle:
+        raise AssertionError("Balanced covariance plan exceeded its per-node group cap.")
+    regular_sizes = [len(bundle) for bundle in regular_bundles]
+    if regular_sizes and max(regular_sizes) - min(regular_sizes) > 1:
+        raise AssertionError("Balanced covariance plan produced avoidably uneven bundle sizes.")
+    return bundles
+
+
+def build_covariance_work_plan(
+    config: MeasurementConfig,
+    manifest: Mapping[str, object],
+    maps: Path,
+    spectra: Path,
+    *,
+    groups_per_bundle: int,
+) -> Dict[str, object]:
+    """Build a deterministic resume plan containing only missing covariance groups."""
+
+    validate_covariance_manifest(manifest, config)
+    map_ok, map_reason = _existing_product_matches_config(maps, SCHEMA_MAPS, config)
+    if not map_ok:
+        raise ValueError(f"Prepared map {maps} is incompatible ({map_reason}).")
+    map_metadata = _map_metadata_for_work_plan(maps)
+    config = _config_from_map_metadata(config, map_metadata)
+    map_product_id = _required_map_product_id(map_metadata)
+    spectra_ok, spectra_reason = _existing_product_matches_config(
+        spectra,
+        measurement_schema_for_config(config),
+        config,
+        expected_map_product_id=map_product_id,
+    )
+    if not spectra_ok:
+        raise ValueError(f"Pilot spectra {spectra} are incompatible ({spectra_reason}).")
+
+    compatible: List[Dict[str, object]] = []
+    missing: List[Mapping[str, object]] = []
+    for group in manifest["groups"]:
+        shard = block_shard_path(config, group)
+        group_mask_digest = _group_mask_digest_from_metadata(group, map_metadata)
+        if not shard.exists():
+            missing.append(group)
+            continue
+        ok, reason = _covariance_shard_compatibility(
+            shard,
+            group,
+            manifest,
+            config,
+            map_product_id,
+            group_mask_digest,
+        )
+        if not ok:
+            raise ValueError(
+                f"Existing covariance shard {shard} is incompatible ({reason}); "
+                "refusing to overwrite or hide it in a resume plan."
+            )
+        compatible.append(
+            {
+                "group_index": int(group["index"]),
+                "group_digest": _group_digest(group),
+                "path": str(shard),
+                "sha256": _sha256_file(shard),
+            }
+        )
+
+    stress_indices = (
+        HIGHRES_RESOURCE_STRESS_GROUP_INDICES
+        if str(config.stage) == "highres4096"
+        else ()
+    )
+    bundles = _balanced_covariance_bundles(
+        missing,
+        int(groups_per_bundle),
+        stress_group_indices=stress_indices,
+    )
+    bundle_payload = []
+    for index, bundle in enumerate(bundles):
+        bundle_payload.append(
+            {
+                "bundle_index": index,
+                "group_indices": [int(group["index"]) for group in bundle],
+                "group_digests": [_group_digest(group) for group in bundle],
+                "n_blocks": int(sum(int(group["n_blocks"]) for group in bundle)),
+            }
+        )
+    payload: Dict[str, object] = {
+        "created_utc": utc_now(),
+        "version": COVARIANCE_WORK_PLAN_VERSION,
+        "stage": str(config.stage),
+        "pipeline_version": MEASUREMENT_PIPELINE_VERSION,
+        "covariance_estimator_version": COVARIANCE_ESTIMATOR_VERSION,
+        "covariance_config_digest": covariance_config_digest(config),
+        "manifest_path": str(manifest_path(config)),
+        "manifest_digest": str(manifest["manifest_digest"]),
+        "maps_path": str(maps),
+        "map_product_id": map_product_id,
+        "map_size_bytes": int(maps.stat().st_size),
+        "spectra_path": str(spectra),
+        "spectra_size_bytes": int(spectra.stat().st_size),
+        "spectra_sha256": _sha256_file(spectra),
+        "groups_per_bundle": int(groups_per_bundle),
+        "n_manifest_groups": int(len(manifest["groups"])),
+        "n_reused_groups": int(len(compatible)),
+        "n_missing_groups": int(len(missing)),
+        "n_bundles": int(len(bundle_payload)),
+        "stress_bundle_index": 0 if bundle_payload else None,
+        "stress_group_indices": (
+            bundle_payload[0]["group_indices"] if bundle_payload else []
+        ),
+        "reused_groups": compatible,
+        "bundles": bundle_payload,
+    }
+    digest_payload = {
+        key: value for key, value in payload.items() if key not in {"created_utc", "plan_digest"}
+    }
+    payload["plan_digest"] = _sha256_json(digest_payload)
+    validate_covariance_work_plan(payload, manifest, config)
+    return payload
+
+
+def validate_covariance_work_plan(
+    plan: Mapping[str, object],
+    manifest: Mapping[str, object],
+    config: MeasurementConfig,
+) -> None:
+    validate_covariance_manifest(manifest, config)
+    if str(plan.get("version", "")) != COVARIANCE_WORK_PLAN_VERSION:
+        raise ValueError("Covariance work plan has the wrong version.")
+    if str(plan.get("stage", "")) != str(config.stage):
+        raise ValueError("Covariance work plan is bound to a different measurement stage.")
+    if str(plan.get("pipeline_version", "")) != MEASUREMENT_PIPELINE_VERSION:
+        raise ValueError("Covariance work plan has the wrong measurement-pipeline version.")
+    if str(plan.get("covariance_estimator_version", "")) != COVARIANCE_ESTIMATOR_VERSION:
+        raise ValueError("Covariance work plan has the wrong covariance-estimator version.")
+    if str(plan.get("manifest_digest", "")) != str(manifest["manifest_digest"]):
+        raise ValueError("Covariance work plan is bound to a different manifest.")
+    if str(plan.get("covariance_config_digest", "")) != covariance_config_digest(config):
+        raise ValueError("Covariance work plan is bound to a different covariance config.")
+    digest_payload = {
+        key: value for key, value in plan.items() if key not in {"created_utc", "plan_digest"}
+    }
+    if str(plan.get("plan_digest", "")) != _sha256_json(digest_payload):
+        raise ValueError("Covariance work-plan digest does not match its contents.")
+    canonical_groups = {int(group["index"]): group for group in manifest["groups"]}
+    if int(plan.get("n_manifest_groups", -1)) != len(canonical_groups):
+        raise ValueError("Covariance work-plan manifest-group count is inconsistent.")
+    if int(plan.get("groups_per_bundle", 0)) <= 0:
+        raise ValueError("Covariance work plan has a non-positive per-bundle group cap.")
+    reused = list(plan.get("reused_groups", []))
+    bundles = list(plan.get("bundles", []))
+    reused_indices = [int(item["group_index"]) for item in reused]
+    missing_indices: List[int] = []
+    for expected_bundle_index, bundle in enumerate(bundles):
+        if int(bundle.get("bundle_index", -1)) != expected_bundle_index:
+            raise ValueError("Covariance work-plan bundle indices are not canonical and contiguous.")
+        indices = [int(value) for value in bundle.get("group_indices", [])]
+        digests = [str(value) for value in bundle.get("group_digests", [])]
+        if not indices or len(indices) != len(digests):
+            raise ValueError("Covariance work-plan bundle inventory is empty or malformed.")
+        if len(indices) > int(plan["groups_per_bundle"]):
+            raise ValueError("Covariance work-plan bundle exceeds its resource cap.")
+        for index, digest in zip(indices, digests):
+            if index not in canonical_groups or digest != _group_digest(canonical_groups[index]):
+                raise ValueError("Covariance work-plan group identity disagrees with the manifest.")
+        missing_indices.extend(indices)
+    for item in reused:
+        index = int(item["group_index"])
+        if index not in canonical_groups or str(item["group_digest"]) != _group_digest(
+            canonical_groups[index]
+        ):
+            raise ValueError("Covariance work-plan reused-group identity disagrees with the manifest.")
+    all_indices = reused_indices + missing_indices
+    if len(all_indices) != len(set(all_indices)):
+        raise ValueError("Covariance work plan assigns a group more than once.")
+    if set(all_indices) != set(canonical_groups):
+        raise ValueError("Covariance work plan does not cover every manifest group exactly once.")
+    if int(plan.get("n_reused_groups", -1)) != len(reused_indices):
+        raise ValueError("Covariance work-plan reused-group count is inconsistent.")
+    if int(plan.get("n_missing_groups", -1)) != len(missing_indices):
+        raise ValueError("Covariance work-plan missing-group count is inconsistent.")
+    if int(plan.get("n_bundles", -1)) != len(bundles):
+        raise ValueError("Covariance work-plan bundle count is inconsistent.")
+    if bundles:
+        if int(plan.get("stress_bundle_index", -1)) != 0:
+            raise ValueError("Covariance work plan must place its production stress bundle first.")
+        if [int(value) for value in plan.get("stress_group_indices", [])] != [
+            int(value) for value in bundles[0]["group_indices"]
+        ]:
+            raise ValueError("Covariance work-plan stress inventory disagrees with bundle zero.")
+
+
+def validate_covariance_work_plan_frozen_inputs(
+    plan: Mapping[str, object],
+    manifest: Mapping[str, object],
+    config: MeasurementConfig,
+) -> None:
+    """Re-attest immutable inputs immediately before final assembly."""
+
+    validate_covariance_work_plan(plan, manifest, config)
+    maps = Path(str(plan["maps_path"]))
+    spectra = Path(str(plan["spectra_path"]))
+    if not maps.exists() or int(maps.stat().st_size) != int(plan["map_size_bytes"]):
+        raise ValueError("Frozen covariance work-plan map input is missing or changed size.")
+    map_metadata = _map_metadata_for_work_plan(maps)
+    if _required_map_product_id(map_metadata) != str(plan["map_product_id"]):
+        raise ValueError("Frozen covariance work-plan map identity changed before assembly.")
+    if not spectra.exists() or int(spectra.stat().st_size) != int(plan["spectra_size_bytes"]):
+        raise ValueError("Frozen covariance work-plan spectra input is missing or changed size.")
+    if _sha256_file(spectra) != str(plan["spectra_sha256"]):
+        raise ValueError("Frozen covariance work-plan spectra SHA256 changed before assembly.")
+    for item in plan.get("reused_groups", []):
+        shard = Path(str(item["path"]))
+        if not shard.exists() or _sha256_file(shard) != str(item["sha256"]):
+            raise ValueError(
+                f"Frozen reused covariance shard for group {item['group_index']} changed."
+            )
 
 
 def _groups_for_class(manifest: Mapping[str, object], cov_class: str) -> List[Mapping[str, object]]:
@@ -421,8 +1043,16 @@ def timed_step(label: str):
 
 def _read_spectra_product(path: Path) -> Tuple[Dict[str, object], Dict[str, object]]:
     with h5py.File(path, "r") as h5:
-        if h5.attrs.get("schema") != SCHEMA_MEASUREMENT:
-            raise ValueError(f"{path} is not a {SCHEMA_MEASUREMENT} product.")
+        schema = str(h5.attrs.get("schema", ""))
+        if schema not in {SCHEMA_MEASUREMENT, SCHEMA_MEASUREMENT_VALIDITY_MASK}:
+            raise ValueError(f"{path} has unsupported measurement schema {schema!r}.")
+        mean_convention = str(h5.attrs.get("desi_galaxy_auto_mean_convention", ""))
+        if mean_convention != DESI_GALAXY_AUTO_MEAN_CONVENTION:
+            raise ValueError(
+                f"{path} has DESI galaxy-auto mean convention {mean_convention!r}; "
+                f"expected {DESI_GALAXY_AUTO_MEAN_CONVENTION!r}. Refusing to relabel "
+                "an old shot-noise-subtracted spectra cache during assembly."
+            )
         map_metadata = json.loads(h5.attrs["map_metadata_json"])
         config = json.loads(h5.attrs["config_json"])
         spectra: Dict[str, Dict[str, object]] = {}
@@ -467,7 +1097,7 @@ def _read_spectra_product(path: Path) -> Tuple[Dict[str, object], Dict[str, obje
         if "fields" in h5 and "metadata_json" in h5["fields"].attrs:
             field_metadata = json.loads(h5["fields"].attrs["metadata_json"])
         result = {
-            "schema": SCHEMA_MEASUREMENT,
+            "schema": schema,
             "created_utc": utc_now(),
             "config": config,
             "ell": h5["ell"][:],
@@ -514,6 +1144,57 @@ def _read_input_cls_group(parent: h5py.Group) -> Dict[Tuple[str, ...], np.ndarra
     return out
 
 
+def _expected_block_dataset_names(group: Mapping[str, object]) -> Set[str]:
+    return {
+        f"{str(block['spec_i'])}__x__{str(block['spec_j'])}"
+        for block in group.get("blocks", [])
+    }
+
+
+def _covariance_shard_compatibility(
+    path: Path,
+    group: Mapping[str, object],
+    manifest: Mapping[str, object],
+    config: MeasurementConfig,
+    map_product_id: str,
+    group_mask_digest: str,
+) -> Tuple[bool, str]:
+    if not path.exists():
+        return False, "file does not exist"
+    try:
+        with h5py.File(path, "r") as h5:
+            expected_attrs = {
+                "pipeline_version": MEASUREMENT_PIPELINE_VERSION,
+                "covariance_estimator_version": COVARIANCE_ESTIMATOR_VERSION,
+                "covariance_config_digest": covariance_config_digest(config),
+                "manifest_digest": str(manifest["manifest_digest"]),
+                "group_digest": _group_digest(group),
+                "map_product_id": map_product_id,
+                "group_mask_digest": group_mask_digest,
+            }
+            for key, expected in expected_attrs.items():
+                actual = str(h5.attrs.get(key, ""))
+                if actual != str(expected):
+                    return False, f"{key}={actual!r}, expected {expected!r}"
+            if int(h5.attrs.get("group_index", -1)) != int(group["index"]):
+                return False, "group index does not match"
+            if "covariance_blocks" not in h5:
+                return False, "covariance_blocks group is missing"
+            actual_names = set(h5["covariance_blocks"].keys())
+            expected_names = _expected_block_dataset_names(group)
+            if actual_names != expected_names:
+                return False, "covariance block inventory does not match manifest group"
+            expected_shape = (int(config.n_bins), int(config.n_bins))
+            for name in actual_names:
+                if h5[f"covariance_blocks/{name}"].shape != expected_shape:
+                    return False, f"block {name!r} has the wrong shape"
+            if "input_cls_for_covariance" not in h5:
+                return False, "input covariance spectra are missing"
+    except Exception as exc:
+        return False, f"could not validate shard: {exc}"
+    return True, "compatible"
+
+
 def run_prepare(args: argparse.Namespace) -> None:
     config = config_from_args(args)
     bundle = SurveyBundle.from_root(args.survey_root)
@@ -530,78 +1211,15 @@ def run_prepare(args: argparse.Namespace) -> None:
     print(f"[{utc_now()}] Wrote {output}", flush=True)
 
 
-SHEAR_AUTO_SPEC_NAMES = tuple(f"des_shear_EE_tomo{i}_tomo{i}" for i in range(1, 5))
-_PATCHABLE_SPECTRUM_DATASETS = (
-    "cl",
-    "cl_all_components",
-    "pcl_all_components",
-    "noise_decoupled_all_components",
-)
-
-
-def _patch_shear_autos_in_spectra_product(
-    output: Path,
-    maps: Path,
-    config: MeasurementConfig,
-    verbose: bool = True,
-) -> int:
-    """Recompute only the 4 same-bin DES shear EE autos and overwrite them in place.
-
-    The shape-noise fix changes ONLY the shear-auto spectra; the other 42 (cross-tomo
-    shear, galaxy autos/crosses, kSZ, ...) have an untouched noise path and are bit-identical.
-    So when a compatible spectra product already exists, we recompute just the 4 autos
-    (loading only the shear fields and building only their workspaces) and replace their
-    datasets in the HDF5, instead of regenerating all 46 (~2.9 h -> ~25 min). assemble
-    rebuilds the data vector from the per-spectrum ``cl``, so no ``joint`` group exists to fix.
-    """
-
-    from multiprobe_namaster import build_nmt_fields, default_spectrum_specs, make_bins, measure_spectrum
-
-    shear_map_fields, _ = load_map_product(maps, field_names={f"s{i}" for i in range(1, 5)})
-    fields = build_nmt_fields(shear_map_fields, config)
-    bins = make_bins(config)
-    specs = [spec for spec in default_spectrum_specs() if spec.name in SHEAR_AUTO_SPEC_NAMES]
-    workspace_cache: Dict[Tuple[str, str], object] = {}
-    with h5py.File(output, "r+") as h5:
-        for spec in specs:
-            if verbose:
-                print(f"[{utc_now()}] Patching shear auto {spec.name}", flush=True)
-            res = measure_spectrum(spec, fields, bins, workspace_cache, config)
-            grp = h5[f"spectra/{spec.name}"]
-            for key in _PATCHABLE_SPECTRUM_DATASETS:
-                value = np.asarray(res[key], dtype=np.float64)
-                if key in grp:
-                    del grp[key]
-                grp.create_dataset(key, data=value)
-    print(f"[{utc_now()}] Patched {len(specs)} shear-auto spectra in {output}", flush=True)
-    return len(specs)
-
-
 def run_spectra(args: argparse.Namespace) -> None:
     config = config_from_args(args)
     maps = Path(args.maps_path).resolve() if args.maps_path else config.default_maps_path
 
     if getattr(args, "patch_shear_only", False):
-        # Resolve the output tag from the map metadata without loading any field maps.
-        _, meta_for_tag = load_map_product(maps, field_names=set())
-        cfg = _config_from_map_metadata(config, meta_for_tag)
-        cfg.output_dir = args.output_dir
-        out = Path(args.spectra_out).resolve() if args.spectra_out else spectra_path(cfg)
-        if out.exists():
-            ok, reason = _existing_product_matches_config(out, SCHEMA_MEASUREMENT, cfg)
-            if not ok:
-                raise FileExistsError(
-                    f"--patch-shear-only: existing {out} is incompatible ({reason}); "
-                    "rerun without --patch-shear-only (optionally with --force) to regenerate fully."
-                )
-            cfg.compute_covariance = False
-            print(f"[{utc_now()}] Patch mode: recomputing only shear autos in {out}", flush=True)
-            _patch_shear_autos_in_spectra_product(out, maps, cfg, verbose=not args.quiet)
-            return
-        print(
-            f"[{utc_now()}] --patch-shear-only requested but {out} is absent; "
-            "doing a full spectra recompute instead.",
-            flush=True,
+        raise ValueError(
+            "--patch-shear-only is unsafe for pipeline v2: corrected masks and mode-coupling windows "
+            "change every spectrum with a shear endpoint, not only the four autos. Run a full spectra "
+            "measurement (use --force only to replace an incompatible v2 output)."
         )
 
     print(f"[{utc_now()}] Loading maps for spectra: {maps}", flush=True)
@@ -610,7 +1228,12 @@ def run_spectra(args: argparse.Namespace) -> None:
     config.output_dir = args.output_dir
     output = Path(args.spectra_out).resolve() if args.spectra_out else spectra_path(config)
     if output.exists() and not args.force:
-        ok, reason = _existing_product_matches_config(output, SCHEMA_MEASUREMENT, config)
+        ok, reason = _existing_product_matches_config(
+            output,
+            measurement_schema_for_config(config),
+            config,
+            expected_map_product_id=_required_map_product_id(map_metadata),
+        )
         if ok:
             print(f"[{utc_now()}] Reusing existing compatible spectra product: {output}", flush=True)
             return
@@ -625,6 +1248,9 @@ def run_spectra(args: argparse.Namespace) -> None:
 
 def run_make_cov_manifest(args: argparse.Namespace) -> None:
     config = config_from_args(args)
+    # Construct the exact NaMaster bin object locally so invalid edge tables
+    # fail before any scheduler jobs are submitted.
+    make_bins(config)
     output = Path(args.manifest_out).resolve() if args.manifest_out else manifest_path(config)
     manifest = write_covariance_manifest(output, config, overwrite=args.force)
     print(
@@ -634,23 +1260,94 @@ def run_make_cov_manifest(args: argparse.Namespace) -> None:
     )
 
 
+def run_make_cov_work_plan(args: argparse.Namespace) -> None:
+    config = config_from_args(args)
+    manifest_file = Path(args.manifest_path).resolve() if args.manifest_path else manifest_path(config)
+    manifest = load_covariance_manifest(manifest_file)
+    maps = Path(args.maps_path).resolve() if args.maps_path else config.default_maps_path
+    spectra = Path(args.spectra_path).resolve() if args.spectra_path else spectra_path(config)
+    output = Path(args.plan_out).resolve() if args.plan_out else covariance_work_plan_path(config)
+    plan = build_covariance_work_plan(
+        config,
+        manifest,
+        maps,
+        spectra,
+        groups_per_bundle=int(args.groups_per_bundle),
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output.with_suffix(output.suffix + ".tmp")
+    tmp.write_text(json.dumps(plan, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, output)
+    print(
+        f"[{utc_now()}] Wrote covariance work plan {output}: "
+        f"reused={plan['n_reused_groups']} missing={plan['n_missing_groups']} "
+        f"bundles={plan['n_bundles']} digest={plan['plan_digest']}",
+        flush=True,
+    )
+
+
+def run_show_cov_work_bundle(args: argparse.Namespace) -> None:
+    config = config_from_args(args)
+    manifest_file = Path(args.manifest_path).resolve() if args.manifest_path else manifest_path(config)
+    manifest = load_covariance_manifest(manifest_file)
+    plan_file = Path(args.plan_path).resolve() if args.plan_path else covariance_work_plan_path(config)
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    validate_covariance_work_plan(plan, manifest, config)
+    batch_id = int(
+        args.batch_id
+        if args.batch_id is not None
+        else os.environ.get("SLURM_ARRAY_TASK_ID", "0")
+    )
+    bundles = list(plan["bundles"])
+    if not (0 <= batch_id < len(bundles)):
+        raise ValueError(f"Covariance bundle {batch_id} is outside 0..{len(bundles) - 1}.")
+    # Machine-readable stdout for the Slurm bundle worker.  Validation emits no
+    # other stdout, so shell read/mapfile remains fail-closed.
+    print(" ".join(str(value) for value in bundles[batch_id]["group_indices"]))
+
+
 def run_cov_key(args: argparse.Namespace) -> None:
     config = config_from_args(args)
     manifest_file = Path(args.manifest_path).resolve() if args.manifest_path else manifest_path(config)
     manifest = load_covariance_manifest(manifest_file)
+    validate_covariance_manifest(manifest, config)
     groups = _groups_for_class(manifest, args.cov_class)
     task_id = int(args.task_id if args.task_id is not None else os.environ.get("SLURM_ARRAY_TASK_ID", "0"))
     if task_id >= len(groups):
         print(f"[{utc_now()}] task_id={task_id} outside {args.cov_class} group count={len(groups)}; skipping.", flush=True)
         return
     group = groups[task_id]
-    output = block_shard_path(config, group)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists() and not args.force:
-        print(f"[{utc_now()}] Existing covariance shard {output}; skipping.", flush=True)
-        return
 
     maps = Path(args.maps_path).resolve() if args.maps_path else config.default_maps_path
+    # Resume jobs must not spend ~25 minutes loading/building a nside=4096
+    # field merely to discover that its immutable shard already exists.  The
+    # content-addressed map metadata is sufficient to validate the shard's mask
+    # identity; missing work still takes the full map-loading path below.
+    map_metadata_preflight = _map_metadata_for_work_plan(maps)
+    config = _config_from_map_metadata(config, map_metadata_preflight)
+    config.output_dir = args.output_dir
+    map_product_id_preflight = _required_map_product_id(map_metadata_preflight)
+    output_preflight = block_shard_path(config, group)
+    if output_preflight.exists() and not args.force:
+        compatible, reason = _covariance_shard_compatibility(
+            output_preflight,
+            group,
+            manifest,
+            config,
+            map_product_id_preflight,
+            _group_mask_digest_from_metadata(group, map_metadata_preflight),
+        )
+        if compatible:
+            print(
+                f"[{utc_now()}] Reusing compatible covariance shard without loading maps: "
+                f"{output_preflight}",
+                flush=True,
+            )
+            return
+        raise FileExistsError(
+            f"Existing covariance shard {output_preflight} is incompatible ({reason}); "
+            "pass --force to replace it."
+        )
     print(
         f"[{utc_now()}] Computing covariance group {group['index']} "
         f"({group['class']}, {group['n_blocks']} blocks) from {maps}",
@@ -666,6 +1363,20 @@ def run_cov_key(args: argparse.Namespace) -> None:
             map_fields, map_metadata = load_map_product(maps, field_names=_field_names_for_groups([group]))
         config = _config_from_map_metadata(config, map_metadata)
         config.output_dir = args.output_dir
+        map_product_id = _required_map_product_id(map_metadata)
+        group_mask_digest = _group_mask_digest_from_fields(group, map_fields)
+        output = block_shard_path(config, group)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if output.exists() and not args.force:
+            compatible, reason = _covariance_shard_compatibility(
+                output, group, manifest, config, map_product_id, group_mask_digest
+            )
+            if compatible:
+                print(f"[{utc_now()}] Reusing compatible covariance shard {output}", flush=True)
+                return
+            raise FileExistsError(
+                f"Existing covariance shard {output} is incompatible ({reason}); pass --force to replace it."
+            )
         with timed_step(f"group {group['index']} make bins"):
             bins = make_bins(config)
         with timed_step(f"group {group['index']} build NaMaster fields"):
@@ -702,10 +1413,17 @@ def run_cov_key(args: argparse.Namespace) -> None:
     with h5py.File(tmp, "w", track_order=True) as h5:
         h5.attrs["created_utc"] = utc_now()
         h5.attrs["stage"] = config.stage
-        h5.attrs["config_json"] = _json_dumps(config.__dict__)
+        h5.attrs["config_json"] = _json_dumps(config.to_dict())
         h5.attrs["group_json"] = json.dumps(group)
         h5.attrs["group_index"] = int(group["index"])
         h5.attrs["group_class"] = str(group["class"])
+        h5.attrs["pipeline_version"] = MEASUREMENT_PIPELINE_VERSION
+        h5.attrs["covariance_estimator_version"] = COVARIANCE_ESTIMATOR_VERSION
+        h5.attrs["covariance_config_digest"] = covariance_config_digest(config)
+        h5.attrs["manifest_digest"] = str(manifest["manifest_digest"])
+        h5.attrs["group_digest"] = _group_digest(group)
+        h5.attrs["map_product_id"] = map_product_id
+        h5.attrs["group_mask_digest"] = group_mask_digest
         bg = h5.create_group("covariance_blocks")
         for (name_i, name_j), block in blocks.items():
             ds = _write_dataset(bg, f"{name_i}__x__{name_j}", block, dtype="f8")
@@ -718,18 +1436,28 @@ def run_cov_key(args: argparse.Namespace) -> None:
 
 def _compute_covariance_group(
     group: Mapping[str, object],
+    manifest: Mapping[str, object],
     fields: Mapping[str, object],
     bins: object,
     config: MeasurementConfig,
+    map_product_id: str,
     *,
     force: bool,
     use_cache: bool = True,
 ) -> Path:
+    group_mask_digest = _group_mask_digest_from_fields(group, fields)
     output = block_shard_path(config, group)
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() and not force:
-        print(f"[{utc_now()}] Existing covariance shard {output}; skipping.", flush=True)
-        return output
+        compatible, reason = _covariance_shard_compatibility(
+            output, group, manifest, config, map_product_id, group_mask_digest
+        )
+        if compatible:
+            print(f"[{utc_now()}] Reusing compatible covariance shard {output}", flush=True)
+            return output
+        raise FileExistsError(
+            f"Existing covariance shard {output} is incompatible ({reason}); pass --force to replace it."
+        )
     with timed_step(
         f"group {group['index']} get/build covariance workspace "
         f"({','.join(group['representative_fields'])})"
@@ -759,10 +1487,17 @@ def _compute_covariance_group(
     with h5py.File(tmp, "w", track_order=True) as h5:
         h5.attrs["created_utc"] = utc_now()
         h5.attrs["stage"] = config.stage
-        h5.attrs["config_json"] = _json_dumps(config.__dict__)
+        h5.attrs["config_json"] = _json_dumps(config.to_dict())
         h5.attrs["group_json"] = json.dumps(group)
         h5.attrs["group_index"] = int(group["index"])
         h5.attrs["group_class"] = str(group["class"])
+        h5.attrs["pipeline_version"] = MEASUREMENT_PIPELINE_VERSION
+        h5.attrs["covariance_estimator_version"] = COVARIANCE_ESTIMATOR_VERSION
+        h5.attrs["covariance_config_digest"] = covariance_config_digest(config)
+        h5.attrs["manifest_digest"] = str(manifest["manifest_digest"])
+        h5.attrs["group_digest"] = _group_digest(group)
+        h5.attrs["map_product_id"] = map_product_id
+        h5.attrs["group_mask_digest"] = group_mask_digest
         bg = h5.create_group("covariance_blocks")
         for (name_i, name_j), block in blocks.items():
             ds = _write_dataset(bg, f"{name_i}__x__{name_j}", block, dtype="f8")
@@ -778,6 +1513,7 @@ def run_cov_batch(args: argparse.Namespace) -> None:
     config = config_from_args(args)
     manifest_file = Path(args.manifest_path).resolve() if args.manifest_path else manifest_path(config)
     manifest = load_covariance_manifest(manifest_file)
+    validate_covariance_manifest(manifest, config)
     groups = _groups_for_class(manifest, args.cov_class)
     batch_id = int(args.batch_id if args.batch_id is not None else os.environ.get("SLURM_ARRAY_TASK_ID", "0"))
     batch_size = int(args.batch_size)
@@ -858,6 +1594,7 @@ def run_cov_batch(args: argparse.Namespace) -> None:
             map_fields, map_metadata = load_map_product(maps, field_names=_field_names_for_groups(selected_groups))
         config = _config_from_map_metadata(config, map_metadata)
         config.output_dir = args.output_dir
+        map_product_id = _required_map_product_id(map_metadata)
         with timed_step(f"batch {batch_id} make bins"):
             bins = make_bins(config)
         with timed_step(f"batch {batch_id} build NaMaster fields"):
@@ -868,16 +1605,39 @@ def run_cov_batch(args: argparse.Namespace) -> None:
                 f"[{utc_now()}] Group {group['index']} ({group['class']}, {group['n_blocks']} blocks)",
                 flush=True,
             )
-            _compute_covariance_group(group, fields, bins, config, force=args.force, use_cache=use_cache)
+            _compute_covariance_group(
+                group,
+                manifest,
+                fields,
+                bins,
+                config,
+                map_product_id,
+                force=args.force,
+                use_cache=use_cache,
+            )
 
 
 def run_assemble(args: argparse.Namespace) -> None:
     config = config_from_args(args)
     spec_file = Path(args.spectra_path).resolve() if args.spectra_path else spectra_path(config)
     manifest_file = Path(args.manifest_path).resolve() if args.manifest_path else manifest_path(config)
-    output = Path(args.measurement_out).resolve() if args.measurement_out else config.default_measurement_path
     result, map_metadata = _read_spectra_product(spec_file)
+    config = _config_from_map_metadata(config, map_metadata)
+    config.output_dir = args.output_dir
+    map_product_id = _required_map_product_id(map_metadata)
+    output = Path(args.measurement_out).resolve() if args.measurement_out else config.default_measurement_path
+    spectra_ok, spectra_reason = _existing_product_matches_config(
+        spec_file,
+        measurement_schema_for_config(config),
+        config,
+        expected_map_product_id=map_product_id,
+    )
+    if not spectra_ok:
+        raise ValueError(f"Spectra product {spec_file} is incompatible ({spectra_reason}).")
     manifest = load_covariance_manifest(manifest_file)
+    validate_covariance_manifest(manifest, config)
+    if covariance_config_digest(result["config"]) != covariance_config_digest(config):
+        raise ValueError("Spectra product covariance-relevant config does not match the assembly config.")
     specs = default_spectrum_specs()
     ell = np.asarray(result["ell"], dtype=np.float64)
     n_per = ell.size
@@ -886,18 +1646,45 @@ def run_assemble(args: argparse.Namespace) -> None:
     slices = {spec.name: (i * n_per, (i + 1) * n_per) for i, spec in enumerate(specs)}
     covariance_blocks: Dict[Tuple[str, str], np.ndarray] = {}
     input_cls: Dict[Tuple[str, ...], np.ndarray] = {}
+    expected_blocks = {
+        (str(block["spec_i"]), str(block["spec_j"]))
+        for group in manifest["groups"]
+        for block in group["blocks"]
+    }
+    if len(expected_blocks) != len(specs) * (len(specs) + 1) // 2:
+        raise ValueError("Manifest contains missing or duplicate upper-triangle covariance blocks.")
 
     for group in manifest["groups"]:
         shard = block_shard_path(config, group)
         if not shard.exists():
             raise FileNotFoundError(f"Missing covariance shard for group {group['index']}: {shard}")
+        compatible, reason = _covariance_shard_compatibility(
+            shard,
+            group,
+            manifest,
+            config,
+            map_product_id,
+            _group_mask_digest_from_metadata(group, map_metadata),
+        )
+        if not compatible:
+            raise ValueError(f"Covariance shard {shard} is incompatible ({reason}).")
         with h5py.File(shard, "r") as h5:
-            input_cls.update(_read_input_cls_group(h5))
+            for key, values in _read_input_cls_group(h5).items():
+                if key in input_cls and not np.array_equal(input_cls[key], values):
+                    raise ValueError(f"Conflicting repeated covariance input spectrum {key!r} across shards.")
+                input_cls[key] = values
             for name in h5["covariance_blocks"]:
                 ds = h5[f"covariance_blocks/{name}"]
                 name_i = str(ds.attrs["spectrum_i"])
                 name_j = str(ds.attrs["spectrum_j"])
                 block = ds[:]
+                key = (name_i, name_j)
+                if key not in expected_blocks:
+                    raise ValueError(f"Unexpected covariance block {key!r} in {shard}.")
+                if key in covariance_blocks:
+                    raise ValueError(f"Duplicate covariance block {key!r} across shards.")
+                if block.shape != (n_per, n_per) or not np.all(np.isfinite(block)):
+                    raise ValueError(f"Covariance block {key!r} has invalid shape or non-finite values.")
                 covariance_blocks[(name_i, name_j)] = block
                 si = slice(*slices[name_i])
                 sj = slice(*slices[name_j])
@@ -905,21 +1692,54 @@ def run_assemble(args: argparse.Namespace) -> None:
                 if name_i != name_j:
                     cov[sj, si] = block.T
 
+    if set(covariance_blocks) != expected_blocks:
+        missing = sorted(expected_blocks - set(covariance_blocks))
+        raise ValueError(f"Assembled covariance is incomplete; missing {len(missing)} block(s): {missing[:5]}")
+    if not np.all(np.isfinite(cov)) or not np.allclose(cov, cov.T, rtol=1.0e-8, atol=1.0e-20):
+        raise ValueError("Assembled covariance is non-finite or non-symmetric.")
+    if np.any(np.diag(cov) <= 0.0):
+        raise ValueError("Assembled covariance has a non-positive diagonal; refusing to save clipped errors.")
+
     for spec in specs:
         name = spec.name
         start, stop = slices[name]
         block = cov[start:stop, start:stop]
         result["spectra"][name]["cov"] = block
-        result["spectra"][name]["err"] = np.sqrt(np.clip(np.diag(block), 0.0, np.inf))
+        result["spectra"][name]["err"] = np.sqrt(np.diag(block))
 
-    data_vector = np.concatenate([np.asarray(result["spectra"][spec.name]["cl"]) for spec in specs])
+    packed = pack_joint_data_vector(
+        specs,
+        result["spectra"],
+        config,
+        np.asarray(result["ell_left"]),
+        np.asarray(result["ell_right"]),
+    )
+    result["schema"] = measurement_schema_for_config(config)
     result["covariance_blocks"] = covariance_blocks
     result["input_cls_for_covariance"] = input_cls
     result["covariance_workspace_keys"] = [group["key"] for group in manifest["groups"]]
+    # The spectra intermediate deliberately records compute_covariance=False.  The
+    # assembled product is a different contract: it contains the complete covariance
+    # and must carry the authoritative production configuration rather than inheriting
+    # that execution-only spectra flag.
+    result["config"] = config.to_dict()
+    result["config"]["compute_covariance"] = True
     result["joint"] = {
         "spectrum_names": [spec.name for spec in specs],
         "ell": ell,
-        "data_vector": data_vector,
+        "data_vector": packed["data_vector"],
+        "data_vector_raw": packed["data_vector_raw"],
+        "data_vector_valid": packed["data_vector_valid"],
+        "data_vector_weighted_poisson_subtracted": packed[
+            "data_vector_weighted_poisson_subtracted"
+        ],
+        "data_vector_raw_weighted_poisson_subtracted": packed[
+            "data_vector_raw_weighted_poisson_subtracted"
+        ],
+        "galaxy_auto_weighted_poisson_template": packed[
+            "galaxy_auto_weighted_poisson_template"
+        ],
+        "spectrum_validity": packed["spectrum_validity"],
         "cov": cov,
         "corr": _corr_from_cov(cov),
         "slices": slices,
@@ -932,16 +1752,36 @@ def run_assemble(args: argparse.Namespace) -> None:
 def run_validate(args: argparse.Namespace) -> None:
     config = config_from_args(args)
     path = Path(args.measurement_path).resolve() if args.measurement_path else config.default_measurement_path
+    compatible, reason = _existing_product_matches_config(
+        path, measurement_schema_for_config(config), config
+    )
+    if not compatible:
+        raise ValueError(f"Measurement product {path} is incompatible ({reason}).")
     with h5py.File(path, "r") as h5:
+        validate_measurement_product_identity(h5)
+        if str(h5.attrs.get("covariance_estimator_version", "")) != COVARIANCE_ESTIMATOR_VERSION:
+            raise ValueError("Measurement covariance estimator version is missing or stale.")
         cov = h5["joint/cov"][:]
         data = h5["joint/data_vector"][:]
+        raw = h5["joint/data_vector_raw"][:] if "joint/data_vector_raw" in h5 else data.copy()
+        valid = (
+            h5["joint/data_vector_valid"][:].astype(bool)
+            if "joint/data_vector_valid" in h5
+            else np.ones(data.size, dtype=bool)
+        )
         names = _read_string_dataset(h5["joint/spectrum_names"])
         diagnostics = json.loads(str(h5["joint"].attrs.get("diagnostics_json", "{}")))
+        mean_convention = str(h5.attrs["desi_galaxy_auto_mean_convention"])
+        galaxy_auto_views = validate_galaxy_auto_views(h5, require=True)
     expected = 46 * int(config.n_bins)
     if cov.shape != (expected, expected):
         raise ValueError(f"Covariance shape {cov.shape} does not match expected {(expected, expected)}.")
     if data.shape != (expected,):
         raise ValueError(f"Data vector shape {data.shape} does not match expected {(expected,)}.")
+    if raw.shape != (expected,) or valid.shape != (expected,):
+        raise ValueError("Raw data vector and validity mask must match the archive data-vector shape.")
+    if not np.array_equal(data[valid], raw[valid]) or not np.all(data[~valid] == 0.0):
+        raise ValueError("Packed data vector does not obey its validity mask and raw archive vector.")
     if not np.all(np.isfinite(data)):
         raise ValueError("Data vector contains non-finite values.")
     if not np.all(np.isfinite(cov)):
@@ -966,11 +1806,40 @@ def run_validate(args: argparse.Namespace) -> None:
         raise ValueError(f"Correlation eigencut threshold {corr_threshold:g} retains zero modes.")
     if float(np.min(corr_eig)) < -1.0e-6:
         raise ValueError(f"Correlation matrix has a strongly negative eigenvalue: {np.min(corr_eig):.6e}.")
+    active_cov = cov[np.ix_(valid, valid)]
+    active_data = data[valid]
+    active_sigma = np.sqrt(np.diag(active_cov))
+    active_corr = active_cov / np.outer(active_sigma, active_sigma)
+    active_corr = 0.5 * (active_corr + active_corr.T)
+    active_corr_eig = np.linalg.eigvalsh(active_corr)
+    active_cov_eig = np.linalg.eigvalsh(0.5 * (active_cov + active_cov.T))
+    if not np.all(np.isfinite(active_data)) or not np.all(np.isfinite(active_cov)):
+        raise ValueError("Active data vector or active covariance submatrix is non-finite.")
+    if float(np.min(active_corr_eig)) < -1.0e-6:
+        raise ValueError(
+            f"Active correlation matrix has a strongly negative eigenvalue: {np.min(active_corr_eig):.6e}."
+        )
+    active_rank = int(np.sum(active_corr_eig > corr_threshold))
+    expected_invalid = 28 if config.kappa_cmb_lmax is not None else 0
+    if int(np.count_nonzero(~valid)) != expected_invalid:
+        raise ValueError(
+            f"Validity mask has {np.count_nonzero(~valid)} placeholders, expected {expected_invalid}."
+        )
     report = {
         "measurement_path": str(path),
         "n_spectra": len(names),
         "n_bins": int(config.n_bins),
+        "desi_galaxy_auto_mean_convention": mean_convention,
+        "desi_galaxy_auto_views_contract_version": (
+            DESI_GALAXY_AUTO_VIEWS_CONTRACT_VERSION
+        ),
+        "desi_galaxy_auto_primary_hmc_view": DESI_GALAXY_AUTO_PRIMARY_VIEW,
+        "desi_galaxy_auto_subtracted_view": DESI_GALAXY_AUTO_SUBTRACTED_VIEW,
+        "desi_galaxy_auto_views": galaxy_auto_views,
         "data_vector_size": int(data.size),
+        "archive_data_vector_size": int(data.size),
+        "active_data_vector_size": int(active_data.size),
+        "zero_placeholder_count": int(np.count_nonzero(~valid)),
         "covariance_shape": list(cov.shape),
         "data_finite": bool(np.all(np.isfinite(data))),
         "covariance_finite": bool(np.all(np.isfinite(cov))),
@@ -984,7 +1853,15 @@ def run_validate(args: argparse.Namespace) -> None:
         "corr_eigen_threshold": corr_threshold,
         "corr_eigencut_rank": rank,
         "corr_eigencut_dropped_modes": int(corr_eig.size - rank),
+        "active_covariance_shape": list(active_cov.shape),
+        "active_cov_eigen_min": float(np.min(active_cov_eig)),
+        "active_cov_eigen_max": float(np.max(active_cov_eig)),
+        "active_corr_eigen_min": float(np.min(active_corr_eig)),
+        "active_corr_eigen_max": float(np.max(active_corr_eig)),
+        "active_corr_eigencut_rank": active_rank,
+        "active_corr_eigencut_dropped_modes": int(active_corr_eig.size - active_rank),
         "hdf5_diagnostics": diagnostics,
+        "submission_runtime_source_sha256": os.environ.get("XDESI_RUNTIME_SOURCE_SHA256", ""),
     }
     report_path = path.with_name(f"measurement_validation_{config.product_tag}.json")
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
@@ -992,13 +1869,16 @@ def run_validate(args: argparse.Namespace) -> None:
         f"[{utc_now()}] Validation passed for {path}: shape={cov.shape}, "
         f"diag=[{diag.min():.3e}, {diag.max():.3e}], "
         f"corr_eig=[{corr_eig.min():.3e}, {corr_eig.max():.3e}], "
-        f"rank@{corr_threshold:g}={rank}/{corr_eig.size}, report={report_path}",
+        f"archive_rank@{corr_threshold:g}={rank}/{corr_eig.size}, "
+        f"active_rank={active_rank}/{active_corr_eig.size}, report={report_path}",
         flush=True,
     )
 
 
 def _parse_ksz_ylim(value: object) -> Optional[Tuple[float, float]]:
     if value is None:
+        return None
+    if str(value).strip().lower() in {"auto", "none", ""}:
         return None
     parts = str(value).replace(",", " ").split()
     if len(parts) != 2:
@@ -1013,6 +1893,12 @@ def run_plot_measurement_dell(args: argparse.Namespace) -> None:
     pdf = Path(args.pdf_out).resolve() if args.pdf_out else output_dir / f"measurement_dell_{config.product_tag}.pdf"
     ell_max = None if args.plot_ell_max is not None and float(args.plot_ell_max) <= 0.0 else args.plot_ell_max
     ksz_ylim = _parse_ksz_ylim(args.plot_ksz_ylim)
+    xscale = "log" if str(config.binning).lower() == "log" else "linear"
+    compatible, reason = _existing_product_matches_config(
+        path, measurement_schema_for_config(config), config
+    )
+    if not compatible:
+        raise ValueError(f"Measurement product {path} is incompatible ({reason}).")
 
     import godmax_multiprobe_theory_utils as gmt
 
@@ -1025,6 +1911,7 @@ def run_plot_measurement_dell(args: argparse.Namespace) -> None:
         ell_max=ell_max,
         ksz_ylim=ksz_ylim,
         ksz_scale=float(args.plot_ksz_scale),
+        xscale=xscale,
     )
     summary = {
         "measurement_h5": str(path),
@@ -1033,11 +1920,175 @@ def run_plot_measurement_dell(args: argparse.Namespace) -> None:
         "ell_max": ell_max,
         "ksz_ylim": ksz_ylim,
         "ksz_scale": float(args.plot_ksz_scale),
+        "xscale": xscale,
+        "transfer_null_from": measurement.transfer_null_from,
     }
     summary_path = output_dir / f"measurement_dell_{config.product_tag}.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"[{utc_now()}] Wrote measurement D_ell plot {pdf}", flush=True)
     print(f"[{utc_now()}] Wrote measurement D_ell plot summary {summary_path}", flush=True)
+
+
+def run_plot_measurement_cl_dell(args: argparse.Namespace) -> None:
+    """Save complete C_ell and D_ell views from one validated HDF5 product."""
+
+    config = config_from_args(args)
+    path = Path(args.measurement_path).resolve() if args.measurement_path else config.default_measurement_path
+    output_dir = Path(args.plot_dir).resolve() if args.plot_dir else config.output_root / "plots"
+    ell_max = None if args.plot_ell_max is not None and float(args.plot_ell_max) <= 0.0 else args.plot_ell_max
+    ksz_ylim = _parse_ksz_ylim(args.plot_ksz_ylim)
+    xscale = "log" if str(config.binning).lower() == "log" else "linear"
+    compatible, reason = _existing_product_matches_config(
+        path, measurement_schema_for_config(config), config
+    )
+    if not compatible:
+        raise ValueError(f"Measurement product {path} is incompatible ({reason}).")
+
+    import godmax_multiprobe_theory_utils as gmt
+
+    measurement = gmt.load_measurement_data(path)
+    cl_pdf = output_dir / f"measurement_cl_{config.product_tag}.pdf"
+    dell_pdf = output_dir / f"measurement_dell_{config.product_tag}.pdf"
+    cl_outputs = gmt.plot_measurement_cl(
+        measurement,
+        output_dir,
+        pdf_path=cl_pdf,
+        filename_prefix=f"measurement_cl_{config.product_tag}",
+        ell_max=ell_max,
+        ksz_scale=float(args.plot_ksz_scale),
+        xscale=xscale,
+    )
+    dell_outputs = gmt.plot_measurement_dell(
+        measurement,
+        output_dir,
+        pdf_path=dell_pdf,
+        filename_prefix=f"measurement_dell_{config.product_tag}",
+        ell_max=ell_max,
+        ksz_ylim=ksz_ylim,
+        ksz_scale=float(args.plot_ksz_scale),
+        xscale=xscale,
+    )
+    summary = {
+        "measurement_h5": str(path),
+        "n_spectra": len(measurement.names),
+        "cl_pdf": str(cl_pdf),
+        "cl_pngs": [str(p) for p in cl_outputs],
+        "dell_pdf": str(dell_pdf),
+        "dell_pngs": [str(p) for p in dell_outputs],
+        "ell_max": ell_max,
+        "dell_ksz_ylim": ksz_ylim,
+        "ksz_scale": float(args.plot_ksz_scale),
+        "xscale": xscale,
+        "transfer_null_from": measurement.transfer_null_from,
+        "cl_ksz_sign_convention": "raw_C_ell_piT",
+        "dell_ksz_sign_convention": "minus_D_ell_piT_paper_display",
+        "galaxy_auto_view": measurement.galaxy_auto_view,
+        "error_source": "sqrt_diagonal_of_saved_joint_covariance",
+        "submission_runtime_source_sha256": os.environ.get("XDESI_RUNTIME_SOURCE_SHA256", ""),
+    }
+    summary_path = output_dir / f"measurement_cl_dell_{config.product_tag}.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(
+        f"[{utc_now()}] Wrote C_ell and D_ell plots for {len(measurement.names)} spectra: "
+        f"{cl_pdf}, {dell_pdf}",
+        flush=True,
+    )
+    print(f"[{utc_now()}] Wrote measurement plot summary {summary_path}", flush=True)
+
+
+def run_finalize(args: argparse.Namespace) -> None:
+    """Assemble, validate, attest HMC inputs, and plot in one small allocation."""
+
+    config = config_from_args(args)
+    manifest_file = Path(args.manifest_path).resolve() if args.manifest_path else manifest_path(config)
+    manifest = load_covariance_manifest(manifest_file)
+    plan_file = (
+        Path(args.plan_path).resolve()
+        if args.plan_path
+        else covariance_work_plan_path(config)
+    )
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    validate_covariance_work_plan_frozen_inputs(plan, manifest, config)
+    output = (
+        Path(args.measurement_out).resolve()
+        if args.measurement_out
+        else config.default_measurement_path
+    )
+    if output.exists() and not args.force:
+        compatible, reason = _existing_product_matches_config(
+            output,
+            measurement_schema_for_config(config),
+            config,
+        )
+        if not compatible:
+            raise FileExistsError(
+                f"Existing assembled measurement {output} is incompatible ({reason}); "
+                "refusing to replace it implicitly."
+            )
+        with h5py.File(output, "r") as h5:
+            validate_measurement_product_identity(h5)
+            validate_galaxy_auto_views(h5, require=True)
+            if "joint/cov" not in h5:
+                raise ValueError("Existing assembled measurement has no full covariance.")
+        print(f"[{utc_now()}] Reusing compatible assembled measurement {output}", flush=True)
+    else:
+        run_assemble(args)
+
+    args.measurement_path = str(output)
+    run_validate(args)
+
+    import godmax_multiprobe_theory_utils as gmt
+
+    total = gmt.load_measurement_data(output, galaxy_auto_view="total")
+    subtracted = gmt.load_measurement_data(
+        output,
+        galaxy_auto_view="weighted_poisson_subtracted",
+    )
+    expected_archive = 46 * int(config.n_bins)
+    expected_invalid = 28 if config.kappa_cmb_lmax is not None else 0
+    expected_active = expected_archive - expected_invalid
+    if len(total.names) != 46 or total.archive_data_vector_size != expected_archive:
+        raise ValueError("HMC readiness check found a non-canonical spectrum/archive layout.")
+    if total.data_vector.shape != (expected_active,) or total.covariance.shape != (
+        expected_active,
+        expected_active,
+    ):
+        raise ValueError("HMC primary view has the wrong active vector/covariance shape.")
+    if not np.array_equal(total.covariance, subtracted.covariance):
+        raise ValueError("Galaxy-auto total and subtracted HMC views do not share one covariance.")
+    if not np.array_equal(total.archive_indices, subtracted.archive_indices):
+        raise ValueError("Galaxy-auto HMC views do not share the same active archive indices.")
+    if not np.all(np.isfinite(total.data_vector)) or not np.all(np.isfinite(total.covariance)):
+        raise ValueError("HMC primary vector or covariance contains non-finite values.")
+    if total.galaxy_auto_view != DESI_GALAXY_AUTO_PRIMARY_VIEW:
+        raise ValueError("HMC loader did not select the total galaxy-auto view by default.")
+
+    readiness = {
+        "created_utc": utc_now(),
+        "measurement_path": str(output),
+        "measurement_sha256": _sha256_file(output),
+        "primary_hmc_view": DESI_GALAXY_AUTO_PRIMARY_VIEW,
+        "alternate_view": DESI_GALAXY_AUTO_SUBTRACTED_VIEW,
+        "n_spectra": len(total.names),
+        "archive_data_vector_size": int(total.archive_data_vector_size),
+        "active_data_vector_size": int(total.data_vector.size),
+        "invalid_kappa_placeholders": int(expected_invalid),
+        "active_covariance_shape": list(total.covariance.shape),
+        "active_total_data_vector_sha256": _array_digest(total.data_vector),
+        "active_subtracted_data_vector_sha256": _array_digest(subtracted.data_vector),
+        "active_covariance_sha256": _array_digest(total.covariance),
+        "active_archive_indices_sha256": _array_digest(total.archive_indices),
+        "covariance_views_array_equal": True,
+        "shot_noise_likelihood_rule": (
+            "Fit the primary total C_ell^gg+SN vector with clustering theory plus a free "
+            "amplitude times the saved already-decoupled weighted-Poisson template."
+        ),
+    }
+    readiness_path = output.with_name(f"hmc_input_readiness_{config.product_tag}.json")
+    readiness_path.write_text(json.dumps(readiness, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"[{utc_now()}] Wrote HMC-input readiness attestation {readiness_path}", flush=True)
+
+    run_plot_measurement_cl_dell(args)
 
 
 def parse_args() -> argparse.Namespace:
@@ -1058,15 +2109,30 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spectra-out", default=None)
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--patch-shear-only", action="store_true",
-                   help="If a compatible spectra product exists, recompute ONLY the 4 shear-auto "
-                        "spectra and overwrite them in place (the other 42 are unaffected by the "
-                        "shape-noise fix). Falls back to a full recompute if no product exists.")
+                   help="Deprecated safety trap. Pipeline v2 requires a full spectra recompute and "
+                        "will reject this option.")
     p.set_defaults(func=run_spectra)
 
     p = sub.add_parser("make-cov-manifest")
     add_common(p)
     p.add_argument("--manifest-out", default=None)
     p.set_defaults(func=run_make_cov_manifest)
+
+    p = sub.add_parser("make-cov-work-plan")
+    add_common(p)
+    p.add_argument("--maps-path", default=None)
+    p.add_argument("--spectra-path", default=None)
+    p.add_argument("--manifest-path", default=None)
+    p.add_argument("--plan-out", default=None)
+    p.add_argument("--groups-per-bundle", type=int, default=8)
+    p.set_defaults(func=run_make_cov_work_plan)
+
+    p = sub.add_parser("show-cov-work-bundle")
+    add_common(p)
+    p.add_argument("--manifest-path", default=None)
+    p.add_argument("--plan-path", default=None)
+    p.add_argument("--batch-id", type=int, default=None)
+    p.set_defaults(func=run_show_cov_work_bundle)
 
     p = sub.add_parser("cov-key")
     add_common(p)
@@ -1112,10 +2178,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--measurement-path", default=None)
     p.add_argument("--plot-dir", default=None)
     p.add_argument("--pdf-out", default=None)
-    p.add_argument("--plot-ell-max", type=float, default=2800.0)
-    p.add_argument("--plot-ksz-ylim", default="-5e-5,5e-5")
+    p.add_argument("--plot-ell-max", type=float, default=0.0)
+    p.add_argument("--plot-ksz-ylim", default="auto")
     p.add_argument("--plot-ksz-scale", type=float, default=1.0)
     p.set_defaults(func=run_plot_measurement_dell)
+
+    p = sub.add_parser("plot-measurement-cl-dell")
+    add_common(p)
+    p.add_argument("--measurement-path", default=None)
+    p.add_argument("--plot-dir", default=None)
+    p.add_argument("--plot-ell-max", type=float, default=0.0)
+    p.add_argument("--plot-ksz-ylim", default="auto")
+    p.add_argument("--plot-ksz-scale", type=float, default=1.0)
+    p.set_defaults(func=run_plot_measurement_cl_dell)
+
+    p = sub.add_parser("finalize")
+    add_common(p)
+    p.add_argument("--spectra-path", default=None)
+    p.add_argument("--manifest-path", default=None)
+    p.add_argument("--plan-path", default=None)
+    p.add_argument("--measurement-out", default=None)
+    p.add_argument("--measurement-path", default=None)
+    p.add_argument("--plot-dir", default=None)
+    p.add_argument("--plot-ell-max", type=float, default=0.0)
+    p.add_argument("--plot-ksz-ylim", default="auto")
+    p.add_argument("--plot-ksz-scale", type=float, default=1.0)
+    p.add_argument("--corr-eigen-threshold", type=float, default=1.0e-8)
+    p.set_defaults(func=run_finalize, skip_cov_eig=True)
 
     return parser.parse_args()
 

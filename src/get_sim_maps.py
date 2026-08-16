@@ -58,6 +58,49 @@ class setup_sim_map(Profiles):
         else:
             self.__dict__.update(Profiles_obj.__dict__)
         self._profiles_obj_ref = Profiles_obj
+
+        # The historical Abel projector mixes a physical transverse radius
+        # with the comoving upper edge of ``r_array``.  Keep that path as the
+        # compatibility default, but allow comparison/validation runs to opt
+        # into a unit-consistent, nonsingular line-of-sight quadrature.
+        self.projected_profile_integration_method = str(
+            analysis_dict.get(
+                'projected_profile_integration_method',
+                'legacy_log_radius',
+            )
+        )
+        supported_projection_methods = {
+            'legacy_log_radius',
+            'physical_table_cosh',
+        }
+        if self.projected_profile_integration_method not in supported_projection_methods:
+            raise ValueError(
+                'Unsupported projected_profile_integration_method='
+                f'{self.projected_profile_integration_method!r}; expected one of '
+                f'{sorted(supported_projection_methods)}.'
+            )
+        self.num_points_projected_profile = int(
+            analysis_dict.get('num_points_projected_profile', 32)
+        )
+        if self.num_points_projected_profile < 2:
+            raise ValueError(
+                'num_points_projected_profile must be at least 2; got '
+                f'{self.num_points_projected_profile}.'
+            )
+        los_max = analysis_dict.get(
+            'projected_profile_los_max_comoving_mpc', None
+        )
+        self.projected_profile_los_max_comoving_mpc = (
+            None if los_max is None else float(los_max)
+        )
+        if (
+            self.projected_profile_los_max_comoving_mpc is not None
+            and self.projected_profile_los_max_comoving_mpc <= 0.0
+        ):
+            raise ValueError(
+                'projected_profile_los_max_comoving_mpc must be positive or '
+                f'null; got {self.projected_profile_los_max_comoving_mpc}.'
+            )
             
         # --- Timing Setup ---
         self.profile_timing = mock_params_dict.get('profile_timing', False)
@@ -377,13 +420,62 @@ class setup_sim_map(Profiles):
         return sigma_T * ne_bar * c * tau_z
 
     @partial(jit, static_argnums=(0, 6))
-    def _generic_2D_projection(self, jrp, jz, jM, mat_physical, const_factor=1.0, num_trapz_points=32):
-        """Generic 2D projection helper"""
+    def _generic_2D_projection(self, jrp, jz, jM, mat_physical, const_factor=1.0, num_trapz_points=None):
+        """Project a physical 3D table at a physical transverse radius.
+
+        ``legacy_log_radius`` reproduces the historical implementation.
+        ``physical_table_cosh`` uses a physical line-of-sight limit bounded by
+        the comoving 3D table and the substitution ``r = rp cosh(t)``.  The
+        latter removes the Abel singularity without dropping the interval
+        immediately above ``rp`` and never extrapolates the terminal value.
+        """
         zval = self.z_array[jz]
-        # rp = self.rp_array[jrp]/(1 + zval)
         rp = self.rp_array[jrp]
+        n_points = (
+            self.num_points_projected_profile
+            if num_trapz_points is None
+            else int(num_trapz_points)
+        )
+
+        if self.projected_profile_integration_method == 'physical_table_cosh':
+            table_r_max = jnp.max(self.r_array) / (1.0 + zval)
+            has_support = rp < table_r_max
+            table_los_max = jnp.sqrt(
+                jnp.maximum(table_r_max**2 - rp**2, 0.0)
+            )
+            los_cutoff = getattr(
+                self, 'projected_profile_los_max_comoving_mpc', None
+            )
+            if los_cutoff is None:
+                los_max = table_los_max
+            else:
+                requested_los_max = (
+                    los_cutoff
+                    * self.h
+                    / (1.0 + zval)
+                )
+                los_max = jnp.minimum(requested_los_max, table_los_max)
+            t_max = jnp.arcsinh(los_max / rp)
+            nodes, weights = np.polynomial.legendre.leggauss(n_points)
+            nodes = jnp.asarray(nodes)
+            weights = jnp.asarray(weights)
+            t_array = 0.5 * (nodes + 1.0) * t_max
+            r_array_here = rp * jnp.cosh(t_array)
+            quantity_rarray = jnp.exp(jnp.interp(
+                jnp.log(r_array_here),
+                jnp.log(self.r_array / (1.0 + zval)),
+                jnp.log(mat_physical[:, jz, jM]),
+            ))
+            projected = t_max * jnp.sum(
+                weights * r_array_here * quantity_rarray
+            )
+            return jnp.where(has_support, const_factor * projected, 0.0)
+
+        # Historical compatibility path.  Here ``r_max`` is comoving while
+        # ``rp`` and the interpolation coordinates are physical; interpolation
+        # therefore clamps the endpoint above the physical table support.
         r_max = jnp.minimum(jnp.max(self.r_array), rp * 100.0)
-        r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(r_max), num_trapz_points))
+        r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(r_max), n_points))
         
         quantity_rarray = jnp.exp(jnp.interp(
             jnp.log(r_array_here), 
@@ -395,22 +487,22 @@ class setup_sim_map(Profiles):
         return const_factor * 2.0 * jsi.trapezoid(integrand * r_array_here, jnp.log(r_array_here))
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_y2D_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_y2D_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute y2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.Pe_mat_physical, self.const_coeff, num_trapz_points)
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_ne2D_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_ne2D_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute ne2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.ne_mat_physical, 1.0, num_trapz_points)
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_rhom2D_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_rhom2D_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute rhom2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.rho_dmb_mat_physical, 1.0, num_trapz_points)
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_rhom2D_dmo_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_rhom2D_dmo_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute rhom2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.rho_dmo_mat_physical, 1.0, num_trapz_points)
 

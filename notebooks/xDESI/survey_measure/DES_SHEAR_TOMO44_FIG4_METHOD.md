@@ -1,5 +1,24 @@
 # DES Shear Tomo 4x4 Fig. 4-Style NaMaster Check
 
+> **Legacy diagnostic record — superseded for covariance.** The mask/map convention remains
+> useful, but the decouple/smooth/constant-unbin covariance recipe and S/N 23.898 below are
+> the pre-v2 diagnostic. Pipeline v2 uses NaMaster's data-derived iNKA inputs and produced
+> diagnostic quadratic S/N 27.8273 for the same tomo-4 paper-like mean vector. Follow
+> `README.md` and `multiprobe_namaster.py`, not the legacy covariance recipe in this note.
+
+The v2 number above was produced with:
+
+```bash
+/usr/bin/env JAX_PLATFORMS=cpu MPLCONFIGDIR=/tmp/godmax-mpl-cache OMP_NUM_THREADS=8 \
+/mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python \
+notebooks/xDESI/survey_measure/diagnose_des_shear_harmonic.py \
+--single-pair --tomo-i 4 --tomo-j 4 \
+--scenario paper_like_raw_mask_pixwin_ell8_2048 \
+--output /tmp/godmax_des_shear_tomo44_pipev2.json
+```
+
+The saved diagnostic reports `diag_snr = 27.82732254376247`.
+
 This note documents exactly how the quick DES Y3 source-bin `4x4` shear
 power-spectrum plot was made in
 `notebooks/xDESI/survey_measure/des_shear_tomo44_fig4_check.ipynb` and
@@ -240,17 +259,28 @@ The saved diagnostic JSON stores all four components under
 `cl_all_components`. The plot uses `cl_EE` for the points and can overlay
 `EB`, `BE`, and `BB` as diagnostic lines.
 
-## Error Bars
+## Error Bars: pipeline v2
 
 The quick check computes a one-spectrum NaMaster Gaussian covariance block
 for the same field pair. In the code this is done through
 `compute_covariance_block(spec, spec, ...)`.
 
-The input covariance spectra are data-derived but are now converted to the
-correct NaMaster space before calling the covariance routine. The pipeline does
-not pass masked pseudo-`C_ell`s divided by a mask-overlap factor.
+Pipeline v2 constructs the full-ell total covariance inputs with NaMaster's
+data-derived improved narrow-kernel approximation:
 
-The corrected recipe is:
+```python
+input_cl = nmt.get_iNKA_cell(field_a, field_b)
+cov = nmt.gaussian_covariance(..., coupled=False)
+```
+
+`get_iNKA_cell` is the measured coupled pseudo-`C_ell` divided by the appropriate
+mean mask product; all spin components are retained. The raw field autos contain
+shape noise, so these are already total covariance inputs even though the saved
+same-bin EE mean bandpower has its catalog noise bias subtracted.
+
+### Historical pre-v2 recipe (do not use for pipeline v2)
+
+The superseded pre-v2 diagnostic recipe was:
 
 ```python
 pcl = nmt.compute_coupled_cell(field_a, field_b)
@@ -263,17 +293,15 @@ total_bpw = smooth_and_clip_positive_total_bandpowers(total_bpw)
 input_cl = expand_each_bandpower_as_constant_full_ell(total_bpw, ell_left, ell_right, lmax)
 ```
 
-The final expansion is deliberately a constant-in-band copy, matching the
-standalone corrected-covariance script. It is not `bins.unbin_cell`; using the
-NaMaster weighted unbinning convention here changes the covariance input model
-and no longer reproduces the paper-style diagnostic error bars.
+In that historical recipe, the final expansion was deliberately a
+constant-in-band copy. This construction is retained only to reproduce the old
+23.898 diagnostic and must not be used to build a pipeline-v2 covariance.
 
-For DES shear auto-spectra, the saved data vector remains the noise-bias
-subtracted EE bandpower. The covariance input is the total EE/BB power with
-the same shape-noise template added back. This is the convention needed by
-`nmt.gaussian_covariance(..., coupled=False)`.
+The legacy recipe manually added the same shape-noise template back before
+`nmt.gaussian_covariance(..., coupled=False)`; pipeline v2 obtains the total
+inputs directly from the raw fields through iNKA.
 
-Then `nmt.gaussian_covariance` is called with true spins:
+Both implementations call `nmt.gaussian_covariance` with true spins:
 
 ```text
 spin_a1 = 2
@@ -374,9 +402,9 @@ MPLCONFIGDIR=/tmp/matplotlib-codex \
 notebooks/xDESI/survey_measure/des_shear_tomo44_fig4_check.ipynb
 ```
 
-## Current Result
+## Legacy Result (superseded for covariance)
 
-For the current data product and settings:
+For the historical pre-v2 diagnostic product and settings:
 
 ```text
 scenario: paper_like_raw_mask_pixwin_ell8_2048

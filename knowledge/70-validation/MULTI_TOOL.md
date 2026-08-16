@@ -14,10 +14,10 @@ scope:
 invariants: [INV-PROC-KB-FRESH-01, INV-PROC-EVIDENCE-01]
 checks:
   - python tools/kb/sync_codex.py --check
-verified_at_commit: a6dc164
-verified_on: 2026-08-04
+verified_at_commit: cf72943
+verified_on: 2026-08-05
 see_also: [kb.validation.git-sync, kb.validation.agent-roster, kb.validation.loop]
-scope_digest: sha256:a3b0b84e01a1e8651503ac9c8c23b9e8
+scope_digest: sha256:bd7c788fa9a5a6b66d72d856cc94dcda
 ---
 
 ## Claim

@@ -17,7 +17,7 @@ python tools/kb/kb.py invariants --layer measurement
 Two coupled programmes:
 
 **1. Survey measurement and fit** — `survey_measure/`
-A 46-spectrum, 460-element multi-probe data vector from DESI DR9 Extended LRGs, DES Y3 shear,
+A 46-spectrum multi-probe data vector from DESI DR9 Extended LRGs, DES Y3 shear,
 and ACT (y, CMB temperature, CMB kappa), measured with NaMaster, compared against GODMAX
 analytic theory, and fitted with a fixed-cosmology 31-parameter Stage-31 astrophysical + HOD
 model via NumPyro NUTS.
@@ -34,7 +34,7 @@ model via NumPyro NUTS.
   them. They are prose, so treat them as hypotheses to check against code, not as proof.
 
 Stages: `fast1024` (nside 1024, lmax 1024, 10 linear bins) for validation; `midres2048`
-(nside 2048, ell 128–3000, 13 hybrid-log bins, 1 deg C2 apodisation) for production.
+(nside 2048, ell 128–4096, 16 hybrid-log bins, lmax_mask 6143, no added apodisation) for production.
 
 **2. Abacus Backlight paste validation** — `abacus_paste/` (77 files) plus the `abacus_*`
 helpers. Paste the best-fit point onto Abacus lightcone halos, measure with the same
@@ -61,7 +61,7 @@ family — never the improvement factor.
 Full statements: `python tools/kb/kb.py invariants --layer measurement`.
 
 1. **Windowed theory only** (`INV-WINDOW-CMP-01`) — `theory_to_data_vector(...)` in the saved
-   460-element convention. Smooth theory at `ell_eff` is a diagnostic. Bandpowers are wide and
+   product-specific convention. Smooth theory at `ell_eff` is a diagnostic. Bandpowers are wide and
    partly logarithmic; the band average differs from the value at `ell_eff` in an
    ell-dependent way that mimics real physics.
 2. **Calibrated true-z lens kernels** (`INV-NZ-TRUEZ-01`) — never the `Z_PHOT_MEDIAN`
@@ -74,8 +74,10 @@ Full statements: `python tools/kb/kb.py invariants --layer measurement`.
 5. **kSZ sign and calibration** (`INV-KSZ-SIGN-01`, `INV-KSZ-CALIB-01`) — measured vector is
    raw `C_ell^{pi,T}`; theory maps through `-T_CMB_uK * A_v_bin * C_ell^{g,tau}`; plots use
    `-D_ell`. Amplitude uses r = 0.3 and the Abacus `sigma_true_gas/c` values.
-6. **Data-vector layout** (`INV-DV-SHAPE-01`) — 46 spectra, 460 elements, covariance rank 459
-   after the 1e-8 eigenvalue cut. Everything downstream indexes positionally.
+6. **Data-vector layout** (`INV-DV-SHAPE-01`) — 46 spectra; 460 elements for fast1024 and
+   736 for the 16-band midres2048 product. Covariance rank is measured per exact product;
+   pipeline-v2 fast1024 is 460/460 while rank 459 belongs to legacy v1. Everything downstream
+   indexes positionally.
 
 ## How to localise a discrepancy
 

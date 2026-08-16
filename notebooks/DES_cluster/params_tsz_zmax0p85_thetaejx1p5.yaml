@@ -1,0 +1,10 @@
+# One-parameter variant of the validated z<=0.85 NSIDE-2048 production run.
+base_params: params_tsz_zmax0p85.yaml
+
+profiles:
+  overrides:
+    sim_params:
+      theta_ej_0: 3.0
+
+output:
+  run_name: c000_ph000_Mgt1e13_zle0p85_thetaejx1p5

@@ -1,0 +1,95 @@
+schema: godmax_des_cluster_redmapper_y_cross_config_v1
+
+selection:
+  richness_column: lambda
+  richness_min: 20.0
+  richness_operator: ">"
+  redshift_column: z
+  redshift_min: 0.4
+  redshift_max: 0.6
+  redshift_operators: [">", "<"]
+  cluster_weight_policy: unit_weights_to_match_source_notebook_catalog_w_intentionally_unused
+
+simulation:
+  cluster_fits: /mnt/ceph/users/spandey/xdesi/des/clusters/alpha_run_redmapper_v0.9.0_lgt05_vl05_catalog.fit
+  random_hdf5: /mnt/ceph/users/spandey/xdesi/des/clusters/base_random_lightcone_v2.h5
+  random_dataset: particles
+  random_columns: {ra: RA, dec: DEC, radius: R}
+  random_radius_unit: comoving_Mpc_per_h_assumed_from_c000_geometry
+  random_sampled_chunks: 128
+  ymap_hdf5: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/DES_cluster/tsz_maps/c000_ph000_Mgt1e13_zle0p85_nside2048_halosall_30b918e83963.h5
+  ymap_dataset: maps/map_ymap
+  footprint: inclusive_first_octant
+  footprint_query_fact: 4
+  beam_fwhm_arcmin: 1.6
+  beam_smoothing_iter: 1
+  beam_lmax: 6143
+  beam_status: conditional_ACT_analysis_convention
+  noise_policy: no_noise_subtraction_halo_only_map_used_as_supplied
+  mass_amplitude_status: provisional_M_interp_assumed_M200c_Msun_per_h
+  cosmology:
+    H0: 67.36
+    Om0: 0.315192
+    Ob0: 0.04930169233
+    sigma8: 0.807952
+    ns: 0.9649
+    w0: -1.0
+    flat: true
+  expected_pre_mask_rows: 6591
+  expected_pre_mask_row_index_sha256: e65eee2e0f0734ec66d44cd528eec9d61a83c6b890c1ed514eade432fddd6683
+
+data:
+  cluster_fits: /mnt/ceph/users/spandey/xdesi/des/clusters/des_run_redmapper_v0.9.0_lgt05_vl05_catalog.fit
+  random_fits: /mnt/ceph/users/spandey/xdesi/des/clusters/y3_gold_2.2.1_wide_sofcol_run2_redmapper_v6.4.22+2_randcat_z0.10-0.95_lgt005_vl02.fit
+  random_columns: {ra: RA, dec: DEC, redshift: ZTRUE}
+  ymap_fits: /mnt/ceph/users/spandey/xdesi/act/tsz/cib_cibdBeta/ilc_SZ_deproj_cib_cibdBeta_1.7_10.7_yy.fits
+  mask_fits: /mnt/ceph/users/spandey/xdesi/act/tsz/cib_cibdBeta/mask_updated_ACTDR6xDESY3.fits
+  mask_nside: 4096
+  mask_threshold: 0.9
+  ymap_native_pixel_arcmin: 0.5
+  ymap_downsample_factor: 1
+  ymap_control_downsample_factor: 2
+  ymap_units_status: expected_dimensionless_Compton_y_BUNIT_missing
+  beam_status: expected_ACT_1p6_arcmin_header_missing
+  transfer_status: filter_transfer_not_recorded_in_FITS_header
+  noise_policy: no_noise_subtraction_map_used_as_supplied
+  expected_pre_mask_rows: 5441
+  expected_pre_mask_row_index_sha256: a205a793333a521a51fd5aa4aa0d96120b8ec53be24e400fce215d387d575483
+
+randoms:
+  ratios: [5, 10, 20]
+  convergence_reference_ratio: 20
+  median_shift_sigma_max: 0.10
+  maximum_shift_sigma_max: 0.50
+  null_half_ratio: 10
+  null_pte_min: 0.01
+  hash_seed_simulation: 2026080901
+  hash_seed_data: 2026080902
+
+treecorr:
+  nbins: 20
+  min_sep_arcmin: 2.5
+  max_sep_arcmin: 250.0
+  bin_type: Log
+  bin_slop: 0.0
+  metric: Euclidean
+  num_threads: 10
+  var_method: jackknife
+  npatch: 100
+  patch_seed_simulation: 2026080911
+  patch_seed_data: 2026080912
+  null_covariance_rcond: 1.0e-10
+
+validation:
+  central_positive_bins: 3
+  require_data_resolution_pass: false
+  data_resolution_theta_min_arcmin: 5.0
+  data_resolution_median_shift_sigma_max: 0.10
+  data_resolution_maximum_shift_sigma_max: 0.50
+  input_hash_workers: 2
+
+output:
+  directory: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/DES_cluster/redmapper_y_cross
+  result_hdf5: redmapper_y_sim_data_comparison_z0p4_0p6.h5
+  comparison_png: redmapper_y_sim_data_comparison_z0p4_0p6.png
+  diagnostics_png: redmapper_y_selection_random_diagnostics_z0p4_0p6.png

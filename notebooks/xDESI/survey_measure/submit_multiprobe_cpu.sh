@@ -4,14 +4,14 @@ set -euo pipefail
 REPO_ROOT="/mnt/ceph/users/spandey/ltu-godmax/GODMAX"
 PYTHON="/mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python"
 DRIVER="${REPO_ROOT}/notebooks/xDESI/survey_measure/run_multiprobe_production.py"
-WORKER="${REPO_ROOT}/notebooks/xDESI/survey_measure/run_multiprobe_cpu_worker.slurm"
+WORKER="${REPO_ROOT}/notebooks/xDESI/survey_measure/run_multiprobe_cpu_worker.sbatch"
 LOG_DIR="${REPO_ROOT}/notebooks/xDESI/survey_measure/logs"
 OUTPUT_DIR="${OUTPUT_DIR:-data/xDESI/processed/multiprobe_namaster}"
 STAGES="${STAGES:-fast1024}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-xdesi-${USER}}"
 GATE_MIDRES_ON_FAST="${GATE_MIDRES_ON_FAST:-0}"
-# When 1, the spectra phase recomputes ONLY the 4 shear autos and patches them into an
-# existing compatible spectra product (~25 min) instead of regenerating all 46 (~2.9 h).
-# Requires a prior compatible spectra product to patch; falls back to full if absent.
+# Legacy compatibility variable. Pipeline v2 changes masks and bandpower windows for all
+# spectra with a shear endpoint, so partial in-place patching is deliberately forbidden.
 PATCH_SHEAR_SPECTRA="${PATCH_SHEAR_SPECTRA:-0}"
 FORCE_FLAG=""
 FAST_COV_SCALAR_ARRAY_CONCURRENCY="${FAST_COV_SCALAR_ARRAY_CONCURRENCY:-1}"
@@ -24,26 +24,53 @@ FAST_COV_SPIN2_PARALLEL_GROUPS="${FAST_COV_SPIN2_PARALLEL_GROUPS:-8}"
 FAST_COV_SCALAR_OMP_THREADS="${FAST_COV_SCALAR_OMP_THREADS:-32}"
 FAST_COV_SPIN2_OMP_THREADS="${FAST_COV_SPIN2_OMP_THREADS:-16}"
 MIDRES_COV_SCALAR_ARRAY_CONCURRENCY="${MIDRES_COV_SCALAR_ARRAY_CONCURRENCY:-10}"
-MIDRES_COV_SPIN2_ARRAY_CONCURRENCY="${MIDRES_COV_SPIN2_ARRAY_CONCURRENCY:-16}"
+MIDRES_COV_SPIN2_ARRAY_CONCURRENCY="${MIDRES_COV_SPIN2_ARRAY_CONCURRENCY:-96}"
 MIDRES_COV_SERIALIZE_CLASSES="${MIDRES_COV_SERIALIZE_CLASSES:-0}"
 MIDRES_COV_SCALAR_BATCH_SIZE="${MIDRES_COV_SCALAR_BATCH_SIZE:-1}"
-MIDRES_COV_SPIN2_BATCH_SIZE="${MIDRES_COV_SPIN2_BATCH_SIZE:-4}"
+MIDRES_COV_SPIN2_BATCH_SIZE="${MIDRES_COV_SPIN2_BATCH_SIZE:-1}"
 MIDRES_COV_SCALAR_PARALLEL_GROUPS="${MIDRES_COV_SCALAR_PARALLEL_GROUPS:-1}"
-MIDRES_COV_SPIN2_PARALLEL_GROUPS="${MIDRES_COV_SPIN2_PARALLEL_GROUPS:-2}"
-MIDRES_COV_SCALAR_OMP_THREADS="${MIDRES_COV_SCALAR_OMP_THREADS:-1}"
-MIDRES_COV_SPIN2_OMP_THREADS="${MIDRES_COV_SPIN2_OMP_THREADS:-1}"
-PLOT_ELL_MAX="${PLOT_ELL_MAX:-2800}"
-KSZ_YLIM_MIN="${KSZ_YLIM_MIN:--5e-5}"
-KSZ_YLIM_MAX="${KSZ_YLIM_MAX:-5e-5}"
+MIDRES_COV_SPIN2_PARALLEL_GROUPS="${MIDRES_COV_SPIN2_PARALLEL_GROUPS:-1}"
+MIDRES_COV_SCALAR_OMP_THREADS="${MIDRES_COV_SCALAR_OMP_THREADS:-128}"
+MIDRES_COV_SPIN2_OMP_THREADS="${MIDRES_COV_SPIN2_OMP_THREADS:-128}"
+HIGHRES_COV_SCALAR_ARRAY_CONCURRENCY="${HIGHRES_COV_SCALAR_ARRAY_CONCURRENCY:-10}"
+HIGHRES_COV_SPIN2_ARRAY_CONCURRENCY="${HIGHRES_COV_SPIN2_ARRAY_CONCURRENCY:-29}"
+HIGHRES_COV_SERIALIZE_CLASSES="${HIGHRES_COV_SERIALIZE_CLASSES:-1}"
+HIGHRES_COV_SCALAR_BATCH_SIZE="${HIGHRES_COV_SCALAR_BATCH_SIZE:-1}"
+HIGHRES_COV_SPIN2_BATCH_SIZE="${HIGHRES_COV_SPIN2_BATCH_SIZE:-1}"
+HIGHRES_COV_SCALAR_PARALLEL_GROUPS="${HIGHRES_COV_SCALAR_PARALLEL_GROUPS:-1}"
+HIGHRES_COV_SPIN2_PARALLEL_GROUPS="${HIGHRES_COV_SPIN2_PARALLEL_GROUPS:-1}"
+HIGHRES_COV_SCALAR_OMP_THREADS="${HIGHRES_COV_SCALAR_OMP_THREADS:-128}"
+HIGHRES_COV_SPIN2_OMP_THREADS="${HIGHRES_COV_SPIN2_OMP_THREADS:-128}"
+PLOT_ELL_MAX="${PLOT_ELL_MAX:-0}"
+PLOT_KSZ_YLIM="${PLOT_KSZ_YLIM:-auto}"
+
+# Every queued phase executes the shared worktree later. Bind the whole DAG to
+# the exact runtime source bytes present at submission so a subsequent edit
+# fails closed instead of silently mixing estimator versions across shards.
+RUNTIME_SOURCE_FILES=(
+  "${DRIVER}"
+  "${REPO_ROOT}/notebooks/xDESI/survey_measure/multiprobe_namaster.py"
+  "${REPO_ROOT}/notebooks/xDESI/survey_measure/godmax_multiprobe_theory_utils.py"
+  "${WORKER}"
+)
+runtime_source_digest() {
+  sha256sum "${RUNTIME_SOURCE_FILES[@]}" | sha256sum | cut -d' ' -f1
+}
+export XDESI_RUNTIME_SOURCE_FILES
+XDESI_RUNTIME_SOURCE_FILES="$(IFS=:; echo "${RUNTIME_SOURCE_FILES[*]}")"
+export XDESI_RUNTIME_SOURCE_SHA256
+XDESI_RUNTIME_SOURCE_SHA256="$(runtime_source_digest)"
 
 usage() {
   cat <<'EOF'
 Usage:
-  submit_multiprobe_cpu.sh [--stages fast1024|midres2048|fast1024,midres2048] [--output-dir DIR] [--gate-midres-on-fast] [--force]
+  submit_multiprobe_cpu.sh [--stages fast1024|midres2048|highres4096|CSV] [--output-dir DIR] [--gate-midres-on-fast] [--force]
 
 Stages:
   fast1024    nside=1024, lmax=1024, 10 linear bins
-  midres2048  nside=2048, ell=128..3000, 13 hybrid-log bins, 1 deg C2 apodization, pair-overlap mean subtraction
+  midres2048  nside=2048, ell=128..4096, 16 hybrid-log bins; lmax_mask=6143
+  highres4096 nside=4096, ell=128..8192, 20 hybrid-log bins; lmax_mask=12287;
+              ACT-kappa bands above ell=3000 are archived as invalid zero placeholders
 
 Default:
   fast1024 only
@@ -57,6 +84,9 @@ Midres2048 covariance fan-out uses the analogous variables:
   MIDRES_COV_SCALAR_ARRAY_CONCURRENCY, MIDRES_COV_SPIN2_ARRAY_CONCURRENCY,
   MIDRES_COV_SERIALIZE_CLASSES, MIDRES_COV_*_BATCH_SIZE,
   MIDRES_COV_*_PARALLEL_GROUPS, MIDRES_COV_*_OMP_THREADS.
+
+Highres4096 uses HIGHRES_COV_* variables, one group per task, serial covariance
+classes, and disables the ~4-GiB/group on-disk covariance-workspace cache.
 EOF
 }
 
@@ -90,8 +120,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+IFS=',' read -r -a requested_stages <<< "${STAGES}"
+for requested_stage in "${requested_stages[@]}"; do
+  case "${requested_stage}" in
+    fast1024|midres2048|highres4096) ;;
+    *)
+      echo "Unsupported stage '${requested_stage}'; expected fast1024, midres2048, or highres4096." >&2
+      exit 2
+      ;;
+  esac
+done
+
 mkdir -p "${LOG_DIR}"
 cd "${REPO_ROOT}"
+echo "[submit] runtime_source_sha256=${XDESI_RUNTIME_SOURCE_SHA256}" >&2
 
 stage_csv_contains() {
   local needle="$1"
@@ -111,24 +153,33 @@ stage_resources() {
     fast1024:cov-spin2)
       echo "128 128G 04:00:00"
       ;;
-    fast1024:assemble|fast1024:validate|fast1024:plot-dell)
+    fast1024:assemble|fast1024:validate|fast1024:plot-dell|fast1024:plot-cl-dell)
       echo "4 32G 02:00:00"
       ;;
     midres2048:prepare|midres2048:spectra)
-      # Exclusive nodes: take the whole node so the spectra SHTs use all 128 cores.
-      # prepare just reuses the existing compatible map product and exits immediately.
-      echo "128 990G 12:00:00"
+      # 128 cores select a whole Rome node; measured peak RSS stays below 64 GiB.
+      echo "128 128G 02:00:00"
       ;;
     midres2048:cov-scalar)
-      # Full rome node (128 cores, ~1TB). cmbas is OverSubscribe=EXCLUSIVE, so a task
-      # always gets the whole node; request all of it and fill it via PARALLEL_GROUPS.
-      echo "128 990G 12:00:00"
+      echo "128 128G 04:00:00"
       ;;
     midres2048:cov-spin2)
-      echo "128 990G 12:00:00"
+      echo "128 128G 04:00:00"
       ;;
-    midres2048:assemble|midres2048:validate|midres2048:plot-dell)
-      echo "8 64G 06:00:00"
+    midres2048:assemble|midres2048:validate|midres2048:plot-dell|midres2048:plot-cl-dell)
+      echo "8 64G 01:00:00"
+      ;;
+    highres4096:prepare)
+      echo "128 512G 04:00:00"
+      ;;
+    highres4096:spectra)
+      echo "128 768G 12:00:00"
+      ;;
+    highres4096:cov-scalar|highres4096:cov-spin2)
+      echo "128 512G 12:00:00"
+      ;;
+    highres4096:assemble|highres4096:validate|highres4096:plot-dell|highres4096:plot-cl-dell)
+      echo "8 64G 02:00:00"
       ;;
     *)
       echo "8 64G 12:00:00"
@@ -158,12 +209,21 @@ sbatch_phase() {
 
 manifest_file_for_stage() {
   local stage="$1"
+  local output_root
+  if [[ "${OUTPUT_DIR}" = /* ]]; then
+    output_root="${OUTPUT_DIR}"
+  else
+    output_root="${REPO_ROOT}/${OUTPUT_DIR}"
+  fi
   case "${stage}" in
     fast1024)
-      echo "${REPO_ROOT}/${OUTPUT_DIR}/fast1024/covariance_manifest_nside1024_lmax1024_nbin10_linear.json"
+      echo "${output_root}/fast1024/covariance_manifest_nside1024_lmax1024_nbin10_linear_pipev2.json"
       ;;
     midres2048)
-      echo "${REPO_ROOT}/${OUTPUT_DIR}/midres2048/covariance_manifest_nside2048_ell128_lmax3000_nbin13_log_apo1deg_C2_pairmean.json"
+      echo "${output_root}/midres2048/covariance_manifest_nside2048_ell128_lmax4096_lmask6143_nbin16_log_pipev2.json"
+      ;;
+    highres4096)
+      echo "${output_root}/highres4096/covariance_manifest_nside4096_ell128_lmax8192_lmask12287_nbin20_log_pipev2.json"
       ;;
     *)
       echo "Unsupported stage ${stage}" >&2
@@ -186,6 +246,8 @@ batch_size_for_stage_class() {
     fast1024:spin2) echo "${FAST_COV_SPIN2_BATCH_SIZE}" ;;
     midres2048:scalar) echo "${MIDRES_COV_SCALAR_BATCH_SIZE}" ;;
     midres2048:spin2) echo "${MIDRES_COV_SPIN2_BATCH_SIZE}" ;;
+    highres4096:scalar) echo "${HIGHRES_COV_SCALAR_BATCH_SIZE}" ;;
+    highres4096:spin2) echo "${HIGHRES_COV_SPIN2_BATCH_SIZE}" ;;
     *) echo 1 ;;
   esac
 }
@@ -198,6 +260,8 @@ parallel_groups_for_stage_class() {
     fast1024:spin2) echo "${FAST_COV_SPIN2_PARALLEL_GROUPS}" ;;
     midres2048:scalar) echo "${MIDRES_COV_SCALAR_PARALLEL_GROUPS}" ;;
     midres2048:spin2) echo "${MIDRES_COV_SPIN2_PARALLEL_GROUPS}" ;;
+    highres4096:scalar) echo "${HIGHRES_COV_SCALAR_PARALLEL_GROUPS}" ;;
+    highres4096:spin2) echo "${HIGHRES_COV_SPIN2_PARALLEL_GROUPS}" ;;
     *) echo 1 ;;
   esac
 }
@@ -210,6 +274,8 @@ array_concurrency_for_stage_class() {
     fast1024:spin2) echo "${FAST_COV_SPIN2_ARRAY_CONCURRENCY}" ;;
     midres2048:scalar) echo "${MIDRES_COV_SCALAR_ARRAY_CONCURRENCY}" ;;
     midres2048:spin2) echo "${MIDRES_COV_SPIN2_ARRAY_CONCURRENCY}" ;;
+    highres4096:scalar) echo "${HIGHRES_COV_SCALAR_ARRAY_CONCURRENCY}" ;;
+    highres4096:spin2) echo "${HIGHRES_COV_SPIN2_ARRAY_CONCURRENCY}" ;;
     *) echo 1 ;;
   esac
 }
@@ -219,6 +285,7 @@ serialize_cov_classes_for_stage() {
   case "${stage}" in
     fast1024) echo "${FAST_COV_SERIALIZE_CLASSES}" ;;
     midres2048) echo "${MIDRES_COV_SERIALIZE_CLASSES}" ;;
+    highres4096) echo "${HIGHRES_COV_SERIALIZE_CLASSES}" ;;
     *) echo 0 ;;
   esac
 }
@@ -231,6 +298,8 @@ omp_threads_for_stage_class() {
     fast1024:spin2) echo "${FAST_COV_SPIN2_OMP_THREADS}" ;;
     midres2048:scalar) echo "${MIDRES_COV_SCALAR_OMP_THREADS}" ;;
     midres2048:spin2) echo "${MIDRES_COV_SPIN2_OMP_THREADS}" ;;
+    highres4096:scalar) echo "${HIGHRES_COV_SCALAR_OMP_THREADS}" ;;
+    highres4096:spin2) echo "${HIGHRES_COV_SPIN2_OMP_THREADS}" ;;
     *) echo 1 ;;
   esac
 }
@@ -245,6 +314,10 @@ submit_stage() {
   local stage="$1"
   local stage_dependency="${2:-}"
   local common=(--stage "${stage}" --output-dir "${OUTPUT_DIR}" ${FORCE_FLAG})
+  local cov_cache_flag=()
+  if [[ "${stage}" == "highres4096" ]]; then
+    cov_cache_flag=(--no-cov-workspace-cache)
+  fi
   local manifest
   manifest="$(manifest_file_for_stage "${stage}")"
 
@@ -260,8 +333,8 @@ submit_stage() {
   prepare_job="$(sbatch_phase "${stage}" prepare "${prepare_dep}" prepare "${common[@]}")"
   local spectra_flag=""
   if [[ "${PATCH_SHEAR_SPECTRA}" -eq 1 ]]; then
-    spectra_flag="--patch-shear-only"
-    echo "[submit] ${stage}: spectra phase = patch-shear-only (recompute 4 shear autos in place)" >&2
+    echo "[submit] PATCH_SHEAR_SPECTRA=1 is unsafe for pipeline v2; run a full spectra phase." >&2
+    exit 2
   fi
   spectra_job="$(sbatch_phase "${stage}" spectra "afterok:${prepare_job}" spectra "${common[@]}" ${spectra_flag})"
 
@@ -294,7 +367,8 @@ submit_stage() {
       --array="0-$((scalar_batch_count - 1))%${scalar_array_concurrency}" \
       --dependency="${cov_dependencies}" \
       "${WORKER}" cov-batch "${common[@]}" --cov-class scalar --batch-size "${scalar_batch_size}" \
-      --parallel-groups "${scalar_parallel_groups}" --omp-threads-per-group "${scalar_omp_threads}")"
+      --parallel-groups "${scalar_parallel_groups}" --omp-threads-per-group "${scalar_omp_threads}" \
+      "${cov_cache_flag[@]}")"
   fi
   if [[ "${spin2_count}" -gt 0 ]]; then
     local cpus mem time
@@ -318,7 +392,8 @@ submit_stage() {
       --array="0-$((spin2_batch_count - 1))%${spin2_array_concurrency}" \
       --dependency="${spin2_dependency}" \
       "${WORKER}" cov-batch "${common[@]}" --cov-class spin2 --batch-size "${spin2_batch_size}" \
-      --parallel-groups "${spin2_parallel_groups}" --omp-threads-per-group "${spin2_omp_threads}")"
+      --parallel-groups "${spin2_parallel_groups}" --omp-threads-per-group "${spin2_omp_threads}" \
+      "${cov_cache_flag[@]}")"
   fi
 
   local assemble_dep="afterok:${spectra_job}"
@@ -330,9 +405,9 @@ submit_stage() {
   fi
   assemble_job="$(sbatch_phase "${stage}" assemble "${assemble_dep}" assemble "${common[@]}")"
   validate_job="$(sbatch_phase "${stage}" validate "afterok:${assemble_job}" validate "${common[@]}")"
-  plot_job="$(sbatch_phase "${stage}" plot-dell "afterok:${validate_job}" plot-measurement-dell "${common[@]}" \
+  plot_job="$(sbatch_phase "${stage}" plot-cl-dell "afterok:${validate_job}" plot-measurement-cl-dell "${common[@]}" \
     --plot-ell-max "${PLOT_ELL_MAX}" \
-    --plot-ksz-ylim="${KSZ_YLIM_MIN},${KSZ_YLIM_MAX}")"
+    --plot-ksz-ylim="${PLOT_KSZ_YLIM}")"
 
   echo "[submit] ${stage}: prepare=${prepare_job} spectra=${spectra_job} scalar=${scalar_job:-none} spin2=${spin2_job:-none} assemble=${assemble_job} validate=${validate_job} plot=${plot_job}" >&2
   echo "${plot_job}"
@@ -349,4 +424,8 @@ if stage_csv_contains midres2048; then
     dep="${fast_validate_job}"
   fi
   submit_stage midres2048 "${dep}" >/dev/null
+fi
+
+if stage_csv_contains highres4096; then
+  submit_stage highres4096 >/dev/null
 fi

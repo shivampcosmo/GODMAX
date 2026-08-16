@@ -107,9 +107,11 @@ def top_hmc_vectors(context: hmc31.FitContext, chain_path: str | Path, top_k: in
     path = Path(chain_path)
     if not path.exists():
         return []
-    data = np.load(path, allow_pickle=True)
-    if "sample__chi2" not in data:
-        return []
+    from combine_godmax_hmc_stage31_workers import _validate_chain_payload
+
+    with np.load(path, allow_pickle=True) as chain_file:
+        data = {key: np.asarray(chain_file[key]) for key in chain_file.files}
+    _validate_chain_payload(path, data, context)
     chi2 = np.asarray(data["sample__chi2"], dtype=np.float64).reshape(-1)
     order = np.argsort(chi2)
     vectors: List[np.ndarray] = []
@@ -837,6 +839,33 @@ def run_lbfgsb(
     }
 
 
+def active_and_full_theory_vectors(
+    context: hmc31.FitContext,
+    sample: Mapping[str, float],
+) -> tuple[np.ndarray, hmc31.LikelihoodData, np.ndarray]:
+    """Evaluate MAP outputs through the same dense-ell path as the objective."""
+
+    models = hmc31.build_models_from_sample(context, sample)
+    theory_cls = hmc31._dense_theory_cls_from_models(context, models)
+    shot_noise_amplitudes = hmc31._sampled_shot_noise_amplitudes(sample)
+    active_theory = np.asarray(
+        hmc31.theory_data_vector_jax(
+            context.likelihood,
+            theory_cls,
+            desi_galaxy_shot_noise_amplitudes=shot_noise_amplitudes,
+        )
+    )
+    full_likelihood = hmc31.full_likelihood_for_plots(context)
+    full_theory = np.asarray(
+        hmc31.theory_data_vector_jax(
+            full_likelihood,
+            theory_cls,
+            desi_galaxy_shot_noise_amplitudes=shot_noise_amplitudes,
+        )
+    )
+    return active_theory, full_likelihood, full_theory
+
+
 def write_outputs(
     *,
     context: hmc31.FitContext,
@@ -856,13 +885,12 @@ def write_outputs(
     with open(best_params_path, "w", encoding="utf-8") as handle:
         yaml.safe_dump(gmt.to_jsonable(best_config["params"]), handle, sort_keys=False)
 
-    models = hmc31.build_models_from_sample(context, sample)
-    theory_cls = hmc31.extract_theory_cls_jax_from_models(models)
-    active_theory = np.asarray(hmc31.theory_data_vector_jax(context.likelihood, theory_cls))
+    active_theory, full_likelihood, full_theory = active_and_full_theory_vectors(
+        context,
+        sample,
+    )
     active_measurement = hmc31.measurement_for_plots(context)
-    full_likelihood = hmc31.full_likelihood_for_plots(context)
     full_measurement = hmc31.measurement_from_likelihood(context, full_likelihood)
-    full_theory = np.asarray(hmc31.theory_data_vector_jax(full_likelihood, theory_cls))
 
     chi2 = float(np.asarray(hmc31.whitened_chi2(context.likelihood, jnp.asarray(active_theory, dtype=jnp.float64))))
     n_modes = int(context.likelihood.rank)
@@ -872,6 +900,47 @@ def write_outputs(
     q_best = np.asarray(best["q"], dtype=np.float64)
     prior_penalty = float(np.sum(np.where(np.asarray(transform["is_normal"], dtype=bool), q_best**2, 0.0)))
     map_objective = chi2 + prior_penalty
+    active_measurement_identity = gmt.measurement_identity_sha256(active_measurement)
+    full_measurement_identity = gmt.measurement_identity_sha256(full_measurement)
+    active_likelihood_identity = hmc31.likelihood_identity(context.likelihood)
+    full_likelihood_identity = hmc31.likelihood_identity(full_likelihood)
+    comparison_config_identity = gmt.comparison_config_identity_sha256(context.config)
+    theory_response_identity = gmt.theory_response_identity_sha256(context.config)
+    parameter_names = [spec.name for spec in context.parameter_specs]
+    parameter_contract_identity = hmc31.parameter_contract_identity_sha256(
+        context.parameter_specs
+    )
+    active_vector_cache_fields = gmt.theory_vector_cache_fields(
+        active_theory,
+        active_measurement_identity,
+        {
+            "product_kind": "stage31_map_bestfit_active",
+            "chain_contract_version": hmc31.STAGE31_CHAIN_CONTRACT_VERSION,
+            "likelihood_identity_sha256": active_likelihood_identity,
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "parameter_names": parameter_names,
+            "parameter_contract_identity_sha256": parameter_contract_identity,
+            "best_sample": sample,
+            "best_whitened_chi2": float(chi2),
+        },
+    )
+    full_vector_cache_fields = gmt.theory_vector_cache_fields(
+        full_theory,
+        full_measurement_identity,
+        {
+            "product_kind": "stage31_map_bestfit_full",
+            "chain_contract_version": hmc31.STAGE31_CHAIN_CONTRACT_VERSION,
+            "likelihood_identity_sha256": full_likelihood_identity,
+            "comparison_config_identity_sha256": comparison_config_identity,
+            "theory_response_identity_sha256": theory_response_identity,
+            "parameter_names": parameter_names,
+            "parameter_contract_identity_sha256": parameter_contract_identity,
+            "source_active_likelihood_identity_sha256": active_likelihood_identity,
+            "best_sample": sample,
+            "best_whitened_chi2": float(chi2),
+        },
+    )
 
     active_vector_path = output_dir / f"bestfit_theory_data_vector_{suffix}.npz"
     np.savez_compressed(
@@ -881,10 +950,19 @@ def write_outputs(
         theory_vector=active_theory,
         covariance=np.asarray(active_measurement.covariance),
         spectrum_names=np.asarray(active_measurement.names),
+        slice_start=np.asarray(active_measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(active_measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(active_measurement_identity),
+        likelihood_identity_sha256=np.asarray(active_likelihood_identity),
+        chain_contract_version=np.asarray(hmc31.STAGE31_CHAIN_CONTRACT_VERSION),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
+        parameter_names=np.asarray(parameter_names),
+        parameter_contract_identity_sha256=np.asarray(parameter_contract_identity),
         best_sample_json=np.asarray(json.dumps(sample)),
         best_whitened_chi2=np.asarray(chi2),
         best_prior_penalty=np.asarray(prior_penalty),
         best_map_objective=np.asarray(map_objective),
+        **active_vector_cache_fields,
     )
 
     full_vector_path = output_dir / f"bestfit_full_theory_data_vector_{suffix}.npz"
@@ -895,11 +973,21 @@ def write_outputs(
         theory_vector=full_theory,
         covariance=np.asarray(full_measurement.covariance),
         spectrum_names=np.asarray(full_measurement.names),
+        slice_start=np.asarray(full_measurement.starts, dtype=np.int64),
+        slice_stop=np.asarray(full_measurement.stops, dtype=np.int64),
+        measurement_identity_sha256=np.asarray(full_measurement_identity),
+        likelihood_identity_sha256=np.asarray(full_likelihood_identity),
+        source_active_likelihood_identity_sha256=np.asarray(active_likelihood_identity),
+        chain_contract_version=np.asarray(hmc31.STAGE31_CHAIN_CONTRACT_VERSION),
+        theory_response_identity_sha256=np.asarray(theory_response_identity),
+        parameter_names=np.asarray(parameter_names),
+        parameter_contract_identity_sha256=np.asarray(parameter_contract_identity),
         best_sample_json=np.asarray(json.dumps(sample)),
         best_whitened_chi2=np.asarray(chi2),
         best_prior_penalty=np.asarray(prior_penalty),
         best_map_objective=np.asarray(map_objective),
         likelihood_bestfit_theory_vector=np.asarray(str(active_vector_path)),
+        **full_vector_cache_fields,
     )
 
     plot_ell_max = None if args.plot_ell_max is not None and args.plot_ell_max <= 0.0 else float(args.plot_ell_max)

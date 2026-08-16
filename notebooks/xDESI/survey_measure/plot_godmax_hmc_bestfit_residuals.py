@@ -92,8 +92,13 @@ def make_residual_plot(args: argparse.Namespace) -> dict:
     sample = hmc31.pack_sample_from_params_file(context, params_path)
     models = hmc31.build_models_from_sample(context, sample)
     theory_cls = hmc31._dense_theory_cls_from_models(context, models)
+    shot_noise_amplitudes = hmc31._sampled_shot_noise_amplitudes(sample)
 
-    active_theory = hmc31.theory_data_vector_jax(context.likelihood, theory_cls)
+    active_theory = hmc31.theory_data_vector_jax(
+        context.likelihood,
+        theory_cls,
+        desi_galaxy_shot_noise_amplitudes=shot_noise_amplitudes,
+    )
     best_chi2 = float(np.asarray(hmc31.whitened_chi2(context.likelihood, active_theory)))
     chi2_n_modes = int(context.likelihood.rank)
     n_fit_parameters = len(context.parameter_specs)
@@ -108,7 +113,13 @@ def make_residual_plot(args: argparse.Namespace) -> dict:
     else:
         full_likelihood = hmc31.full_likelihood_for_plots(context)
         measurement = hmc31.measurement_from_likelihood(context, full_likelihood)
-        theory_vector = np.asarray(hmc31.theory_data_vector_jax(full_likelihood, theory_cls))
+        theory_vector = np.asarray(
+            hmc31.theory_data_vector_jax(
+                full_likelihood,
+                theory_cls,
+                desi_galaxy_shot_noise_amplitudes=shot_noise_amplitudes,
+            )
+        )
         active_band_indices = hmc31.likelihood_active_band_indices(context)
         vector_kind = "full_measurement_with_inactive_shading"
 

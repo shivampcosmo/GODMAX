@@ -57,6 +57,212 @@ def decode_names(names: Sequence[object]) -> list[str]:
     return [name.decode("utf-8") if isinstance(name, bytes) else str(name) for name in names]
 
 
+def scalar_text(value: object, label: str) -> str:
+    array = np.asarray(value)
+    if array.size != 1:
+        raise ValueError(f"{label} must be a scalar string, got shape {array.shape}.")
+    item = array.reshape(-1)[0]
+    if isinstance(item, bytes):
+        item = item.decode("utf-8")
+    return str(item)
+
+
+def validate_cached_vector_product(
+    payload: Mapping[str, object],
+    path: Path,
+    measurement: gmt.MeasurementData,
+    *,
+    expected_likelihood_identity: str | None = None,
+    expected_config_identity: str | None = None,
+    expected_theory_response_identity: str | None = None,
+    expected_parameter_names: Sequence[str] | None = None,
+    expected_parameter_contract_identity: str | None = None,
+) -> None:
+    """Bind a cached theory vector to the exact current measurement and likelihood."""
+
+    required = {
+        "ell_band",
+        "data_vector",
+        "theory_vector",
+        "covariance",
+        "spectrum_names",
+        "slice_start",
+        "slice_stop",
+        "measurement_identity_sha256",
+        "theory_vector_generation_json",
+        "theory_vector_identity_sha256",
+    }
+    missing = sorted(required - set(payload))
+    if missing:
+        raise ValueError(f"{path} is an unversioned cached vector missing {missing}.")
+    names = decode_names(np.asarray(payload["spectrum_names"]).reshape(-1))
+    saved_identity = scalar_text(
+        payload["measurement_identity_sha256"],
+        f"{path}:measurement_identity_sha256",
+    )
+    embedded_identity = gmt.measurement_data_identity_sha256(
+        names=names,
+        ell=payload["ell_band"],
+        data_vector=payload["data_vector"],
+        covariance=payload["covariance"],
+        starts=payload["slice_start"],
+        stops=payload["slice_stop"],
+    )
+    current_identity = gmt.measurement_identity_sha256(measurement)
+    if saved_identity != embedded_identity:
+        raise ValueError(f"{path} measurement fingerprint does not match its embedded arrays.")
+    if saved_identity != current_identity:
+        raise ValueError(f"{path} was built for a different measurement data/covariance basis.")
+    exact_arrays = (
+        ("ell_band", measurement.ell),
+        ("data_vector", measurement.data_vector),
+        ("covariance", measurement.covariance),
+        ("slice_start", measurement.starts),
+        ("slice_stop", measurement.stops),
+    )
+    for key, current in exact_arrays:
+        if not np.array_equal(np.asarray(payload[key]), np.asarray(current)):
+            raise ValueError(f"{path}:{key} is not exact for the current measurement.")
+    if names != measurement.names:
+        raise ValueError(f"{path} spectrum names do not match the current measurement order.")
+    generation_json = scalar_text(
+        payload["theory_vector_generation_json"],
+        f"{path}:theory_vector_generation_json",
+    )
+    try:
+        generation = json.loads(generation_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path} theory-vector generation metadata is invalid JSON.") from exc
+    if not isinstance(generation, dict) or not generation.get("product_kind"):
+        raise ValueError(f"{path} has no theory-vector product_kind contract.")
+    if generation.get("measurement_identity_sha256") != saved_identity:
+        raise ValueError(f"{path} theory-vector metadata names a different measurement.")
+    if (
+        expected_config_identity is not None
+        and generation.get("comparison_config_identity_sha256") != expected_config_identity
+    ):
+        raise ValueError(f"{path} was built for a different materialized comparison configuration.")
+    if expected_theory_response_identity is not None:
+        if "theory_response_identity_sha256" not in payload:
+            raise ValueError(f"{path} has no saved theory-response fingerprint.")
+        saved_response_identity = scalar_text(
+            payload["theory_response_identity_sha256"],
+            f"{path}:theory_response_identity_sha256",
+        )
+        if saved_response_identity != expected_theory_response_identity:
+            raise ValueError(f"{path} was built for different saved theory-response content.")
+        if (
+            generation.get("theory_response_identity_sha256")
+            != expected_theory_response_identity
+        ):
+            raise ValueError(f"{path} theory-vector metadata names different response content.")
+    expected_vector_fields = gmt.theory_vector_cache_fields(
+        payload["theory_vector"],
+        saved_identity,
+        {
+            key: value
+            for key, value in generation.items()
+            if key != "measurement_identity_sha256"
+        },
+    )
+    expected_vector_identity = scalar_text(
+        expected_vector_fields["theory_vector_identity_sha256"],
+        "recomputed theory_vector_identity_sha256",
+    )
+    saved_vector_identity = scalar_text(
+        payload["theory_vector_identity_sha256"],
+        f"{path}:theory_vector_identity_sha256",
+    )
+    if saved_vector_identity != expected_vector_identity:
+        raise ValueError(f"{path} theory-vector fingerprint does not match its payload.")
+    if not np.all(np.isfinite(np.asarray(payload["theory_vector"], dtype=np.float64))):
+        raise ValueError(f"{path} theory vector contains non-finite values.")
+    saved_sample = None
+    if "best_sample_json" in payload:
+        try:
+            saved_sample = json.loads(scalar_text(payload["best_sample_json"], f"{path}:best_sample_json"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path} best_sample_json is invalid JSON.") from exc
+        if generation.get("best_sample") != saved_sample:
+            raise ValueError(f"{path} theory-vector fingerprint is not linked to best_sample_json.")
+    if "best_whitened_chi2" in payload:
+        saved_chi2 = float(np.asarray(payload["best_whitened_chi2"]).reshape(-1)[0])
+        if generation.get("best_whitened_chi2") != saved_chi2:
+            raise ValueError(f"{path} theory-vector fingerprint is not linked to its saved chi2.")
+    if expected_likelihood_identity is not None:
+        if "likelihood_identity_sha256" not in payload:
+            raise ValueError(f"{path} has no likelihood identity fingerprint.")
+        saved_likelihood_identity = scalar_text(
+            payload["likelihood_identity_sha256"],
+            f"{path}:likelihood_identity_sha256",
+        )
+        if saved_likelihood_identity != expected_likelihood_identity:
+            raise ValueError(f"{path} was built for a different Stage-31 likelihood.")
+        if generation.get("likelihood_identity_sha256") != expected_likelihood_identity:
+            raise ValueError(f"{path} theory-vector metadata names a different likelihood.")
+        if generation.get("chain_contract_version") != hmc31.STAGE31_CHAIN_CONTRACT_VERSION:
+            raise ValueError(f"{path} theory-vector metadata has a stale chain contract.")
+    if (expected_parameter_names is None) != (expected_parameter_contract_identity is None):
+        raise ValueError("Expected parameter names and parameter-contract identity must be supplied together.")
+    if expected_parameter_names is not None:
+        expected_names = [str(name) for name in expected_parameter_names]
+        if "parameter_names" not in payload:
+            raise ValueError(f"{path} has no ordered parameter_names contract.")
+        saved_names = decode_names(np.asarray(payload["parameter_names"]).reshape(-1))
+        if saved_names != expected_names:
+            raise ValueError(f"{path} was built for a different ordered parameter contract.")
+        if "parameter_contract_identity_sha256" not in payload:
+            raise ValueError(f"{path} has no parameter/prior-contract fingerprint.")
+        saved_parameter_contract = scalar_text(
+            payload["parameter_contract_identity_sha256"],
+            f"{path}:parameter_contract_identity_sha256",
+        )
+        if saved_parameter_contract != expected_parameter_contract_identity:
+            raise ValueError(f"{path} was built for a different parameter/prior contract.")
+        if generation.get("parameter_names") != expected_names:
+            raise ValueError(f"{path} theory-vector metadata has a different parameter order.")
+        if (
+            generation.get("parameter_contract_identity_sha256")
+            != expected_parameter_contract_identity
+        ):
+            raise ValueError(f"{path} theory-vector metadata has a different parameter/prior contract.")
+        if not isinstance(saved_sample, dict) or list(saved_sample) != expected_names:
+            raise ValueError(f"{path} best sample does not match the current ordered parameter contract.")
+
+
+def validate_fit_summary_contract(
+    summary: Mapping[str, object],
+    path: Path,
+    *,
+    expected_likelihood_identity: str,
+    expected_theory_response_identity: str,
+    expected_parameter_names: Sequence[str],
+    expected_parameter_contract_identity: str,
+) -> None:
+    """Fail closed on a fit summary from another likelihood or prior contract."""
+
+    source_static = summary.get("static_summary")
+    if not isinstance(source_static, Mapping):
+        raise ValueError(f"{path} has no static likelihood identity.")
+    if source_static.get("chain_contract_version") != hmc31.STAGE31_CHAIN_CONTRACT_VERSION:
+        raise ValueError(f"{path} has a stale chain contract.")
+    if source_static.get("likelihood_identity_sha256") != expected_likelihood_identity:
+        raise ValueError(f"{path} was built for a different Stage-31 likelihood.")
+    if (
+        source_static.get("theory_response_identity_sha256")
+        != expected_theory_response_identity
+    ):
+        raise ValueError(f"{path} was built for different saved theory-response content.")
+    expected_names = [str(name) for name in expected_parameter_names]
+    if list(source_static.get("parameter_names", [])) != expected_names:
+        raise ValueError(f"{path} was built for a different ordered parameter contract.")
+    if (
+        source_static.get("parameter_contract_identity_sha256")
+        != expected_parameter_contract_identity
+    ):
+        raise ValueError(f"{path} was built for a different parameter/prior contract.")
+
+
 def whitened_chi2(context: hmc31.FitContext, theory_vector: np.ndarray) -> float:
     data = np.asarray(context.likelihood.data_vector, dtype=np.float64)
     white = np.asarray(context.likelihood.whitener) @ (data - np.asarray(theory_vector, dtype=np.float64))
@@ -148,7 +354,7 @@ def plot_overlays(
                 if family == "desi_g_auto":
                     y_data, y_err = data_cl, err
                     y_fid, y_best = fid_cl, best_cl
-                    ylabel = r"$C_\ell$ signal"
+                    ylabel = r"$C_\ell$ (signal + shot noise)"
                 else:
                     fac = dell_factor(ell)
                     sign = -1.0 if family == "desi_pi_act_T" else 1.0
@@ -208,20 +414,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = resolve(args.output_dir)
 
     context = hmc31.prepare_fit_context(config_path)
-    measurement = gmt.load_measurement_data(context.config["paths"]["measurement_h5"])
+    measurement = hmc31.measurement_for_plots(context)
     fid_npz = load_vector_npz(fid_path)
     best_npz = load_vector_npz(best_path)
-
-    fid_names = decode_names(fid_npz["spectrum_names"])
-    best_names = decode_names(best_npz["spectrum_names"])
-    if fid_names != measurement.names:
-        raise ValueError("Fiducial vector spectrum names do not match measurement order.")
-    if best_names != measurement.names:
-        raise ValueError("Best-fit vector spectrum names do not match measurement order.")
-    if not np.allclose(fid_npz["data_vector"], measurement.data_vector):
-        raise ValueError("Fiducial vector data does not match measurement vector.")
-    if not np.allclose(best_npz["data_vector"], measurement.data_vector):
-        raise ValueError("Best-fit vector data does not match measurement vector.")
+    current_likelihood_identity = hmc31.likelihood_identity(context.likelihood)
+    current_config_identity = gmt.comparison_config_identity_sha256(context.config)
+    current_theory_response_identity = gmt.theory_response_identity_sha256(context.config)
+    current_parameter_names = [spec.name for spec in context.parameter_specs]
+    current_parameter_contract_identity = hmc31.parameter_contract_identity_sha256(
+        context.parameter_specs
+    )
+    validate_cached_vector_product(
+        fid_npz,
+        fid_path,
+        measurement,
+        expected_config_identity=current_config_identity,
+        expected_theory_response_identity=current_theory_response_identity,
+    )
+    validate_cached_vector_product(
+        best_npz,
+        best_path,
+        measurement,
+        expected_likelihood_identity=current_likelihood_identity,
+        expected_config_identity=current_config_identity,
+        expected_theory_response_identity=current_theory_response_identity,
+        expected_parameter_names=current_parameter_names,
+        expected_parameter_contract_identity=current_parameter_contract_identity,
+    )
 
     fiducial = np.asarray(fid_npz["theory_vector"], dtype=np.float64)
     bestfit = np.asarray(best_npz["theory_vector"], dtype=np.float64)
@@ -237,6 +456,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if summary_path.exists():
         with open(summary_path, "r", encoding="utf-8") as handle:
             source_summary = json.load(handle)
+        validate_fit_summary_contract(
+            source_summary,
+            summary_path,
+            expected_likelihood_identity=current_likelihood_identity,
+            expected_theory_response_identity=current_theory_response_identity,
+            expected_parameter_names=current_parameter_names,
+            expected_parameter_contract_identity=current_parameter_contract_identity,
+        )
+
+    retained_rank = int(context.likelihood.rank)
+    n_varied = len(context.parameter_specs)
+    chi2_reference_dof = retained_rank - n_varied
+    if chi2_reference_dof <= 0:
+        raise ValueError(
+            f"Non-positive chi2 reference dof: rank={retained_rank}, n_varied={n_varied}."
+        )
+    chi2_reference_sigma = math.sqrt(2.0 * chi2_reference_dof)
 
     summary = {
         "config_path": config_path,
@@ -247,9 +483,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         "output_dir": output_dir,
         "n_spectra": len(measurement.names),
         "data_vector_size": int(measurement.data_vector.size),
+        "retained_covariance_rank": retained_rank,
+        "n_varied_parameters": n_varied,
+        "chi2_reference_dof": chi2_reference_dof,
+        "chi2_reference_expected": chi2_reference_dof,
+        "chi2_reference_sigma": chi2_reference_sigma,
         "fiducial_whitened_chi2": full_fid,
+        "fiducial_chi2_minus_expected_sigma": (
+            full_fid - chi2_reference_dof
+        ) / chi2_reference_sigma,
         "bestfit_whitened_chi2": full_best,
+        "bestfit_chi2_minus_expected_sigma": (
+            full_best - chi2_reference_dof
+        ) / chi2_reference_sigma,
         "delta_whitened_chi2_best_minus_fiducial": full_best - full_fid,
+        "chi2_interpretation": (
+            "Absolute whitened chi2 values must be judged against retained covariance rank "
+            "minus n_varied_parameters; the delta alone is not a goodness-of-fit result."
+        ),
         "families": families,
         "pdf": next(str(path) for path in plot_paths if path.suffix == ".pdf"),
         "pngs": [str(path) for path in plot_paths if path.suffix == ".png"],

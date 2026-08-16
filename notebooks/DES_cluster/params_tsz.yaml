@@ -1,0 +1,160 @@
+schema: des_cluster_tsz_paste_v1
+
+catalog:
+  path: /mnt/ceph/users/spandey/xdesi/des/clusters/halo_lightcone_base_c000_ph000_Mgt1e13.h5
+  dataset: halos_selected
+  fields:
+    mass: M_interp
+    x: X_interp
+    y: Y_interp
+    z_position: Z_interp
+    redshift: redshift_interp
+  selection:
+    mass_min_hmsun: 1.0e13
+    operator: ">"
+    # Optional inclusive lightcone limit.  null paints the complete filtered HDF5.
+    redshift_max: null
+    redshift_max_operator: "<="
+    source_is_prefiltered: true
+    expected_rows: 3001721
+  simulation: AbacusSummit_base_c000_ph000
+  position_unit: comoving Mpc/h
+  observer_xyz_hmpc: [-990.0, -990.0, -990.0]
+  mass_unit: Msun/h
+  mass_definition: provisional_M_interp_assumed_M200c
+  mass_definition_is_provisional: true
+
+# Exact AbacusSummit c000 total-matter cosmology.  sigma8 is sigma8_m, not
+# sigma8_cb.  These values are required because the selected HDF5 has no
+# cosmology metadata of its own.
+cosmology:
+  flat: true
+  H0: 67.36
+  Om0: 0.315192
+  Ob0: 0.049301692328524445
+  sigma8: 0.807952
+  ns: 0.9649
+  w0: -1.0
+
+profiles:
+  default_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/params_default.yaml
+  class: matched_godmax_profiles.AsymptoticNormalizationProfiles
+  normalization_variant: asymptotic_total_mass_v1
+  projected_radius_min_hmpc: 1.0e-5
+  projected_radius_num_central_points: 64
+  overrides:
+    sim_params:
+      init_power: true
+      nfw_trunc: true
+      epsilon_rt: 4.0
+      theta_ej_0: 2.0
+      log10_Mstar0_theta_ej: 16.0
+      nu_theta_ej_M: -0.33
+      nu_theta_ej_z: -1.22
+      nu_theta_ej_c: 0.0
+      theta_co_0: 0.05
+      log10_Mstar0_theta_co: 16.0
+      nu_theta_co_M: 0.0
+      nu_theta_co_z: 0.0
+      nu_theta_co_c: 0.0
+      mu_beta: 0.0762
+      log10_Mstar0: 14.0
+      log10_Mc0: 13.75
+      nu_M: 0.0
+      nu_z: 0.0
+      gamma_rhogas: 2.0
+      delta_rhogas: 7.0
+      a_zeta: 0.3
+      n_zeta: 2.0
+      alpha_nt: 0.05
+      beta_nt: 0.0
+      n_nt: 0.3
+      A_starcga: 0.09
+      log10_M1_starcga: 11.4
+      eta_star: 0.3
+      eta_cga: 0.6
+    halo_params:
+      rmin: 0.003
+      rmax: 70.0
+      nr: 128
+      zmin: 0.09
+      zmax: 2.70
+      nz: 64
+      lg10_Mmin: 12.75
+      lg10_Mmax: 16.0
+      nM: 48
+      mdef_Delta: 200
+      conc_model: Duffy08
+      hmf_model: T10
+    analysis:
+      backreaction: false
+      model_galaxies: false
+      model_tSZ: true
+      calc_nfw_only: true
+      comparison_extended_profile_rmax_r200c: 128.0
+      comparison_extended_profile_integration_method: gauss_legendre_log
+      comparison_extended_profile_num_points: 64
+      num_points_trapz_int: 64
+      projected_profile_integration_method: physical_table_cosh
+      num_points_projected_profile: 128
+      projected_profile_los_max_comoving_mpc: 100.0
+      symbolic_pk: false
+      symbolic_hmf: false
+      verbose_time: false
+      is_cmb_lensing: false
+      nbar_gal_comoving_val: 0.0005
+    other_params:
+      A_IA: 0.0
+      eta_IA: 0.0
+      alpha_ky: 1.0
+
+map:
+  nside: 2048
+  ordering: RING
+  max_paint_R200c_factor: 5.0
+  smooth_profiles: false
+  pressure_amplitude: 1.0
+  central_radius_policy: extended_projected_grid_no_extrapolation
+  product: halo_only_one_halo_Compton_y
+  units: dimensionless
+  beam: none
+  noise: none
+
+runtime:
+  halo_chunk_size: 25000
+  pixel_batch_size: 2000
+  pair_batch_size: 1000000
+  pixel_backend: healpy_ring
+  pixel_workers: 8
+  single_pixel_angle_factor: 0.0
+  jax_platforms: auto
+  jax_enable_x64: true
+  random_seed: 20260807
+  verbose: true
+
+output:
+  directory: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/DES_cluster/tsz_maps
+  run_name: c000_ph000_Mgt1e13
+  overwrite: false
+  compression: gzip
+  compression_level: 1
+
+validation:
+  require_complete_input: true
+  require_expected_rows: true
+  require_strict_mass_cut: true
+  require_finite: true
+  require_nonnegative: true
+  max_distance_redshift_relative_error: 0.01
+  preflight_chunk_size: 200000
+  smoke_max_halos: 64
+  # These are deliberately different from the production grid.  The notebook
+  # exposes a convergence cell; its output is evidence only after re-execution.
+  dense_grid_overrides:
+    halo_params:
+      nr: 160
+      nz: 96
+      nM: 64
+    analysis:
+      num_points_projected_profile: 192
+  dense_projected_radius_num_central_points: 96

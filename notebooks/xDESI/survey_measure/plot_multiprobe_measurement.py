@@ -67,17 +67,16 @@ FAMILY_PLOT_QUANTITY: Mapping[str, str] = {
     "desi_g_auto": "cl",
 }
 
-# Plotting-only display convention. The measurement HDF5 stores
-# spectra/<desi_g_auto>/cl and joint/data_vector as shot-noise-subtracted
-# galaxy signal bandpowers. For comparison to the external published DESI
-# clustering curves, which include shot noise, the plotter adds the saved
-# noise_decoupled_all_components[0] back in memory only.
+# Display total galaxy clustering for both current and historical products.
+# Current `_gshot` products already store signal + shot noise; historical
+# explicitly labelled signal-only products get their saved template restored
+# in memory.  The per-spectrum convention prevents a second addition.
 FAMILY_USE_TOTAL_CL: Mapping[str, bool] = {
     "desi_g_auto": True,
 }
 
 FAMILY_Y_DISPLAY_LABEL: Mapping[str, str] = {
-    "desi_g_auto": r"$C_\ell$ (signal + shot noise; plot only)",
+    "desi_g_auto": r"$C_\ell$ (signal + shot noise)",
     "desi_pi_act_T": r"$10^3 D_\ell = 10^3 \ell(\ell+1)C_\ell/2\pi$",
 }
 
@@ -110,6 +109,7 @@ class SpectrumPlotData:
     start: int
     stop: int
     noise_decoupled: np.ndarray | None = None
+    cl_convention: str = ""
 
     @property
     def err(self) -> np.ndarray:
@@ -118,7 +118,7 @@ class SpectrumPlotData:
 
     @property
     def cl_total(self) -> np.ndarray:
-        if self.noise_decoupled is None:
+        if self.cl_convention != "shot_noise_subtracted_signal" or self.noise_decoupled is None:
             return self.cl
         return self.cl + self.noise_decoupled
 
@@ -266,41 +266,110 @@ def nice_grid_size(n_panel: int) -> tuple[int, int]:
     return n_row, n_col
 
 
-def load_measurement(path: str | Path, stage_label: str | None = None) -> MeasurementPlotData:
+def load_measurement(
+    path: str | Path,
+    stage_label: str | None = None,
+    *,
+    allow_legacy_product: bool = False,
+) -> MeasurementPlotData:
     path = Path(path).expanduser().resolve()
     with h5py.File(path, "r") as h5:
+        from multiprobe_namaster import (
+            DESI_GALAXY_AUTO_MEAN_CONVENTION,
+            validate_measurement_product_identity,
+        )
+
+        validate_measurement_product_identity(
+            h5,
+            allow_legacy_product=allow_legacy_product,
+        )
         schema = str(h5.attrs.get("schema", ""))
         config_json = str(h5.attrs.get("config_json", ""))
         spectrum_names = decode_strings(h5["joint/spectrum_names"][:])
         starts = h5["joint/slice_start"][:].astype(int)
         stops = h5["joint/slice_stop"][:].astype(int)
-        covariance = h5["joint/cov"][:]
-        correlation = h5["joint/corr"][:]
-        data_vector = h5["joint/data_vector"][:]
+        archive_covariance = np.asarray(h5["joint/cov"][:], dtype=np.float64)
+        archive_data_vector = np.asarray(h5["joint/data_vector"][:], dtype=np.float64)
+        archive_raw_vector = np.asarray(
+            h5["joint/data_vector_raw"][:] if "joint/data_vector_raw" in h5 else archive_data_vector,
+            dtype=np.float64,
+        )
+        archive_valid = np.asarray(
+            h5["joint/data_vector_valid"][:]
+            if "joint/data_vector_valid" in h5
+            else np.ones(archive_data_vector.size, dtype=bool),
+            dtype=bool,
+        )
+        if archive_valid.shape != archive_data_vector.shape:
+            raise ValueError("Saved data-vector validity mask has the wrong shape.")
+        if archive_covariance.shape != (archive_data_vector.size, archive_data_vector.size):
+            raise ValueError("Saved covariance shape does not match the archived data vector.")
+        # Plot statistically active estimator values only. In validity-mask products,
+        # joint/data_vector contains zero layout placeholders above the ACT-kappa
+        # response support, while joint/data_vector_raw retains the diagnostic
+        # estimator values. Neither should be displayed as a physical measurement.
+        covariance = archive_covariance[np.ix_(archive_valid, archive_valid)]
+        data_vector = archive_data_vector[archive_valid]
+        sigma = np.sqrt(np.diag(covariance))
+        correlation = covariance / np.outer(sigma, sigma)
+        correlation = 0.5 * (correlation + correlation.T)
         ell = h5["joint/ell"][:]
         spectra: List[SpectrumPlotData] = []
+        active_cursor = 0
         for name, start, stop in zip(spectrum_names, starts, stops):
             group = h5[f"spectra/{name}"]
-            spec_ell = group["ell"][:]
-            cl = data_vector[start:stop]
-            cov = covariance[start:stop, start:stop]
+            family = str(group.attrs.get("family", "unknown"))
+            cl_convention = str(group.attrs.get("cl_convention", ""))
+            if family == "desi_g_auto":
+                allowed_conventions = {
+                    DESI_GALAXY_AUTO_MEAN_CONVENTION,
+                    "shot_noise_subtracted_signal",
+                }
+                if cl_convention not in allowed_conventions:
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} has unknown/missing cl_convention "
+                        f"{cl_convention!r}; refusing to label it signal + shot noise."
+                    )
+                if (
+                    cl_convention != DESI_GALAXY_AUTO_MEAN_CONVENTION
+                    and not allow_legacy_product
+                ):
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} is an historical signal-only product; "
+                        "pass allow_legacy_product=True only for an explicit historical plot."
+                    )
+                if "noise_decoupled_all_components" not in group:
+                    raise ValueError(
+                        f"DESI galaxy auto {name!r} has no saved shot-noise template."
+                    )
+            local_valid = archive_valid[start:stop]
+            if not np.any(local_valid):
+                raise ValueError(f"Spectrum {name!r} has no statistically valid bandpowers.")
+            spec_ell = np.asarray(group["ell"][:], dtype=np.float64)[local_valid]
+            cl = archive_raw_vector[start:stop][local_valid]
+            archive_cov = archive_covariance[start:stop, start:stop]
+            cov = archive_cov[np.ix_(local_valid, local_valid)]
+            active_start = active_cursor
+            active_cursor += int(np.count_nonzero(local_valid))
+            active_stop = active_cursor
             component = int(group.attrs.get("component", 0))
             noise_decoupled = None
             if "noise_decoupled_all_components" in group:
                 noise_all = group["noise_decoupled_all_components"][:]
                 if 0 <= component < noise_all.shape[0]:
-                    noise_decoupled = np.asarray(noise_all[component], dtype=np.float64)
+                    noise_decoupled = np.asarray(noise_all[component], dtype=np.float64)[local_valid]
             spectra.append(
                 SpectrumPlotData(
                     name=name,
                     label=str(group.attrs.get("label", name)),
-                    family=str(group.attrs.get("family", "unknown")),
+                    family=family,
                     ell=spec_ell,
                     cl=cl,
                     cov=cov,
-                    start=int(start),
-                    stop=int(stop),
+                    start=int(active_start),
+                    stop=int(active_stop),
                     noise_decoupled=noise_decoupled,
+                    cl_convention=cl_convention,
                 )
             )
 
@@ -381,7 +450,7 @@ def plot_family_spectra(
             yerr = y_display_scale * spec.dell_err
         this_work_label = "This work"
         if family == "desi_g_auto" and use_total_cl:
-            this_work_label = "This work (signal + shot; plot only)"
+            this_work_label = "This work (signal + shot)"
         ax.errorbar(
             x,
             y,
@@ -433,9 +502,11 @@ def plot_family_spectra(
             ax.set_ylim(*robust_linear_ylim(ylim_y, ylim_yerr))
         ax.set_xlabel(r"$\ell$")
         ax.set_ylabel(y_label)
-        snr = spectrum_snr(spec.cl, spec.cov)
-        snr_label = "signal-only S/N" if use_total_cl else "S/N"
-        ax.set_title(f"{spec.label}\n{snr_label} = {snr:.2f}", fontsize=10)
+        if family == "desi_g_auto":
+            ax.set_title(f"{spec.label}\nsignal + shot-noise data vector", fontsize=10)
+        else:
+            snr = spectrum_snr(spec.cl, spec.cov)
+            ax.set_title(f"{spec.label}\nS/N = {snr:.2f}", fontsize=10)
         format_axis(ax)
         if family == "desi_g_auto":
             ax.legend(loc="best", fontsize=7, frameon=False)
@@ -562,8 +633,14 @@ def make_all_plots(
     stage_label: str | None = None,
     published_gg_cls_path: str | Path | None = DEFAULT_PUBLISHED_GG_CLS,
     published_gg_cls_key: str = "cls_ext",
+    *,
+    allow_legacy_product: bool = False,
 ) -> List[Path]:
-    measurement = load_measurement(measurement_path, stage_label=stage_label)
+    measurement = load_measurement(
+        measurement_path,
+        stage_label=stage_label,
+        allow_legacy_product=allow_legacy_product,
+    )
     published_gg_cls = load_published_gg_cls(published_gg_cls_path, cls_key=published_gg_cls_key)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -589,9 +666,15 @@ def make_all_plots(
 def default_measurement_for_stage(stage: str, root: str | Path = ".") -> Path:
     root = Path(root)
     if stage == "fast1024":
-        return root / "data/xDESI/processed/multiprobe_namaster/fast1024/xdesi_multiprobe_cls_cov_nside1024_lmax1024_nbin10_linear.h5"
+        return root / (
+            "data/xDESI/processed/multiprobe_namaster/fast1024/"
+            "xdesi_multiprobe_cls_cov_nside1024_lmax1024_nbin10_linear_pipev2_gshot.h5"
+        )
     if stage == "midres2048":
-        return root / "data/xDESI/processed/multiprobe_namaster/midres2048/xdesi_multiprobe_cls_cov_nside2048_lmax4096_nbin10_linear.h5"
+        return root / (
+            "data/xDESI/processed/multiprobe_namaster/midres2048/"
+            "xdesi_multiprobe_cls_cov_nside2048_ell128_lmax4096_lmask6143_nbin16_log_pipev2_gshot.h5"
+        )
     raise ValueError(f"No default measurement path is registered for stage {stage!r}.")
 
 
@@ -610,6 +693,11 @@ def parse_args() -> argparse.Namespace:
         "--published-gg-cls-key",
         default="cls_ext",
         help="JSON key to overlay for DESI gg auto spectra. Use cls_ext for the extended catalog or cls_fid for the fiducial LRG catalog.",
+    )
+    parser.add_argument(
+        "--allow-legacy-product",
+        action="store_true",
+        help="Explicitly allow a historical signal-only product; current plots reject it by default.",
     )
     return parser.parse_args()
 
@@ -631,6 +719,7 @@ def main() -> None:
         stage_label=args.stage,
         published_gg_cls_path=published_gg_cls,
         published_gg_cls_key=args.published_gg_cls_key,
+        allow_legacy_product=bool(args.allow_legacy_product),
     )
     print(f"Wrote {len(outputs)} plot products to {Path(output_dir).resolve()}")
     for path in outputs:
