@@ -1,4 +1,4 @@
-f# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,12 +15,9 @@ slurm-logs/
 # NOTE: must be `.claude/*` (not `.claude/`) — git will not descend into an
 # ignored *directory*, so negations below would never be evaluated.
 .claude/*
-!.claude/agents/
-!.claude/commands/
-!.claude/hooks/
-!.claude/settings.json
 .claude/settings.local.json
 .codex/
+.claude/
 arxiv/
 all_arxiv/
 tests/
