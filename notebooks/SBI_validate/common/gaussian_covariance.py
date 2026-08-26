@@ -6,7 +6,13 @@ from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
-from survey_defaults import SurveyDefaults, default_noise_dict
+from survey_defaults import (
+    SO_NOISE_MODEL,
+    SurveyDefaults,
+    default_noise_dict,
+    integer_mode_counts,
+    so_noise_provenance,
+)
 
 
 FieldPair = Tuple[str, str]
@@ -115,6 +121,7 @@ def build_gaussian_covariance(
     nbar_gal_sr: float,
     survey: SurveyDefaults | None = None,
     spectra_order: Sequence[str] = TARGET_SPECTRA,
+    noise_model: str = "legacy_effective",
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, object]]:
     """Build a full Gaussian covariance for the target spectra.
 
@@ -128,7 +135,14 @@ def build_gaussian_covariance(
     if ell.shape != delta_ell.shape:
         raise ValueError("ell and delta_ell must have the same shape")
 
-    noise = default_noise_dict(ell, nbar_gal_sr, survey=survey)
+    noise = default_noise_dict(
+        ell,
+        nbar_gal_sr,
+        survey=survey,
+        noise_model=noise_model,
+        delta_ell=delta_ell,
+    )
+    modes_per_bin = integer_mode_counts(ell, delta_ell)
     nell = len(ell)
     nspec = len(spectra_order)
     cov = np.zeros((nspec * nell, nspec * nell), dtype=float)
@@ -138,7 +152,7 @@ def build_gaussian_covariance(
         for j, spec2 in enumerate(spectra_order):
             c, d = spectrum_to_fields(spec2)
             fsky = effective_fsky(spec1, spec2, survey)
-            denom = fsky * (2.0 * ell + 1.0) * delta_ell
+            denom = fsky * modes_per_bin
             term = (
                 cl_plus_noise(cl_signal, noise, a, c)
                 * cl_plus_noise(cl_signal, noise, b, d)
@@ -158,6 +172,15 @@ def build_gaussian_covariance(
         "survey": survey.as_dict(),
         "overlap_fsky": survey.overlap_fsky(),
         "nbar_gal_sr": float(nbar_gal_sr),
+        "full_sky_modes_per_bin": modes_per_bin.tolist(),
+        "mode_count_policy": "exact sum of (2ell+1) over integer multipoles in each bin",
+        "noise_model": noise_model,
+        "noise_provenance": (
+            so_noise_provenance() if noise_model == SO_NOISE_MODEL else {
+                "model": "legacy_effective",
+                "validation_status": "not validated for native-full SO covariance",
+            }
+        ),
     }
     return cov, corr, noise, meta
 
@@ -179,25 +202,36 @@ def covariance_quality_checks(cov: np.ndarray) -> Dict[str, float | bool]:
 
 def regularize_covariance(cov: np.ndarray,
                           jitter_fraction: float = 1.0e-10) -> Tuple[np.ndarray, float]:
-    """Return a positive-definite covariance and the diagonal jitter used."""
+    """Return a positive-definite covariance and correlation-space jitter.
+
+    Scaling first prevents one absolute floor from replacing the physically
+    small diagonal blocks of a heterogeneous Cl data vector.
+    """
 
     cov = np.asarray(cov, dtype=float)
+    cov = 0.5 * (cov + cov.T)
+    diag = np.diag(cov)
+    if not np.all(np.isfinite(cov)) or np.any(diag <= 0.0):
+        raise ValueError("Covariance must be finite with a strictly positive diagonal")
+    scale = np.sqrt(diag)
+    corr = cov / np.outer(scale, scale)
+    corr = 0.5 * (corr + corr.T)
     jitter = 0.0
     try:
-        np.linalg.cholesky(cov)
+        np.linalg.cholesky(corr)
     except np.linalg.LinAlgError:
-        eig_min = float(np.min(np.linalg.eigvalsh(cov)))
-        median_diag = float(np.median(np.diag(cov)))
-        floor = jitter_fraction * max(median_diag, 1.0e-300)
-        eig_margin = max(floor, abs(eig_min) * 1.0e-6)
-        jitter = max(floor, -eig_min + eig_margin)
-        cov = cov + np.eye(cov.shape[0]) * jitter
-        np.linalg.cholesky(cov)
-    return cov, jitter
+        eig_min = float(np.min(np.linalg.eigvalsh(corr)))
+        jitter = max(float(jitter_fraction), -eig_min + float(jitter_fraction))
+        corr = corr + np.eye(corr.shape[0]) * jitter
+        np.linalg.cholesky(corr)
+    return corr * np.outer(scale, scale), jitter
 
 
 def invert_covariance(cov: np.ndarray, jitter_fraction: float = 1.0e-10) -> Tuple[np.ndarray, float]:
-    """Return a precision matrix, adding diagonal jitter only if necessary."""
+    """Return a precision matrix using correlation-scaled linear algebra."""
 
     cov, jitter = regularize_covariance(cov, jitter_fraction=jitter_fraction)
-    return np.linalg.inv(cov), jitter
+    scale = np.sqrt(np.diag(cov))
+    corr = cov / np.outer(scale, scale)
+    precision_corr = np.linalg.solve(corr, np.eye(corr.shape[0]))
+    return precision_corr / np.outer(scale, scale), jitter

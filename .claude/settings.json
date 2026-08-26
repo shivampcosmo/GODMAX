@@ -23,7 +23,14 @@
       "Bash(wc:*)",
       "Bash(du:*)",
       "Bash(head:*)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "Bash(python -c ' *)",
+      "Bash(timeout 60 find data/SBI_validate/three_probe_inference -maxdepth 3 -name \"*.json\")"
+    ],
+    "deny": [
+      "Bash(git push --no-verify:*)",
+      "Read(./data/**/*.h5)",
+      "Read(./data/**/*.fits)"
     ],
     "ask": [
       "Bash(sbatch:*)",
@@ -32,11 +39,6 @@
       "Bash(scancel:*)",
       "Bash(git push:*)",
       "Bash(git commit:*)"
-    ],
-    "deny": [
-      "Bash(git push --no-verify:*)",
-      "Read(./data/**/*.h5)",
-      "Read(./data/**/*.fits)"
     ]
   },
   "hooks": {

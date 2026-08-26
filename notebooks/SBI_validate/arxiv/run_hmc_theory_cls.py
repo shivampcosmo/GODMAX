@@ -21,6 +21,8 @@ import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, init_to_value
 
+numpyro.enable_x64()
+
 from theory_sbi_utils import (
     DEFAULT_FIDUCIAL_PATH,
     ParameterSpec,
@@ -56,6 +58,7 @@ def run_hmc(
     fiducial_offset: bool,
     theory_backend: str,
     fixed_param_specs: Sequence[ParameterSpec] | None = None,
+    theory_mode: str = "map_matched_resolved",
 ) -> dict:
     """Run and save a fixed-covariance Gaussian NUTS chain."""
 
@@ -70,6 +73,7 @@ def run_hmc(
         fiducial_offset=fiducial_offset,
         jit_compile=jit_compile,
         fixed_param_specs=fixed_param_specs,
+        theory_mode=theory_mode,
     )
     validation = validate_theory_vector(vector_fn, selected, param_specs)
 
@@ -123,6 +127,33 @@ def run_hmc(
     samples_chain = mcmc.get_samples(group_by_chain=True)
     samples_flat = mcmc.get_samples(group_by_chain=False)
     extra = mcmc.get_extra_fields(group_by_chain=True)
+    divergences = np.asarray(extra["diverging"], dtype=bool)
+    accept_prob = np.asarray(extra["accept_prob"], dtype=float)
+    num_steps = np.asarray(extra["num_steps"], dtype=int)
+    tree_depth = np.floor(np.log2(np.maximum(num_steps, 1))).astype(int) + 1
+    tree_depth_saturated = tree_depth >= int(max_tree_depth)
+    final_step_size = np.asarray(mcmc.last_state.adapt_state.step_size, dtype=float)
+    min_potential_energy_per_chain = np.min(
+        np.asarray(extra["potential_energy"], dtype=float),
+        axis=-1,
+    )
+
+    sampler_diagnostics = {
+        "divergence_count": int(np.sum(divergences)),
+        "mean_accept_prob": float(np.mean(accept_prob)),
+        "divergence_count_per_chain": np.sum(divergences, axis=-1).astype(int).tolist(),
+        "tree_depth_saturation_count": int(np.sum(tree_depth_saturated)),
+        "tree_depth_saturation_fraction": float(np.mean(tree_depth_saturated)),
+        "tree_depth_saturation_fraction_per_chain": np.mean(
+            tree_depth_saturated,
+            axis=-1,
+        ).tolist(),
+        "max_observed_tree_depth": int(np.max(tree_depth)),
+        "final_step_size_per_chain": np.atleast_1d(final_step_size).tolist(),
+        "min_potential_energy_per_chain": np.atleast_1d(
+            min_potential_energy_per_chain
+        ).tolist(),
+    }
 
     np_payload = {
         "theta_fiducial": theta0,
@@ -147,9 +178,13 @@ def run_hmc(
                     "dense_mass": dense_mass,
                     "target_accept_prob": target_accept_prob,
                     "chain_method": chain_method,
+                    "initialization_strategy": "init_to_value_all_chains_at_fiducial",
+                    "seed": seed,
                     "fiducial_offset_correction": fiducial_offset,
                     "theory_backend": theory_backend,
+                    "theory_mode": theory_mode,
                     "validation": validation,
+                    "sampler_diagnostics": sampler_diagnostics,
                 },
                 fixed_param_specs=fixed_param_specs,
             )
@@ -176,9 +211,13 @@ def run_hmc(
         "dense_mass": dense_mass,
         "target_accept_prob": target_accept_prob,
         "chain_method": chain_method,
+        "initialization_strategy": "init_to_value_all_chains_at_fiducial",
+        "seed": seed,
         "fiducial_offset_correction": fiducial_offset,
         "theory_backend": theory_backend,
+        "theory_mode": theory_mode,
         "fiducial_path": str(fiducial_path),
+        **sampler_diagnostics,
         "fixed_parameter_specs": [
             {
                 "name": spec.name,
@@ -194,11 +233,27 @@ def run_hmc(
     try:
         import arviz as az
 
-        idata = az.from_numpyro(mcmc)
-        summary = az.summary(idata, var_names=[spec.name for spec in param_specs])
+        # Build diagnostics from the already saved chain arrays.  ``az.from_numpyro``
+        # treats ``numpyro.factor`` as an observed site and replays this expensive
+        # full-theory likelihood at every posterior draw to populate log_likelihood,
+        # which is unnecessary for R-hat/ESS diagnostics.
+        idata = az.from_dict(
+            posterior={
+                spec.name: np.asarray(samples_chain[spec.name]) for spec in param_specs
+            }
+        )
+        summary = az.summary(
+            idata,
+            var_names=[spec.name for spec in param_specs],
+            round_to="none",
+        )
         diagnostics["arviz_summary"] = json.loads(summary.to_json())
         diagnostics["max_rhat"] = float(summary["r_hat"].max())
+        diagnostics["max_rhat_parameter"] = str(summary["r_hat"].idxmax())
         diagnostics["min_ess_bulk"] = float(summary["ess_bulk"].min())
+        diagnostics["min_ess_bulk_parameter"] = str(summary["ess_bulk"].idxmin())
+        diagnostics["min_ess_tail"] = float(summary["ess_tail"].min())
+        diagnostics["min_ess_tail_parameter"] = str(summary["ess_tail"].idxmin())
     except Exception as exc:  # pragma: no cover - diagnostic fallback
         diagnostics["arviz_error"] = repr(exc)
 
@@ -235,6 +290,8 @@ def main() -> None:
                         help="Disable the constant numerical offset that aligns the JAX evaluator to the saved fiducial product.")
     parser.add_argument("--theory-backend", choices=("linearized", "direct"),
                         default="linearized")
+    parser.add_argument("--theory-mode", choices=("full", "map_matched_resolved"),
+                        default="map_matched_resolved")
     args = parser.parse_args()
 
     param_specs = parse_param_specs(args.param_spec)
@@ -242,6 +299,7 @@ def main() -> None:
         args.fiducial_path,
         param_specs=param_specs,
         force=args.force_fiducial,
+        theory_mode=args.theory_mode,
     )
     result = run_hmc(
         fiducial_path=pathlib.Path(fiducial_path),
@@ -261,6 +319,7 @@ def main() -> None:
         jit_compile=not args.no_jit,
         fiducial_offset=not args.no_fiducial_offset,
         theory_backend=args.theory_backend,
+        theory_mode=args.theory_mode,
     )
     print(f"Saved HMC samples to {result['samples_path']}")
     print(f"Saved HMC diagnostics to {result['diagnostics_path']}")

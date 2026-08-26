@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import hashlib
 import importlib
 import json
 import math
@@ -51,7 +52,7 @@ GODMAX_ROOT = xdesi_dir().parents[1]
 SRC_DIR = GODMAX_ROOT / "src"
 PASTING_DIR = GODMAX_ROOT / "notebooks" / "pasting"
 SURVEY_MEASURE_DIR = GODMAX_ROOT / "notebooks" / "xDESI" / "survey_measure"
-for _path in (SRC_DIR, PASTING_DIR, SURVEY_MEASURE_DIR, GODMAX_ROOT / "data", GODMAX_ROOT / "param_files"):
+for _path in (GODMAX_ROOT, SRC_DIR, PASTING_DIR, SURVEY_MEASURE_DIR, GODMAX_ROOT / "data", GODMAX_ROOT / "param_files"):
     if str(_path) not in sys.path:
         sys.path.append(str(_path))
 
@@ -427,6 +428,49 @@ def prepare_godmax_config(
     analysis["symbolic_pk"] = False
     analysis["symbolic_hmf"] = False
     return sim_params, halo_params, analysis, other_params
+
+
+def prepare_paste_godmax_config(
+    config: Mapping[str, object],
+    catalog_attrs: Optional[Mapping[str, object]] = None,
+    *,
+    config_path: Optional[Path | str] = None,
+    is_cmb_lensing: bool = False,
+    z_max: Optional[float] = None,
+    log10_mass_min: Optional[float] = None,
+):
+    """Prepare GODMAX through an optional project-owned fail-closed factory."""
+
+    factory_path = str(config.get("godmax", {}).get("config_factory_path", "")).strip()
+    if not factory_path:
+        return prepare_godmax_config(
+            config,
+            catalog_attrs,
+            is_cmb_lensing=is_cmb_lensing,
+            z_max=z_max,
+            log10_mass_min=log10_mass_min,
+        )
+    module_name, separator, function_name = factory_path.rpartition(".")
+    if not separator or not module_name or not function_name:
+        raise ValueError(
+            "godmax.config_factory_path must be a fully qualified module.function; "
+            f"got {factory_path!r}."
+        )
+    factory_module = importlib.import_module(module_name)
+    factory = getattr(factory_module, function_name)
+    factory_source = getattr(factory_module, "__file__", None)
+    if factory_source is None:
+        raise ValueError(f"Cannot provenance config factory module {module_name!r}")
+    if isinstance(config, dict):
+        config["_runtime_config_factory_sha256"] = _sha256_file(factory_source)
+    return factory(
+        config,
+        catalog_attrs,
+        config_path=None if config_path is None else Path(config_path),
+        is_cmb_lensing=bool(is_cmb_lensing),
+        z_max=z_max,
+        log10_mass_min=log10_mass_min,
+    )
 
 
 def prepare_stage31_godmax_config(
@@ -1844,9 +1888,160 @@ def _write_json_atomic(path: Path | str, payload: Mapping[str, object]) -> None:
     os.replace(tmp_path, path)
 
 
-def _empty_maps(nside: int) -> Dict[str, np.ndarray]:
+def _sha256_file(path: Path | str, chunk_bytes: int = 16 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_bytes), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_array(value: np.ndarray) -> str:
+    array = np.ascontiguousarray(value)
+    digest = hashlib.sha256()
+    digest.update(array.dtype.str.encode("ascii"))
+    digest.update(np.asarray(array.shape, dtype=np.int64).tobytes())
+    digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def _paste_kernel_bundle(setup, analysis: Mapping[str, object], config: Mapping[str, object]):
+    """Materialize the exact kernels needed to reproduce the map-side theory transfer."""
+
+    lens = analysis.get("nz_lens_info_dict")
+    if not isinstance(lens, Mapping):
+        raise ValueError("Saving paste kernels requires analysis.nz_lens_info_dict")
+    z_lens = np.asarray(lens["z_array_lens"], dtype=np.float64)
+    nz_lens = np.asarray(lens["nz0"], dtype=np.float64)
+    if z_lens.shape != nz_lens.shape or abs(float(np.trapz(nz_lens, z_lens)) - 1.0) > 1.0e-6:
+        raise ValueError("Saved paste lens n(z) is not aligned and normalized to 1e-6")
+    z_nbar = np.asarray(analysis["nbar_gal_comoving_zarray"], dtype=np.float64)
+    nbar = np.asarray(analysis["nbar_gal_comoving_val"], dtype=np.float64)
+    if z_nbar.shape != nbar.shape or np.any(nbar <= 0.0):
+        raise ValueError("Saved paste nbar arrays are not aligned and positive")
+
+    from get_sim_maps import compute_cmb_lensing_efficiency
+
+    # These are the exact float32 interpolation anchors used by get_sim_map.
+    halo_z = np.asarray(setup.z_array, dtype=np.float32)
+    wkappa = np.asarray(
+        compute_cmb_lensing_efficiency(
+            halo_z.astype(np.float64),
+            np.asarray(setup.chi_array, dtype=np.float64),
+            setup.chi_CMB,
+            setup.cosmo_jax.Omega_m,
+        ),
+        dtype=np.float32,
+    )
+    if halo_z.shape != wkappa.shape or not np.all(np.isfinite(wkappa)) or np.any(wkappa < 0.0):
+        raise ValueError("CMB lensing-efficiency array is invalid")
+    hod_nbar = np.asarray(setup.nbar_gal_comoving_array, dtype=np.float64)
+    if hod_nbar.shape != halo_z.shape or not np.all(np.isfinite(hod_nbar)) or np.any(hod_nbar <= 0.0):
+        raise ValueError("HOD-consumed nbar array is invalid")
+
+    lens_kernel_path = (
+        Path(config["resolved_theory"]["validation_output_dir"])
+        / str(config["resolved_theory"]["lens_kernel"]["output_name"])
+    )
+    with h5py.File(lens_kernel_path, "r") as lens_handle:
+        lens_histogram_edges = np.asarray(lens_handle["primary/histogram_edges"][:], dtype=np.float64)
+        lens_histogram_counts = np.asarray(lens_handle["primary/histogram_counts"][:], dtype=np.int64)
+
+    lmax = int(config["pasting"]["comparison_lmax"])
+    ell = np.arange(lmax + 1, dtype=np.int32)
+    sigma_rad = float(np.asarray(setup.sigma_val))
+    # The painter convolves the projected profiles with a flat-sky circular
+    # Gaussian, whose exact Fourier transfer is exp[-(ell sigma)^2 / 2].
+    beam = np.exp(-0.5 * (ell.astype(np.float64) * sigma_rad) ** 2)
+    fwhm_arcmin = float(setup.profile_smoothing_fwhm_arcmin)
+    pixel_arcmin = float(setup.profile_smoothing_pixel_resolution_arcmin)
+    expected_fraction = float(config["pasting"]["profile_smoothing_fwhm_pixel_fraction"])
+    if not np.isclose(fwhm_arcmin / pixel_arcmin, expected_fraction, rtol=0.0, atol=2e-15):
+        raise ValueError("Runtime profile-smoothing FWHM differs from the pixel-fraction contract")
+
+    arrays = {
+        "lens_redshift": z_lens,
+        "lens_nz": nz_lens,
+        "lens_nbar_redshift": z_nbar,
+        "lens_nbar_h3mpc3": nbar,
+        "halo_redshift": halo_z,
+        "hod_target_nbar_on_halo_redshift_h3mpc3": hod_nbar,
+        "lens_histogram_edges": lens_histogram_edges,
+        "lens_histogram_counts": lens_histogram_counts,
+        "cmb_lensing_efficiency_Wkappa_hmpc": wkappa,
+        "profile_smoothing_ell": ell,
+        "profile_smoothing_Bell": beam.astype(np.float64),
+        "cmb_source_redshift": np.asarray([1100.0], dtype=np.float64),
+        "cmb_source_chi_hmpc": np.asarray(setup.chi_CMB, dtype=np.float64).reshape(1),
+    }
+    repo_root = Path(__file__).resolve().parents[2]
+    attrs = {
+        "lens_nz_normalization": float(np.trapz(nz_lens, z_lens)),
+        "cmb_lensing_efficiency_units": "h/Mpc",
+        "cmb_lensing_efficiency_formula_version": "flat_cmb_single_source_v1",
+        "cmb_source_chi_units": "Mpc/h",
+        "rho_m_bar_h2Msun_Mpc3": float(np.asarray(setup.rho_m_bar)),
+        "catalog_cosmology_sha256": str(config["resolved_theory"]["cosmology_sha256"]),
+        "lens_nbar_units": "(h/Mpc)^3",
+        "profile_smoothing_kernel": "gaussian_flat_sky_radial",
+        "profile_smoothing_method": str(setup.profile_smoothing_method),
+        "profile_smoothing_quadrature_points": int(setup.profile_smoothing_quadrature_points),
+        "profile_smoothing_radial_sigma_cutoff": float(setup.profile_smoothing_radial_sigma_cutoff),
+        "profile_smoothing_implementation_sha256": _sha256_file(
+            repo_root / "src" / "get_sim_maps.py"
+        ),
+        "profile_smoothing_fwhm_arcmin": fwhm_arcmin,
+        "profile_smoothing_pixel_resolution_arcmin": pixel_arcmin,
+        "profile_smoothing_fwhm_pixel_fraction": fwhm_arcmin / pixel_arcmin,
+        "profile_smoothing_sigma_rad": sigma_rad,
+        "profile_smoothing_applied": True,
+        "healpix_pixel_window_applied_during_paste": False,
+        "continuous_field_transfer_policy": "T_y=T_tau=T_kappa=profile_smoothing_Bell; no HEALPix pixel window is applied during painting",
+        "galaxy_field_transfer_policy": "T_g=HEALPix pixel window for the count map",
+        "theory_transfer_policy": "multiply each theory C_ell by T_X*T_Y exactly once",
+        "kernel_dataset_sha256_json": json.dumps(
+            {key: _sha256_array(value) for key, value in arrays.items()}, sort_keys=True
+        ),
+    }
+    return arrays, attrs
+
+
+def _empty_maps(nside: int, datasets: Optional[Sequence[str]] = None) -> Dict[str, np.ndarray]:
     npix = 12 * int(nside) ** 2
-    return {name: np.zeros(npix, dtype=np.float32) for name in MAP_DATASETS}
+    names = MAP_DATASETS if datasets is None else tuple(datasets)
+    unknown = sorted(set(names) - set(MAP_DATASETS))
+    if unknown:
+        raise ValueError(f"Unknown pasted-map datasets requested: {unknown}")
+    return {name: np.zeros(npix, dtype=np.float32) for name in names}
+
+
+def requested_map_datasets(config: Mapping[str, object]) -> Tuple[str, ...]:
+    """Return only map arrays requested by the static paste configuration."""
+
+    pasting = config.get("pasting", {})
+    if pasting.get("allocate_only_requested_maps") is not True:
+        names = list(MAP_DATASETS)
+        if not bool(pasting.get("store_projected_matter_maps", True)):
+            names = [name for name in names if name not in {"map_rhom_dmb", "map_rhom_dmo", "map_rhom"}]
+        return tuple(names)
+    names: List[str] = []
+    if bool(pasting.get("store_projected_matter_maps", True)):
+        names.extend(("map_rhom_dmb", "map_rhom_dmo", "map_rhom"))
+    if bool(pasting.get("get_ymap", True)):
+        names.append("map_ymap")
+    if bool(pasting.get("get_kszmap", True)):
+        names.append("map_ksz")
+    if bool(pasting.get("get_taumap", True)):
+        names.append("map_tau")
+    if bool(pasting.get("get_kappa_cmb", True)):
+        names.append("map_kappa_cmb")
+    if bool(pasting.get("get_kappa_wl", True)):
+        source_bins = wl_source_bins_from_config(config)
+        names.extend(
+            "map_kappa_wl" if int(source_bin) == 1 else f"map_kappa_wl_tomo{int(source_bin)}"
+            for source_bin in source_bins
+        )
+    return tuple(dict.fromkeys(names))
 
 
 def _add_if_present(maps: Dict[str, np.ndarray], key: str, obj, attr: str) -> None:
@@ -1938,6 +2133,19 @@ def run_paste_split(
 ) -> Path:
     wall0 = time.perf_counter()
     config = load_config(config_path)
+    supported_nside = tuple(int(value) for value in config.get("pasting", {}).get("supported_nside", (nside,)))
+    if int(nside) not in supported_nside:
+        raise ValueError(f"nside={nside} is outside the frozen supported_nside={supported_nside}")
+    # The CLI value is authoritative for both maps and every derived GODMAX grid.
+    config["pasting"]["nside"] = int(nside)
+    if bool(config["pasting"].get("freeze_galaxy_catalog", False)) and bool(
+        config["pasting"].get("get_galmap", True)
+    ):
+        fixed_splits = int(config["pasting"].get("fixed_galaxy_num_splits", num_splits))
+        if int(num_splits) != fixed_splits:
+            raise ValueError(
+                f"Frozen galaxy catalog requires num_splits={fixed_splits}, got {num_splits}"
+            )
     if verbose is None:
         verbose = bool(config.get("pasting", {}).get("verbose", True))
     configure_jax_runtime_for_pasting(config, verbose)
@@ -2074,6 +2282,9 @@ def run_paste_split(
     t_jax_import = time.perf_counter()
     import jax
     import jax.numpy as jnp
+    jax.config.update("jax_enable_x64", True)
+    if not bool(jax.config.read("jax_enable_x64")):
+        raise RuntimeError("Three-probe pasting requires JAX float64 setup arrays")
     from base_class import base_class
     from get_radial_profiles import Profiles as NativeProfiles
     from get_sim_maps import setup_sim_map, get_sim_map
@@ -2112,9 +2323,10 @@ def run_paste_split(
 
     _log("[paste:godmax] prepare Stage-31/GODMAX parameter dictionaries", verbose)
     t_prepare_godmax = time.perf_counter()
-    sim_params, halo_params, analysis, other_params = prepare_godmax_config(
+    sim_params, halo_params, analysis, other_params = prepare_paste_godmax_config(
         config,
         attrs,
+        config_path=config_path,
         is_cmb_lensing=False,
         z_max=float(attrs.get("z_max", np.max(catalog["z"]) if len(catalog["z"]) else 0.5)),
         log10_mass_min=float(attrs.get("log10_m_min_hmsun", np.min(catalog["log10M200c_hMsun"]))),
@@ -2145,6 +2357,18 @@ def run_paste_split(
     setup_params = {
         "nside": int(nside),
         "smooth_profiles": bool(config["pasting"].get("smooth_profiles", True)),
+        "profile_smoothing_fwhm_pixel_fraction": float(
+            config["pasting"].get("profile_smoothing_fwhm_pixel_fraction", 1.0)
+        ),
+        "profile_smoothing_method": str(
+            config["pasting"].get("profile_smoothing_method", "legacy_fftlog")
+        ),
+        "profile_smoothing_quadrature_points": int(
+            config["pasting"].get("profile_smoothing_quadrature_points", 64)
+        ),
+        "profile_smoothing_radial_sigma_cutoff": float(
+            config["pasting"].get("profile_smoothing_radial_sigma_cutoff", 10.0)
+        ),
         "profile_timing": bool(config["pasting"].get("profile_timing", False)),
         "use_fused_profile_maps": bool(config["pasting"].get("use_fused_profile_maps", True)),
         "return_sparse_maps": bool(config["pasting"].get("return_sparse_maps", True)),
@@ -2171,6 +2395,10 @@ def run_paste_split(
     setup_sim_map_main_time_s = time.perf_counter() - t_setup_main
     setup_sim_map_main_profile_s = copy.deepcopy(getattr(setup, "timing_results", {}))
     _log("[paste:jax] setup_sim_map done", verbose)
+    kernel_arrays: Dict[str, np.ndarray] = {}
+    kernel_attrs: Dict[str, object] = {}
+    if bool(config["pasting"].get("save_projection_kernels", False)):
+        kernel_arrays, kernel_attrs = _paste_kernel_bundle(setup, analysis, config)
     extra_wl_setups = {}
     setup_sim_map_wl_time_s: Dict[str, float] = {}
     setup_sim_map_wl_profile_s: Dict[str, object] = {}
@@ -2220,10 +2448,8 @@ def run_paste_split(
         _log("[paste:jax] setup_sim_map done: CMB kappa", verbose)
 
     t_maps_allocate = time.perf_counter()
-    maps = _empty_maps(nside)
-    if not store_projected_matter_maps:
-        for name in ("map_rhom_dmb", "map_rhom_dmo", "map_rhom"):
-            maps.pop(name, None)
+    map_datasets = requested_map_datasets(config)
+    maps = _empty_maps(nside, map_datasets)
     maps_allocate_time_s = time.perf_counter() - t_maps_allocate
     galaxies = []
     n_halos = len(catalog["z"])
@@ -2285,6 +2511,7 @@ def run_paste_split(
         "pixel_prefetch_next_chunk": bool(pixel_prefetch_next_chunk),
         "max_paint_R200c_factor": float(max_paint),
         "store_projected_matter_maps": bool(store_projected_matter_maps),
+        "map_datasets": list(map_datasets),
         "use_multi_kappa_maps": bool(use_multi_kappa_maps),
         "multi_kappa_source_bins": [int(value) for value in multi_kappa_source_bins],
         "multi_kappa_include_cmb": bool(use_multi_kappa_maps and get_kappa_cmb),
@@ -2384,6 +2611,11 @@ def run_paste_split(
                     pixels["vlos"],
                 )
             ).astype(np.float32, copy=False)
+            chunk_random_seed = (
+                int(config["pasting"].get("random_seed", 42))
+                + int(split_index) * 100000
+                + chunk_id
+            )
             mock_params.update(
                 {
                     "halo_z": jnp.array(chunk["z"], dtype=jnp.float32),
@@ -2397,7 +2629,7 @@ def run_paste_split(
                     "sort_idx": pixels.get("sort_idx"),
                     "boundaries": pixels.get("boundaries"),
                     "pix_prop_all": jnp.array(pix_prop_all, dtype=jnp.float32),
-                    "random_seed": int(config["pasting"].get("random_seed", 42)) + int(split_index) * 100000 + chunk_id,
+                    "random_seed": int(chunk_random_seed),
                 }
             )
             transfer_time = time.perf_counter() - t_transfer
@@ -2490,6 +2722,7 @@ def run_paste_split(
                     "gpu_main_time_s": float(gpu_main_time),
                     "gpu_main_profile_s": gpu_main_profile,
                     "galaxy_population_diagnostics": galaxy_population_diagnostics,
+                    "random_seed": int(chunk_random_seed),
                     "gpu_wl_extra_time_s": wl_times,
                     "gpu_wl_extra_profile_s": wl_profiles,
                     "gpu_cmb_time_s": None if cmb_time is None else float(cmb_time),
@@ -2531,6 +2764,72 @@ def run_paste_split(
             "split_load_note": str(split_load_note),
             "max_paint_R200c_factor": max_paint,
             "smooth_profiles": bool(config["pasting"].get("smooth_profiles", True)),
+            "profile_smoothing_applied": bool(kernel_attrs.get("profile_smoothing_applied", False)),
+            "profile_smoothing_kernel": str(kernel_attrs.get("profile_smoothing_kernel", "none")),
+            "profile_smoothing_fwhm_arcmin": float(kernel_attrs.get("profile_smoothing_fwhm_arcmin", 0.0)),
+            "profile_smoothing_pixel_resolution_arcmin": float(
+                kernel_attrs.get("profile_smoothing_pixel_resolution_arcmin", hp.nside2resol(nside, arcmin=True))
+            ),
+            "profile_smoothing_fwhm_pixel_fraction": float(
+                kernel_attrs.get("profile_smoothing_fwhm_pixel_fraction", 0.0)
+            ),
+            "profile_smoothing_sigma_rad": float(kernel_attrs.get("profile_smoothing_sigma_rad", 0.0)),
+            "profile_smoothing_method": str(kernel_attrs.get("profile_smoothing_method", "")),
+            "profile_smoothing_quadrature_points": int(
+                kernel_attrs.get("profile_smoothing_quadrature_points", -1)
+            ),
+            "profile_smoothing_radial_sigma_cutoff": float(
+                kernel_attrs.get("profile_smoothing_radial_sigma_cutoff", 0.0)
+            ),
+            "healpix_pixel_window_applied_during_paste": bool(
+                kernel_attrs.get("healpix_pixel_window_applied_during_paste", False)
+            ),
+            "theory_transfer_policy": str(kernel_attrs.get("theory_transfer_policy", "")),
+            "kernel_dataset_sha256_json": str(kernel_attrs.get("kernel_dataset_sha256_json", "{}")),
+            "map_datasets_json": json.dumps(list(map_datasets)),
+            "random_seed_base": int(config["pasting"].get("random_seed", 42)),
+            "random_seed_rule": "base_plus_split_times_100000_plus_chunk",
+            "chunk_random_seeds_json": json.dumps(
+                [int(chunk["random_seed"]) for chunk in timing["chunks"] if "random_seed" in chunk]
+            ),
+            "projected_profile_integration_method": str(
+                analysis.get("projected_profile_integration_method", "legacy_log_radius")
+            ),
+            "num_points_projected_profile": int(analysis.get("num_points_projected_profile", 32)),
+            "halo_grid_nr": int(halo_params.get("nr", -1)),
+            "halo_grid_nM": int(halo_params.get("nM", -1)),
+            "halo_grid_nz": int(halo_params.get("nz", -1)),
+            "catalog_file_sha256": str(
+                config.get("resolved_theory", {}).get("catalog_file_sha256", "")
+            ),
+            "catalog_row_identity_sha256": str(
+                config.get("resolved_theory", {}).get("catalog_row_identity_sha256", "")
+            ),
+            "catalog_selection_contract_sha256": str(
+                config.get("resolved_theory", {}).get("catalog_selection_contract_sha256", "")
+            ),
+            "catalog_source_content_manifest_sha256": str(
+                config.get("resolved_theory", {}).get("catalog_source_content_manifest_sha256", "")
+            ),
+            "catalog_cosmology_sha256": str(
+                config.get("resolved_theory", {}).get("cosmology_sha256", "")
+            ),
+            "config_file_sha256": _sha256_file(config_path),
+            "pasting_helper_sha256": _sha256_file(Path(__file__)),
+            "get_sim_maps_sha256": _sha256_file(
+                Path(__file__).resolve().parents[2] / "src" / "get_sim_maps.py"
+            ),
+            "get_radial_profiles_sha256": _sha256_file(
+                Path(__file__).resolve().parents[2] / "src" / "get_radial_profiles.py"
+            ),
+            "base_class_sha256": _sha256_file(
+                Path(__file__).resolve().parents[2] / "src" / "base_class.py"
+            ),
+            "config_factory_sha256": str(config.get("_runtime_config_factory_sha256", "")),
+            "godmax_default_params_sha256": _sha256_file(config["godmax"]["default_params"]),
+            "pasting_contract_version": str(config["pasting"].get("contract_version", "")),
+            "development_lmax": int(config["pasting"].get("development_lmax", -1)),
+            "comparison_lmax": int(config["pasting"].get("comparison_lmax", -1)),
             "profiles_class_fqname": profiles_class_fqname,
             "wl_source_bins_json": json.dumps(wl_source_bins),
             "wl_source_bin_datasets_json": json.dumps(
@@ -2554,6 +2853,8 @@ def run_paste_split(
                 ]
             ),
         },
+        kernels=kernel_arrays,
+        kernel_attrs=kernel_attrs,
     )
     timing["write_h5_time_s"] = float(time.perf_counter() - t_write)
     timing["total_time_s"] = float(time.perf_counter() - wall0)
@@ -2565,7 +2866,15 @@ def run_paste_split(
     return out_path
 
 
-def write_maps_h5(path: Path | str, maps: Mapping[str, np.ndarray], galaxies: np.ndarray, attrs: Mapping[str, object]) -> None:
+def write_maps_h5(
+    path: Path | str,
+    maps: Mapping[str, np.ndarray],
+    galaxies: np.ndarray,
+    attrs: Mapping[str, object],
+    *,
+    kernels: Optional[Mapping[str, np.ndarray]] = None,
+    kernel_attrs: Optional[Mapping[str, object]] = None,
+) -> None:
     path = Path(path)
     ensure_under_xdesi(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2577,6 +2886,12 @@ def write_maps_h5(path: Path | str, maps: Mapping[str, np.ndarray], galaxies: np
         for key, value in maps.items():
             group.create_dataset(key, data=np.asarray(value, dtype=np.float32), compression="lzf")
         handle.create_dataset("galaxies", data=np.asarray(galaxies, dtype=np.float32), compression="lzf")
+        if kernels:
+            kernel_group = handle.create_group("kernels")
+            for key, value in kernels.items():
+                kernel_group.create_dataset(key, data=np.asarray(value), compression="lzf")
+            for key, value in (kernel_attrs or {}).items():
+                kernel_group.attrs[key] = value
         for key, value in attrs.items():
             if isinstance(value, (dict, list, tuple)):
                 handle.attrs[key] = json.dumps(value)
@@ -2594,6 +2909,16 @@ def load_maps_h5(path: Path | str) -> Tuple[dict, np.ndarray, dict]:
     return maps, galaxies, attrs
 
 
+def load_map_kernels_h5(path: Path | str) -> Tuple[dict, dict]:
+    with h5py.File(path, "r") as handle:
+        if "kernels" not in handle:
+            return {}, {}
+        group = handle["kernels"]
+        arrays = {key: group[key][:] for key in group}
+        attrs = dict(group.attrs)
+    return arrays, attrs
+
+
 def combine_partial_maps(config_path: Path | str, catalog_key: str, num_splits: int, nside: int, overwrite: bool = False) -> Path:
     config = load_config(config_path)
     paths = [partial_map_path(config, catalog_key, nside, split, num_splits) for split in range(num_splits)]
@@ -2603,21 +2928,188 @@ def combine_partial_maps(config_path: Path | str, catalog_key: str, num_splits: 
     maps_sum = None
     galaxies = []
     attrs = {}
+    strict = bool(config.get("pasting", {}).get("require_strict_combine_contract", False))
+    expected_common = (
+        "catalog_key", "catalog_path", "nside", "n_input_halos", "num_splits",
+        "split_strategy", "split_block_halos", "max_paint_R200c_factor",
+        "smooth_profiles", "map_datasets_json", "random_seed_base",
+        "random_seed_rule", "projected_profile_integration_method",
+        "num_points_projected_profile", "halo_grid_nr", "halo_grid_nM",
+        "halo_grid_nz", "catalog_file_sha256", "config_file_sha256",
+        "catalog_row_identity_sha256", "catalog_selection_contract_sha256",
+        "catalog_source_content_manifest_sha256", "catalog_cosmology_sha256",
+        "pasting_helper_sha256", "get_sim_maps_sha256", "get_radial_profiles_sha256",
+        "base_class_sha256", "config_factory_sha256", "godmax_default_params_sha256", "pasting_contract_version",
+        "development_lmax", "comparison_lmax",
+        "profile_smoothing_applied", "profile_smoothing_kernel",
+        "profile_smoothing_fwhm_arcmin", "profile_smoothing_pixel_resolution_arcmin",
+        "profile_smoothing_fwhm_pixel_fraction", "profile_smoothing_sigma_rad",
+        "profile_smoothing_method", "profile_smoothing_quadrature_points",
+        "profile_smoothing_radial_sigma_cutoff",
+        "healpix_pixel_window_applied_during_paste", "theory_transfer_policy",
+        "kernel_dataset_sha256_json",
+        "profiles_class_fqname", "galaxy_catalog_columns_json",
+    )
+    reference_attrs = None
+    observed_split_indices: List[int] = []
+    partial_hashes: List[str] = []
+    partial_attrs: List[dict] = []
+    reference_kernels: Optional[dict] = None
+    reference_kernel_attrs: Optional[dict] = None
+    split_halo_sum = 0
     for path in paths:
         maps, gals, part_attrs = load_maps_h5(path)
+        if strict:
+            partial_attrs.append(dict(part_attrs))
+            missing_attrs = [key for key in expected_common if key not in part_attrs]
+            if missing_attrs:
+                raise ValueError(f"Partial {path} is missing contract attrs: {missing_attrs}")
+            split_index = int(part_attrs["split_index"])
+            observed_split_indices.append(split_index)
+            split_halo_sum += int(part_attrs["n_split_halos"])
+            if reference_attrs is None:
+                reference_attrs = dict(part_attrs)
+            else:
+                mismatched = [
+                    key for key in expected_common
+                    if part_attrs[key] != reference_attrs[key]
+                ]
+                if mismatched:
+                    raise ValueError(f"Partial {path} has incompatible contract attrs: {mismatched}")
+            expected_keys = tuple(json.loads(str(part_attrs["map_datasets_json"])))
+            if set(maps) != set(expected_keys):
+                raise ValueError(f"Partial {path} map datasets differ from its frozen schema")
+            if any(value.shape != (12 * int(nside) ** 2,) for value in maps.values()):
+                raise ValueError(f"Partial {path} contains a map with the wrong HEALPix shape")
+            if any(value.dtype != np.float32 or not np.all(np.isfinite(value)) for value in maps.values()):
+                raise ValueError(f"Partial {path} maps must be finite float32 arrays")
+            partial_hashes.append(_sha256_file(path))
+            if bool(config.get("pasting", {}).get("save_projection_kernels", False)):
+                part_kernels, part_kernel_attrs = load_map_kernels_h5(path)
+                declared_hashes = json.loads(str(part_attrs["kernel_dataset_sha256_json"]))
+                observed_hashes = {key: _sha256_array(value) for key, value in part_kernels.items()}
+                if observed_hashes != declared_hashes:
+                    raise ValueError(f"Partial {path} kernel arrays do not match their declared hashes")
+                if reference_kernels is None:
+                    reference_kernels = part_kernels
+                    reference_kernel_attrs = part_kernel_attrs
+                else:
+                    if set(part_kernels) != set(reference_kernels) or any(
+                        not np.array_equal(part_kernels[key], reference_kernels[key]) for key in reference_kernels
+                    ):
+                        raise ValueError(f"Partial {path} projection kernels differ from the reference split")
+                    if set(part_kernel_attrs) != set(reference_kernel_attrs) or any(
+                        part_kernel_attrs[key] != reference_kernel_attrs[key]
+                        for key in reference_kernel_attrs
+                    ):
+                        raise ValueError(f"Partial {path} projection-kernel attrs differ from the reference split")
         if maps_sum is None:
             maps_sum = {key: np.zeros_like(value, dtype=np.float32) for key, value in maps.items()}
+        elif set(maps) != set(maps_sum):
+            raise ValueError(f"Partial {path} has incompatible map keys")
         for key, value in maps.items():
             maps_sum[key] += value.astype(np.float32)
         if len(gals):
             galaxies.append(gals.astype(np.float32))
         attrs = dict(part_attrs)
+    if strict:
+        if sorted(observed_split_indices) != list(range(int(num_splits))):
+            raise ValueError(
+                f"Partial split IDs are not exactly 0..{int(num_splits) - 1}: {observed_split_indices}"
+            )
+        n_input = int(reference_attrs["n_input_halos"])
+        current_config_sha = _sha256_file(config_path)
+        if str(reference_attrs["config_file_sha256"]) != current_config_sha:
+            raise ValueError("Partial maps were not produced by the current frozen config")
+        if str(reference_attrs["catalog_file_sha256"]) != str(
+            config.get("resolved_theory", {}).get("catalog_file_sha256", "")
+        ):
+            raise ValueError("Partial maps do not reference the frozen catalog SHA")
+        if int(reference_attrs["nside"]) != int(nside) or int(reference_attrs["num_splits"]) != int(num_splits):
+            raise ValueError("Partial nside/num_splits differ from the requested combination")
+        if split_halo_sum != n_input:
+            raise ValueError(f"Split halo counts do not cover the catalog exactly: {split_halo_sum} != {n_input}")
+        strategy = str(reference_attrs["split_strategy"])
+        if strategy in {"block_striped", "striped", "block-stripe", "block_stripe"}:
+            block = int(reference_attrs["split_block_halos"])
+            expected_counts = [
+                sum(stop - start for start, stop in block_striped_split_ranges(n_input, split, num_splits, block))
+                for split in range(num_splits)
+            ]
+            observed_counts = [0] * num_splits
+            for part_attrs in partial_attrs:
+                observed_counts[int(part_attrs["split_index"])] = int(part_attrs["n_split_halos"])
+            if observed_counts != expected_counts:
+                raise ValueError(f"Block-striped split counts differ from exact partition: {observed_counts}")
+        if any(not np.all(np.isfinite(value)) for value in maps_sum.values()):
+            raise ValueError("Combined maps contain non-finite values")
     final_gals = np.concatenate(galaxies, axis=0) if galaxies else np.empty((0, 7), dtype=np.float32)
+    # `pasting.get_galmap: false` means the galaxy field is FROZEN across the sampled
+    # parameters and painted once elsewhere, so the per-point splits carry no galaxies BY
+    # CONSTRUCTION and the realized-n(z) contract below has nothing to act on.  Assert that
+    # design rather than merely skipping the block: a partially-populated catalog is a real
+    # defect and must still raise.  The contract stays fully armed whenever galaxies were
+    # requested -- including when the key is absent, which historically meant "paint them".
+    galaxies_expected = bool(config.get("pasting", {}).get("get_galmap", True))
+    if strict and not galaxies_expected and len(final_gals):
+        raise ValueError(
+            f"pasting.get_galmap is false but the combined splits carry {len(final_gals)} "
+            "galaxies; the frozen-galaxy contract and the painted catalog disagree"
+        )
+    if strict and galaxies_expected and reference_kernels is not None:
+        edges = np.asarray(reference_kernels["lens_histogram_edges"], dtype=np.float64)
+        valid_galaxies = final_gals[final_gals[:, 5] > 0.5]
+        counts, _ = np.histogram(valid_galaxies[:, 2], bins=edges)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        raw_dndz = counts.astype(np.float64) / np.diff(edges)
+        realized_z = np.concatenate(([edges[0]], centers, [edges[-1]]))
+        realized_nz = np.concatenate(([0.0], raw_dndz, [0.0]))
+        realized_norm = float(np.trapz(realized_nz, realized_z))
+        if not np.isfinite(realized_norm) or realized_norm <= 0.0:
+            raise ValueError("Combined frozen galaxy catalog has no valid normalized n(z)")
+        realized_nz /= realized_norm
+        if abs(float(np.trapz(realized_nz, realized_z)) - 1.0) > 1.0e-6:
+            raise ValueError("Combined frozen-galaxy n(z) is not normalized to 1e-6")
+        reference_kernels["realized_hod_galaxy_histogram_counts"] = counts.astype(np.int64)
+        reference_kernels["realized_hod_galaxy_redshift"] = realized_z
+        reference_kernels["realized_hod_galaxy_nz"] = realized_nz
+        reference_kernel_attrs = dict(reference_kernel_attrs or {})
+        reference_kernel_attrs["realized_hod_galaxy_count"] = int(len(valid_galaxies))
+        reference_kernel_attrs["realized_hod_galaxy_nz_normalization"] = float(
+            np.trapz(realized_nz, realized_z)
+        )
+        reference_kernel_attrs["kernel_dataset_sha256_json"] = json.dumps(
+            {key: _sha256_array(value) for key, value in reference_kernels.items()}, sort_keys=True
+        )
     out_path = final_map_path(config, catalog_key, nside)
     if out_path.exists() and not overwrite:
         raise FileExistsError(f"{out_path} exists; pass --overwrite to replace it.")
-    attrs.update({"combined_from_num_splits": int(num_splits), "split_files_json": json.dumps([str(p) for p in paths])})
-    write_maps_h5(out_path, maps_sum, final_gals, attrs)
+    attrs.update({
+        "combined_from_num_splits": int(num_splits),
+        "split_files_json": json.dumps([str(p) for p in paths]),
+        "split_file_sha256_json": json.dumps(partial_hashes),
+        "combined_split_halo_sum": int(split_halo_sum),
+        "galaxy_catalog_sha256": _sha256_array(final_gals),
+        "galaxy_catalog_frozen": bool(config.get("pasting", {}).get("freeze_galaxy_catalog", False)),
+        "map_dataset_sha256_json": json.dumps(
+            {key: _sha256_array(value) for key, value in maps_sum.items()}, sort_keys=True
+        ),
+        "ordering": "RING",
+        "map_units": "dimensionless",
+        "schema_version": "sbi_three_probe_signal_v1",
+    })
+    if reference_kernel_attrs is not None:
+        attrs["kernel_dataset_sha256_json"] = str(
+            reference_kernel_attrs["kernel_dataset_sha256_json"]
+        )
+    write_maps_h5(
+        out_path,
+        maps_sum,
+        final_gals,
+        attrs,
+        kernels=reference_kernels,
+        kernel_attrs=reference_kernel_attrs,
+    )
     print(f"[combine] wrote {out_path}")
     return out_path
 

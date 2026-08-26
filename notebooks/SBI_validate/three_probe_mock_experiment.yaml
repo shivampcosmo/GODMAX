@@ -1,0 +1,202 @@
+experiment:
+  contract_version: 1
+  name: three_probe_mock_c0000_ph000
+  forward_model: map_matched_resolved
+  mock_target: paired_fixed_phase_conditional_response
+  tau_noise_status: provisional
+  mass_definition_status: provisional_assumption
+  mass_semantics: interpolated_particle_count_proxy_treated_as_M200c
+  user_mass_floor_decision: 5.0e11 Msun/h on 2026-08-18
+
+project:
+  name: sbi_three_probe_mock
+  output_root: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/SBI_validate/three_probe_mock
+  catalog_subdir: catalogs
+  map_subdir: maps
+
+abacus:
+  input_root: /mnt/ceph/users/backlight/AbacusBacklight_base_c0000_ph000/lightcone_halos
+  sim_name: AbacusBacklight_base_c0000_ph000
+  read_only: true
+  require_read_only: true
+  working_mass_mode: interpolated_particle_proxy_as_m200c
+  source_checksum_algorithm: sha256
+  source_dirs:
+    - z0.304
+    - z0.334
+    - z0.365
+    - z0.397
+    - z0.431
+    - z0.466
+    - z0.503
+  source_files:
+    - z0.304/lightcone_halo_info_000.asdf
+    - z0.334/lightcone_halo_info_000.asdf
+    - z0.365/lightcone_halo_info_000.asdf
+    - z0.397/lightcone_halo_info_000.asdf
+    - z0.431/lightcone_halo_info_000.asdf
+    - z0.466/lightcone_halo_info_000.asdf
+    - z0.503/lightcone_halo_info_000.asdf
+  source_boundary_null_dirs:
+    - z0.276
+    - z0.542
+  header_match_keys:
+    - ParticleMassHMsun
+    - H0
+    - Omega_M
+    - Omega_DE
+    - Omega_K
+    - CAMB_Omega_b
+    - CAMB_sigma8
+    - CAMB_ns
+    - w0
+    - hMpc
+
+catalogs:
+  c0000_z0p3_0p5_mmin5e11:
+    output_name: abacus_c0000_ph000_zgt0p3_zlt0p5_Mproxyge5e11_halos.h5
+    z_min: 0.3
+    z_max: 0.5
+    z_min_exclusive: true
+    z_max_exclusive: true
+    mass_min_hmsun: 5.0e11
+    mass_min_inclusive: true
+    mass_max_hmsun: 1.0e16
+    mass_max_exclusive: true
+    metadata:
+      source_shell_policy: explicit_actual_interpolated_redshift_overlap
+      source_shell_lower_null: z0.276
+      source_shell_upper_null: z0.542
+      mass_equation: M_particle_proxy_hMsun = InterpolatedN * ParticleMassHMsun
+      mass_semantics: interpolated_particle_count_proxy_treated_as_M200c
+      mass_definition_status: provisional_assumption
+      intended_consumer: GODMAX HEALPix profile pasting
+      storage_policy: columnar shell-ordered HDF5 with LZF, shuffle, and atomic rename
+
+resolved_theory:
+  mode: map_matched_resolved
+  catalog_key: c0000_z0p3_0p5_mmin5e11
+  catalog_path: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/SBI_validate/three_probe_mock/catalogs/abacus_c0000_ph000_zgt0p3_zlt0p5_Mproxyge5e11_halos.h5
+  catalog_file_size_bytes: 2365065071
+  catalog_file_sha256: 0efba6cbb5a9ffa56e8016bbb969fa00f19bd55fe54415bd10521aaeab475488
+  catalog_row_identity_sha256: 8c596725674ec4a6eef519f6ee3cb0008b77c7704879bc86db18dd7ad91742dc
+  catalog_selection_contract_sha256: 5393a294e99cd5318879e734e05b24a6f0987f0fb464f39584d4978607d98cd2
+  catalog_source_content_manifest_sha256: a17ee92843b2d14c9551975dcc42413128c0ed814930b6437865af02ce0660b5
+  cosmology_sha256: 66697d76624b1a3923d2863ef5291196c0a2a93cd208210164f38966a675e8f6
+  source_header_path: /mnt/ceph/users/backlight/AbacusBacklight_base_c0000_ph000/lightcone_halos/z0.304/lightcone_halo_info_000.asdf
+  validate_all_source_headers_from_catalog: true
+  default_params_path: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/params_default.yaml
+  override_cosmology_from_catalog: true
+  require_complete_source_cosmology: true
+  unresolved_completion: false
+  common_support:
+    z_min: 0.3
+    z_max: 0.5
+    z_min_exclusive: true
+    z_max_exclusive: true
+    mass_min_hmsun: 5.0e11
+    mass_max_hmsun: 1.0e16
+    mass_min_inclusive: true
+    mass_max_exclusive: true
+    mass_definition: provisional_particle_count_proxy_as_M200c
+    apply_to_fields:
+      - galaxy
+      - pressure_y
+      - electron_tau
+      - matter
+  particle_thresholds:
+    primary_catalog_mass_floor: 119.03537743599664
+    robustness:
+      - 125
+      - 150
+  lens_kernel:
+    histogram_bins: 128
+    robustness_histogram_bins: 256
+    normalization_tolerance: 1.0e-6
+    output_name: catalog_lens_kernel.h5
+  hmf_bias_diagnostic:
+    hmf_model: T10
+    mass_definition: 200c
+    theory_nz: 64
+    theory_nM: 96
+    theory_nk: 256
+    robustness_theory_nz: 128
+    robustness_theory_nM: 192
+    robustness_theory_nk: 512
+    sky_fraction_nside: 16
+    interpretation: diagnostic_only_mass_proxy_is_not_a_recovered_SO_mass
+  validation_output_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/SBI_validate/three_probe_mock/validation
+
+godmax:
+  default_params: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/param_files/params_default.yaml
+  config_factory_path: notebooks.SBI_validate.three_probe_fast_paste.prepare_fast_paste_godmax_config
+  override_cosmology_from_catalog: true
+  theory_mass_cut_applied_to_hod: true
+
+pasting:
+  contract_version: sbi_three_probe_fast_v1
+  run_name: c0000_z0p3_0p5_mmin5e11_cosh32_fast
+  nside: 512
+  supported_nside: [512, 1024]
+  development_lmax: 1000
+  comparison_lmax: 1535
+  max_paint_R200c_factor: 8.0
+  projected_profile_integration_method: physical_table_cosh
+  num_points_projected_profile: 32
+  projected_profile_los_max_comoving_mpc: null
+  halo_profile_nr: 48
+  halo_profile_nM: 24
+  halo_profile_nz: 48
+  smooth_profiles: true
+  profile_smoothing_kernel: gaussian
+  profile_smoothing_fwhm_pixel_fraction: 0.5
+  profile_smoothing_method: real_space_gaussian
+  profile_smoothing_quadrature_points: 64
+  profile_smoothing_radial_sigma_cutoff: 10.0
+  save_projection_kernels: true
+  profile_timing: true
+  random_seed: 20260819
+  freeze_galaxy_catalog: true
+  fixed_galaxy_num_splits: 32
+  fixed_galaxy_chunk_halos: 100000
+  get_galmap: true
+  get_ymap: true
+  get_kszmap: false
+  get_taumap: true
+  get_kappa_cmb: true
+  get_kappa_wl: false
+  get_baryonifiedmap: false
+  store_projected_matter_maps: false
+  allocate_only_requested_maps: true
+  use_multi_kappa_maps: true
+  use_fused_profile_maps: true
+  return_sparse_maps: true
+  split_strategy: block_striped
+  split_block_halos: 50000
+  num_splits: 32
+  chunk_halos_by_nside:
+    512: 100000
+    1024: 100000
+  pixel_batch_size: 2000
+  pixel_workers: 8
+  pixel_start_method: fork
+  pixel_backend: healpy_ring
+  persistent_pixel_pool: false
+  pixel_pool_warmup: false
+  pixel_prefetch_next_chunk: false
+  jax_clear_caches_every_n_chunks: 0
+  single_pixel_angle_factor: 0.5
+  stencil_pixel_angle_factor: 1.0
+  require_strict_combine_contract: true
+  verbose: true
+  jax:
+    preallocate: false
+    memory_fraction: 0.70
+
+slurm:
+  partition: gpu
+  constraint: a100-80gb
+  paste_time: "06:00:00"
+  paste_mem: 128G
+  cpus_per_gpu: 8
+  logs_dir: /mnt/ceph/users/spandey/ltu-godmax/GODMAX/data/SBI_validate/three_probe_mock/logs

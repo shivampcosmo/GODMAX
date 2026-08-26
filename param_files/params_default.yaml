@@ -166,6 +166,9 @@ analysis:
   backreaction: True
   model_galaxies: True
   model_tSZ: True
+  # ``direct_shell`` conserves the represented CLM monopole without FFTLog
+  # clipping. ``legacy_fftlog`` reproduces the historical density transform.
+  clm_fourier_transform_method: direct_shell
   num_points_trapz_int: 32
   num_points_gal_cal: 32
   calc_nfw_only: True

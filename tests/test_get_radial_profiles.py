@@ -16,10 +16,75 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from get_radial_profiles import Profiles
+from get_radial_profiles import Profiles, _nonthermal_redshift_factor
+from get_Pkzs import get_Pkz
 
 
 FORMULA_RTOL = 1.0e-12
+
+
+def _nonthermal_pressure_fraction(alpha_nt, z, r_ratio=0.7):
+    n_nt = jnp.asarray(0.3, dtype=jnp.float64)
+    beta_nt = jnp.asarray(0.5, dtype=jnp.float64)
+    return (
+        alpha_nt
+        * _nonthermal_redshift_factor(alpha_nt, n_nt, beta_nt, z)
+        * r_ratio**n_nt
+    )
+
+
+def _legacy_positive_nonthermal_pressure_fraction(alpha_nt, z, r_ratio=0.7):
+    n_nt = jnp.asarray(0.3, dtype=jnp.float64)
+    beta_nt = jnp.asarray(0.5, dtype=jnp.float64)
+    fmax = 8.0 ** (-n_nt) / alpha_nt
+    fz = jnp.minimum(
+        (1 + z) ** beta_nt,
+        (fmax - 1) * jnp.tanh(beta_nt * z) + 1,
+    )
+    return alpha_nt * fz * r_ratio**n_nt
+
+
+def test_nonthermal_pressure_alpha_zero_has_finite_right_limit_gradient():
+    alpha_zero = jnp.asarray(0.0, dtype=jnp.float64)
+    z = jnp.asarray(0.5, dtype=jnp.float64)
+
+    value = _nonthermal_pressure_fraction(alpha_zero, z)
+    gradient = jax.grad(_nonthermal_pressure_fraction)(alpha_zero, z)
+    expected_gradient = (1 + z) ** 0.5 * 0.7**0.3
+
+    np.testing.assert_allclose(value, 0.0, rtol=0.0, atol=0.0)
+    assert np.isfinite(float(gradient))
+    np.testing.assert_allclose(
+        gradient,
+        expected_gradient,
+        rtol=FORMULA_RTOL,
+        atol=0.0,
+    )
+
+
+def test_nonthermal_pressure_positive_alpha_preserves_value_and_gradient():
+    alphas = jnp.asarray([0.01, 0.05, 0.18, 0.5], dtype=jnp.float64)
+    redshifts = jnp.asarray([0.0, 0.5, 1.0, 2.0], dtype=jnp.float64)
+
+    for alpha_nt, z in zip(alphas, redshifts):
+        value = _nonthermal_pressure_fraction(alpha_nt, z)
+        legacy_value = _legacy_positive_nonthermal_pressure_fraction(alpha_nt, z)
+        gradient = jax.grad(_nonthermal_pressure_fraction)(alpha_nt, z)
+        legacy_gradient = jax.grad(
+            _legacy_positive_nonthermal_pressure_fraction
+        )(alpha_nt, z)
+        np.testing.assert_allclose(
+            value,
+            legacy_value,
+            rtol=FORMULA_RTOL,
+            atol=0.0,
+        )
+        np.testing.assert_allclose(
+            gradient,
+            legacy_gradient,
+            rtol=FORMULA_RTOL,
+            atol=0.0,
+        )
 
 
 class _SyntheticGalaxyProfiles(Profiles):
@@ -174,3 +239,114 @@ def test_run_stars_calc_without_galaxies_is_unchanged_power_law_branch():
         rtol=FORMULA_RTOL,
         atol=0.0,
     )
+
+
+def _synthetic_clm_shell_profiles():
+    profiles = object.__new__(get_Pkz)
+    profiles.r_array = jnp.geomspace(0.005, 48.0, 23)
+    r = profiles.r_array[:, None]
+    scale = jnp.asarray([1.0e10, 1.0e16])[None, :]
+    radius = jnp.asarray([0.2, 5.0])[None, :]
+    enclosed = scale * (r / radius) ** 1.8 / (1.0 + (r / radius) ** 1.8)
+    profiles.Mclm_mat = enclosed[:, None, :]
+    return profiles
+
+
+def test_clm_shell_telescope_zero_mode_and_extreme_mass_scales():
+    profiles = _synthetic_clm_shell_profiles()
+    shell_mass = profiles.get_Mclm_shell_masses(profiles.Mclm_mat)
+    reconstructed = jnp.cumsum(shell_mass, axis=0)
+    uk_zero = profiles.get_uk_clm_shell(jnp.asarray([0.0]))
+
+    np.testing.assert_allclose(
+        reconstructed, profiles.Mclm_mat, rtol=FORMULA_RTOL, atol=1.0e-15
+    )
+    np.testing.assert_allclose(uk_zero, 1.0, rtol=FORMULA_RTOL, atol=1.0e-15)
+    assert uk_zero.shape == (1, 1, 2)
+    assert np.all(np.isfinite(np.asarray(uk_zero)))
+
+    k_target = jnp.geomspace(1.0e-4, 20.0, 13)
+    k_raw = jnp.geomspace(2.0e-4, 40.0, 9)
+    combined = profiles.get_uk_clm_shell(jnp.concatenate((k_target, k_raw)))
+    np.testing.assert_allclose(
+        combined[:k_target.size],
+        profiles.get_uk_clm_shell(k_target),
+        rtol=FORMULA_RTOL,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        combined[k_target.size:],
+        profiles.get_uk_clm_shell(k_raw),
+        rtol=FORMULA_RTOL,
+        atol=0.0,
+    )
+
+
+def test_clm_shell_low_k_moment_has_the_physical_sign_and_curvature():
+    profiles = _synthetic_clm_shell_profiles()
+    r = profiles.r_array
+    shell_mass = profiles.get_Mclm_shell_masses(profiles.Mclm_mat)
+    rin, rout = r[:-1], r[1:]
+    shell_r2 = (3.0 / 5.0) * (rout**5 - rin**5) / (rout**3 - rin**3)
+    mean_r2 = (
+        profiles.Mclm_mat[0] * r[0]**2 / 2.0
+        + jnp.einsum('r,rzm->zm', shell_r2, shell_mass[1:])
+    ) / profiles.Mclm_mat[-1]
+
+    k = jnp.asarray([1.0e-3 / r[-1]])
+    uk = profiles.get_uk_clm_shell(k)[0]
+    measured = (1.0 - uk) / k[0]**2
+
+    assert np.all(np.asarray(uk) < 1.0)
+    assert np.all(np.asarray(measured) > 0.0)
+    np.testing.assert_allclose(measured, mean_r2 / 6.0, rtol=2.0e-6, atol=0.0)
+
+
+def test_clm_shell_keeps_signed_high_k_windows_and_negative_input_shells():
+    profiles = object.__new__(get_Pkz)
+    profiles.r_array = jnp.asarray([1.0, 2.0], dtype=jnp.float64)
+    profiles.Mclm_mat = jnp.asarray([0.0, 1.0], dtype=jnp.float64)[:, None, None]
+    k = jnp.linspace(0.1, 30.0, 512)
+    uk = profiles.get_uk_clm_shell(k)[:, 0, 0]
+    index = int(jnp.argmin(uk))
+
+    radius = jnp.linspace(1.0, 2.0, 20001)
+    direct = jnp.trapezoid(
+        3.0 * radius**2 / (2.0**3 - 1.0**3)
+        * jnp.sinc(k[index] * radius / jnp.pi),
+        x=radius,
+    )
+    assert float(uk[index]) < 0.0
+    np.testing.assert_allclose(uk[index], direct, rtol=2.0e-8, atol=2.0e-10)
+
+    nonmonotone = jnp.asarray([1.0, 3.0, 2.0, 5.0])[:, None, None]
+    shell_mass = profiles.get_Mclm_shell_masses(nonmonotone)
+    assert float(shell_mass[2, 0, 0]) < 0.0
+    np.testing.assert_allclose(
+        jnp.cumsum(shell_mass, axis=0), nonmonotone, rtol=FORMULA_RTOL, atol=0.0
+    )
+
+    invalid_endpoint = jnp.asarray([1.0, 0.0])[:, None, None]
+    assert np.all(np.isnan(np.asarray(profiles.get_uk_clm_shell(k[:1], invalid_endpoint))))
+
+
+def test_clm_shell_is_jittable_and_has_a_finite_nonzero_shape_gradient():
+    profiles = _synthetic_clm_shell_profiles()
+    base_mass = profiles.Mclm_mat
+    weights = jnp.linspace(0.5, 1.5, 17)[:, None, None]
+    k = jnp.geomspace(1.0e-3, 30.0, 17)
+
+    def objective(theta):
+        deformation = jnp.linspace(1.0, 0.0, base_mass.shape[0])[:, None, None]
+        varied_mass = base_mass * (1.0 + theta * deformation)
+        return jnp.sum(weights * profiles.get_uk_clm_shell(k, varied_mass))
+
+    theta = jnp.asarray(0.03, dtype=jnp.float64)
+    value, gradient = jax.jit(jax.value_and_grad(objective))(theta)
+    step = jnp.asarray(1.0e-5, dtype=jnp.float64)
+    finite_difference = (objective(theta + step) - objective(theta - step)) / (2.0 * step)
+
+    assert np.isfinite(float(value))
+    assert np.isfinite(float(gradient))
+    assert abs(float(gradient)) > 0.0
+    np.testing.assert_allclose(gradient, finite_difference, rtol=2.0e-8, atol=1.0e-10)

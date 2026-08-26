@@ -20,10 +20,10 @@ invariants:
 checks:
   - python tools/kb/kb.py invariants --check --id INV-ABACUS-COSMO-01
   - python tools/kb/kb.py invariants --check --id INV-JAX-SEED-01
-verified_at_commit: a3b3f96
-verified_on: 2026-08-16
+verified_at_commit: 29c3a27
+verified_on: 2026-08-19
 see_also: [kb.xdesi.analysis-state, kb.measurement.multiprobe-product]
-scope_digest: sha256:c22f447ec0e8d5ba79035eeb5af2369f
+scope_digest: sha256:126ad4f0889846c5f88910de573c134c
 ---
 
 ## Claim
@@ -82,17 +82,16 @@ Maps requested: galaxy, y, kSZ, tau, CMB kappa, WL kappa, baryonified.
 `max_paint_R200c_factor: 5.0` is a **physics choice**, not a performance knob: truncating the
 profile changes the 1-halo term and therefore the high-ell power.
 
-`random_seed: 42` is consumed, but the provenance contract is narrower than the old wording
-implied. Each paste chunk receives
+`random_seed: 42` is consumed, but reproducibility remains narrower than layout independence.
+Each paste chunk receives
 `base_seed + 100000 * split_index + chunk_id`
 (`abacus_pasting_helpers.py:2400`), and `get_sim_maps.py:975-979` constructs and splits that
 key. Centrals use Bernoulli sampling and satellites use Poisson sampling
 (`get_sim_maps.py:1320-1335`). This is reproducible only for fixed catalog order, split
-layout, chunking and configuration. The partial/final map HDF5 attributes do not currently
-embed the base or derived seed (`abacus_pasting_helpers.py:2514-2556`); the timing sidecar
-records the configuration path, not a frozen copy of its contents. Therefore
-the explicit-key part of `INV-JAX-SEED-01` holds, but its requirement to record the seed in
-output metadata is not yet satisfied by the partial or combined map HDF5 product.
+layout, chunking and configuration. Partial HDF5 products now embed the base seed, rule and
+chunk seeds, and combined products content-hash the final galaxy catalog
+(`abacus_pasting_helpers.py:2640-2644,2852-2853`). This satisfies recorded fixed-layout
+reproducibility, but changing split/chunk decomposition still changes the realization.
 
 **Theory inputs** — `params_default.yaml` merged with
 `param_files/xDESI/params_fit_abacus.yaml`; source n(z) from the LSST Y1 forecast FITS
@@ -145,6 +144,13 @@ their existence does not change the canonical xDESI configuration. Analytically 
 k/ell setup grids are also canonicalized to 13 significant digits before use and hashing
 (`abacus_pasting_helpers.py:83-142,402-409`) to suppress cross-architecture last-bit drift;
 catalog values and profile values are not canonicalized.
+
+The SBI fast-paste route adds two further opt-in hooks: a project-owned fail-closed GODMAX
+config factory and selective map allocation. Both require explicit config keys; the canonical
+xDESI config still dispatches to `prepare_godmax_config` and allocates its historical eleven
+datasets. Strict split-contract combination is likewise opt-in. The executable legacy null and
+current hashes are recorded in
+`knowledge/.kb/ledgers/2026-08-19-sbi-three-probe-fast-paste.md`.
 
 ## How to verify
 

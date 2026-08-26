@@ -24,11 +24,11 @@ checks:
   - /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python notebooks/xDESI/baryonforge_compare/check_integration_convergence.py --config notebooks/xDESI/baryonforge_compare/backlight_compare_projection_matched.yaml
   - /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python notebooks/xDESI/baryonforge_compare/benchmark_integration_memory.py --config notebooks/xDESI/baryonforge_compare/backlight_compare_projection_matched.yaml --repeats 2
   - /usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python -m pytest tests/test_baryonforge_backlight_compare.py tests/test_get_radial_profiles.py -q
-verified_at_commit: cf72943
-verified_on: 2026-08-04
+verified_at_commit: 29c3a27
+verified_on: 2026-08-19
 see_also: [kb.xdesi.abacus-paste, kb.physics.halo-model-ingredients]
 supersedes: []
-scope_digest: sha256:e734ac23d13ef664e12bc7b30c95dab5
+scope_digest: sha256:ae78740577db90562b3ee357540b5473
 ---
 
 ## Claim
@@ -57,6 +57,18 @@ These are opt-in comparison numerics. Native GODMAX and BaryonForge defaults
 remain unchanged. The comparison is verified for profiles, a deterministic
 64-halo capped run, complete 136,651-halo production maps, and paired
 catalog-representative bandpowers.
+
+The later `analysis.clm_fourier_transform_method` default does not enter this accepted map
+comparison. It is consumed only by `get_Pkz` when constructing the galaxy-satellite Fourier
+window, whereas the Backlight painter inherits `Profiles` and consumes real-space component
+densities. After that config key was added, the combined Backlight plus radial/CLM regression
+suite passed all 37 tests under CPU/x64; the direct/legacy selector also leaves `rho_clm` and
+`rho_dmb` bitwise identical. No accepted map artifact or projector setting is changed.
+
+The later SBI fast-paste factory and selective-allocation changes in the shared helper are
+opt-in. An executable legacy-config null confirms that this comparison still follows the
+original GODMAX factory and historical map allocation; evidence is in
+`knowledge/.kb/ledgers/2026-08-19-sbi-three-probe-fast-paste.md`.
 
 ## Why the integration change is physical
 

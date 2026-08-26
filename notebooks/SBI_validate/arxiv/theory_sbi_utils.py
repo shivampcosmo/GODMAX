@@ -1,8 +1,8 @@
 """Utilities for comparing HMC and SBI on analytical GODMAX Cls.
 
-The default setup is intentionally matched to the first SBI validation target:
-one Backlight/DESI-like lens bin, map-matched resolved halo-model spectra, and a
-fixed Gaussian covariance from the fiducial theory product.
+The setup uses one Backlight/DESI-like lens bin and a fixed Gaussian covariance
+from a versioned fiducial theory product.  Callers can select either the full
+GODMAX spectra or the map-matched resolved spectra.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from fiducial_theory_datavector import (
     DEFAULT_PAINT_R200C_FACTOR,
     build_and_save_fiducial,
     build_notebook_matched_config,
+    compute_ne0_cm3,
     ensure_repo_paths,
     load_validation_product,
 )
@@ -64,6 +65,8 @@ class DataSelection:
     ell_max: float | None
     indices: np.ndarray
     ell_indices: np.ndarray
+    native_ell_indices: np.ndarray
+    native_nell: int
     labels: tuple[str, ...]
 
 
@@ -146,6 +149,7 @@ def ensure_default_fiducial_product(
     output_path: pathlib.Path | str = DEFAULT_FIDUCIAL_PATH,
     param_specs: Sequence[ParameterSpec] | None = None,
     force: bool = False,
+    theory_mode: str = "map_matched_resolved",
 ) -> pathlib.Path:
     """Create the versioned fiducial theory/covariance product if needed."""
 
@@ -173,7 +177,7 @@ def ensure_default_fiducial_product(
 
     build_and_save_fiducial(
         output_path=output_path,
-        theory_mode="map_matched_resolved",
+        theory_mode=theory_mode,
         paint_r200c_factor=DEFAULT_PAINT_R200C_FACTOR,
         sim_param_overrides=sim_overrides,
         other_param_overrides=other_overrides,
@@ -202,6 +206,19 @@ def build_data_selection(
     if len(ell_indices) == 0:
         raise ValueError("The requested ell cuts remove every bin")
 
+    ell_selection = product.get("metadata", {}).get("ell_selection", {})
+    native_grid_indices = np.asarray(
+        ell_selection.get("selected_native_ell_indices", np.arange(nell)),
+        dtype=int,
+    )
+    if native_grid_indices.shape != (nell,):
+        raise ValueError(
+            "Saved native ell-index map is inconsistent with the product ell grid"
+        )
+    native_nell = int(ell_selection.get("original_nell", nell))
+    if np.any(native_grid_indices < 0) or np.any(native_grid_indices >= native_nell):
+        raise ValueError("Saved native ell indices lie outside the declared native grid")
+
     indices: list[int] = []
     labels: list[str] = []
     for probe in selected_probes:
@@ -218,6 +235,8 @@ def build_data_selection(
         ell_max=None if ell_max is None else float(ell_max),
         indices=np.asarray(indices, dtype=int),
         ell_indices=ell_indices.astype(int),
+        native_ell_indices=native_grid_indices[ell_indices],
+        native_nell=native_nell,
         labels=tuple(labels),
     )
 
@@ -250,16 +269,23 @@ def selected_product_arrays(
 
 
 def stable_cholesky(cov: np.ndarray, jitter_fraction: float = 1.0e-10) -> tuple[np.ndarray, float]:
-    """Return a lower Cholesky factor, adding diagonal jitter only if needed."""
+    """Return a lower factor using correlation-scaled linear algebra."""
 
     cov = np.asarray(cov, dtype=float)
+    cov = 0.5 * (cov + cov.T)
+    diag = np.diag(cov)
+    if not np.all(np.isfinite(cov)) or np.any(diag <= 0.0):
+        raise ValueError("Covariance must be finite with a strictly positive diagonal")
+    scale = np.sqrt(diag)
+    corr = cov / np.outer(scale, scale)
+    corr = 0.5 * (corr + corr.T)
     try:
-        return np.linalg.cholesky(cov), 0.0
+        return scale[:, None] * np.linalg.cholesky(corr), 0.0
     except np.linalg.LinAlgError:
-        eig_min = float(np.min(np.linalg.eigvalsh(cov)))
-        floor = jitter_fraction * max(float(np.median(np.diag(cov))), 1.0e-300)
-        jitter = max(floor, -eig_min + floor)
-        return np.linalg.cholesky(cov + np.eye(cov.shape[0]) * jitter), jitter
+        eig_min = float(np.min(np.linalg.eigvalsh(corr)))
+        jitter = max(float(jitter_fraction), -eig_min + float(jitter_fraction))
+        corr = corr + np.eye(corr.shape[0]) * jitter
+        return scale[:, None] * np.linalg.cholesky(corr), jitter
 
 
 def _apply_theta_to_dicts(
@@ -460,6 +486,24 @@ def _build_map_matched_signal_cls_jax(
     }
 
 
+def _build_full_target_signal_cls_jax(
+    cls,
+    tau_physical_correction: float,
+) -> Dict[str, jnp.ndarray]:
+    """Return the four target spectra from the existing full-theory branch."""
+
+    tau_correction = jnp.asarray(tau_physical_correction)
+    beam = jnp.asarray(cls.Bl_mat[:, 0])
+    return {
+        "gg": jnp.asarray(cls.Cl_gal_gal_tot_mat[:, 0, 0]),
+        "gy": jnp.asarray(cls.Cl_gal_y_tot_mat[:, 0]) / jnp.clip(
+            beam, jnp.finfo(beam.dtype).tiny
+        ),
+        "gtau": jnp.asarray(cls.Cl_gal_tau_tot_mat[:, 0]) * tau_correction,
+        "gkappa": jnp.asarray(cls.Cl_gal_kappa_tot_mat[:, 0, 0]),
+    }
+
+
 def make_theory_vector_function(
     param_specs: Sequence[ParameterSpec],
     selection: DataSelection,
@@ -471,8 +515,10 @@ def make_theory_vector_function(
     paint_r200c_factor: float = DEFAULT_PAINT_R200C_FACTOR,
     jit_compile: bool = True,
     fixed_param_specs: Sequence[ParameterSpec] | None = None,
+    theory_mode: str = "map_matched_resolved",
+    remove_galaxy_baryon_suppression: bool = True,
 ):
-    """Create a JAX callable returning the selected map-matched datavector.
+    """Create a JAX callable returning the selected theory datavector.
 
     ``param_specs`` defines the entries supplied in the callable's ``theta``
     argument.  ``fixed_param_specs`` applies additional parameter values at
@@ -483,6 +529,8 @@ def make_theory_vector_function(
     """
 
     fixed_param_specs = tuple(fixed_param_specs or ())
+    if theory_mode not in ("full", "map_matched_resolved"):
+        raise ValueError("theory_mode must be 'full' or 'map_matched_resolved'")
     sampled_names = {spec.name for spec in param_specs}
     fixed_names = {spec.name for spec in fixed_param_specs}
     overlap = sampled_names.intersection(fixed_names)
@@ -515,8 +563,18 @@ def make_theory_vector_function(
         _gal_zrange,
     ) = base_config
     fixed_theta = jnp.asarray(fiducial_theta(fixed_param_specs))
+    tau_physical_correction = compute_ne0_cm3(base_sim_params_dict["cosmo"]) * (
+        1.0 + 0.5 * (gal_zmin + gal_zmax)
+    ) ** 3
     target_spectra = tuple(TARGET_SPECTRA)
-    selected_indices = jnp.asarray(selection.indices, dtype=jnp.int32)
+    direct_indices = []
+    for probe in selection.probes:
+        block = target_spectra.index(probe)
+        direct_indices.extend(
+            block * selection.native_nell + int(iell)
+            for iell in selection.native_ell_indices
+        )
+    selected_indices = jnp.asarray(direct_indices, dtype=jnp.int32)
 
     def vector_fn(theta):
         theta = jnp.asarray(theta)
@@ -552,6 +610,10 @@ def make_theory_vector_function(
             other_params_dict,
             Profiles_obj=profiles,
         )
+        if remove_galaxy_baryon_suppression:
+            pkz.Pgg_tot_mat = pkz.Pgg_1h_kz_mat + pkz.Pgg_2h_kz_mat
+            pkz.Pgm_tot_mat = pkz.Pgm_1h_kz_mat + pkz.Pgm_2h_kz_mat
+            pkz.Pgm_nfw_tot_mat = pkz.Pgm_nfw_1h_kz_mat + pkz.Pgm_nfw_2h_kz_mat
         cls = get_Cl(
             sim_params_dict,
             halo_params_dict,
@@ -560,10 +622,16 @@ def make_theory_vector_function(
             Pkz_obj=pkz,
         )
         context = {"pkz": pkz, "cls": cls}
-        cls_signal = _build_map_matched_signal_cls_jax(
-            context,
-            paint_r200c_factor=paint_r200c_factor,
-        )
+        if theory_mode == "full":
+            cls_signal = _build_full_target_signal_cls_jax(
+                cls,
+                tau_physical_correction=tau_physical_correction,
+            )
+        else:
+            cls_signal = _build_map_matched_signal_cls_jax(
+                context,
+                paint_r200c_factor=paint_r200c_factor,
+            )
         full_vector = jnp.concatenate([cls_signal[spec] for spec in target_spectra])
         return full_vector[selected_indices]
 

@@ -11,7 +11,7 @@ import numpy as np
 
 
 THIS_DIR = pathlib.Path(__file__).resolve().parent
-REPO_ROOT = THIS_DIR.parents[1]
+REPO_ROOT = THIS_DIR.parents[2]
 DEFAULT_HALO_CATALOG = REPO_ROOT / "data" / "backlight" / "halo_catalog_Mlim_1e13_zlim_0.4_0.6.h5"
 DEFAULT_BACKLIGHT_LIGHTCONE_DIR = pathlib.Path(
     "/mnt/ceph/users/backlight/AbacusBacklight_base_c0000_ph000/lightcone_halos"

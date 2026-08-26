@@ -16,10 +16,10 @@ invariants:
   - INV-JAX-X64-01
 checks:
   - "TODO(jax-numerics): benchmark harness reporting compile vs steady-state time per likelihood eval"
-verified_at_commit: a3b3f96
+verified_at_commit: 29c3a27
 verified_on: 2026-08-16
 see_also: [kb.numerics.jax-contract, kb.xdesi.analysis-state]
-scope_digest: sha256:c2f2f0530d56473d6d23860ed496f369
+scope_digest: sha256:c4d8cb071743052e35a4f722564f6eed
 ---
 
 ## Claim
@@ -59,6 +59,15 @@ path, not a full-likelihood gradient proof and not a timing result.
 Performance still matters because it gates feasible chain lengths, but a resource estimate
 must start from a synchronized benchmark of the actual likelihood and sampler configuration,
 not from the historical numbers above.
+
+A narrower CLM benchmark is now recorded. For the reduced CPU/x64 full-constructor `Pgg`
+gradient graph, `direct_shell` used 5,262,760 compiled temporary bytes versus 5,263,144 for
+`legacy_fftlog`; first compile+run was 11.72 versus 12.30 seconds and warm evaluations were
+about 0.009 seconds for both. The difference is intentionally reported as negligible for the
+full graph, whose memory is dominated elsewhere. The direct path nevertheless removes the
+CLM FFTLog and log interpolation and forms its target/raw outputs in one contraction. No GPU
+memory, full likelihood throughput, or NUTS samples-per-second claim follows from this CPU
+test.
 
 ## How to verify
 

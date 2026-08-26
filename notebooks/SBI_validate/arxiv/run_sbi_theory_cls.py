@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -12,7 +13,8 @@ from typing import Sequence
 
 import numpy as np
 import torch
-from torch.distributions import Distribution, constraints
+from scipy.special import ndtr, ndtri
+from torch.distributions import Distribution, Independent, Normal, constraints
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
@@ -105,6 +107,33 @@ def _parse_rounds(text: str) -> list[int]:
     return rounds
 
 
+def _file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _atomic_json(path: pathlib.Path, payload: dict) -> None:
+    temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
+    with temporary.open("w") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _atomic_npz(path: pathlib.Path, payload: dict) -> None:
+    temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
+    with temporary.open("wb") as handle:
+        np.savez_compressed(handle, **payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
 def run_sbi(
     fiducial_path: pathlib.Path,
     output_dir: pathlib.Path,
@@ -135,8 +164,14 @@ def run_sbi(
     learning_rate: float,
     parameter_transform: str,
     fixed_param_specs: Sequence[ParameterSpec] | None = None,
+    theory_mode: str = "map_matched_resolved",
+    simulation_batch_size: int = 1,
+    posterior_samples_per_round: int = 0,
+    round_contract: dict | None = None,
+    validate_theory: bool = True,
+    validation_override: dict | None = None,
 ) -> dict:
-    """Run sequential SNPE using noisy theory-Cl summaries."""
+    """Run sequential SNPE using noisy whitened theory vectors or summaries."""
 
     from sbi.inference import SNPE
     from sbi.utils import BoxUniform, posterior_nn
@@ -156,19 +191,31 @@ def run_sbi(
         fiducial_offset=fiducial_offset,
         jit_compile=jit_compile,
         fixed_param_specs=fixed_param_specs,
+        theory_mode=theory_mode,
     )
-    validation = validate_theory_vector(vector_fn, selected, param_specs)
+    if validate_theory:
+        validation = validate_theory_vector(vector_fn, selected, param_specs)
+    elif validation_override is not None:
+        validation = dict(validation_override)
+    else:
+        raise ValueError("Skipping theory validation requires validation_override")
 
     low, high = prior_bounds(param_specs)
     theta_prior = BoxUniform(
         low=torch.as_tensor(low, dtype=torch.float32, device=torch_device),
         high=torch.as_tensor(high, dtype=torch.float32, device=torch_device),
+        device=device,
     )
     obs_np = np.asarray(selected["data_vector"], dtype=float)
     chol_np = np.asarray(selected["chol"], dtype=float)
     theta0_np = fiducial_theta(param_specs)
     compression_info = {"summary_compression": summary_compression}
     jac_for_batch = np.asarray(theory_info["jacobian"], dtype=float) if "jacobian" in theory_info else None
+    theory_evaluation_mode = (
+        "linearized_jacobian_batch"
+        if jac_for_batch is not None
+        else "direct_per_simulation"
+    )
     if summary_compression == "none":
         x_obs_np = np.zeros(len(obs_np), dtype=float)
         compress = lambda x_white: x_white
@@ -211,6 +258,33 @@ def run_sbi(
         def transform_summary_np(summary_theta_units: np.ndarray) -> np.ndarray:
             return np.asarray(summary_theta_units, dtype=float)
 
+    elif parameter_transform == "probit":
+        if summary_compression != "none":
+            raise ValueError("parameter_transform='probit' requires summary_compression='none'")
+        prior = Independent(
+            Normal(
+                torch.zeros(len(low), dtype=torch.float32, device=torch_device),
+                torch.ones(len(low), dtype=torch.float32, device=torch_device),
+            ),
+            1,
+        )
+
+        def inference_to_theta_np(samples: np.ndarray) -> np.ndarray:
+            quantiles = ndtr(np.asarray(samples, dtype=float))
+            return low[None, :] + (high - low)[None, :] * quantiles
+
+        def theta_to_inference_np(samples: np.ndarray) -> np.ndarray:
+            quantiles = (
+                (np.asarray(samples, dtype=float) - low[None, :])
+                / (high - low)[None, :]
+            )
+            if np.any((quantiles <= 0.0) | (quantiles >= 1.0)):
+                raise ValueError("Probit transform requires parameters strictly inside the prior")
+            return ndtri(quantiles)
+
+        def transform_summary_np(summary: np.ndarray) -> np.ndarray:
+            return np.asarray(summary, dtype=float)
+
     elif parameter_transform == "fisher":
         if summary_compression != "score":
             raise ValueError("parameter_transform='fisher' requires summary_compression='score'")
@@ -241,13 +315,23 @@ def run_sbi(
             "parameter_transform_inverse": inv_transform,
         })
     else:
-        raise ValueError("parameter_transform must be 'none' or 'fisher'")
+        raise ValueError("parameter_transform must be 'none', 'probit', or 'fisher'")
 
     x_obs = torch.as_tensor(x_obs_np, dtype=torch.float32, device=torch_device)
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
 
-    def simulate_whitened(theta_t: torch.Tensor, round_seed: int) -> torch.Tensor:
+    if simulation_batch_size < 1:
+        raise ValueError("simulation_batch_size must be positive")
+    if posterior_samples_per_round < 0:
+        raise ValueError("posterior_samples_per_round cannot be negative")
+    batched_vector_fn = None
+    if jac_for_batch is None and simulation_batch_size > 1:
+        batched_vector_fn = jax.jit(jax.vmap(vector_fn))
+
+    def simulate_whitened(
+        theta_t: torch.Tensor, round_seed: int
+    ) -> tuple[torch.Tensor, np.ndarray, np.ndarray]:
         theta_np = inference_to_theta_np(theta_t.detach().cpu().numpy())
         eps_rng = np.random.default_rng(round_seed)
         if jac_for_batch is not None:
@@ -259,21 +343,54 @@ def run_sbi(
                 x_out = transform_summary_np(x_theta_units)
             else:
                 x_out = x_white
-            return torch.as_tensor(x_out, dtype=torch.float32, device=torch_device)
+            return (
+                torch.as_tensor(x_out, dtype=torch.float32, device=torch_device),
+                mean_white,
+                x_white - mean_white,
+            )
 
-        x_rows = []
-        for row in theta_np:
-            mu = np.asarray(vector_fn(jnp.asarray(row, dtype=jnp.float64)), dtype=float)
-            mean_white = np.linalg.solve(chol_np, mu - obs_np)
-            x_rows.append(compress(mean_white + eps_rng.normal(size=mean_white.shape)))
-        return torch.as_tensor(
-            transform_summary_np(np.asarray(x_rows)),
-            dtype=torch.float32,
-            device=torch_device,
+        if batched_vector_fn is None:
+            prediction_chunks = (
+                np.asarray(
+                    vector_fn(jnp.asarray(row, dtype=jnp.float64)), dtype=float
+                )[None, :]
+                for row in theta_np
+            )
+        else:
+            prediction_chunks = (
+                np.asarray(
+                    batched_vector_fn(
+                        jnp.asarray(
+                            theta_np[start : start + simulation_batch_size],
+                            dtype=jnp.float64,
+                        )
+                    ),
+                    dtype=float,
+                )
+                for start in range(0, len(theta_np), simulation_batch_size)
+            )
+        predictions = np.concatenate(list(prediction_chunks), axis=0)
+        mean_white = np.linalg.solve(chol_np, (predictions - obs_np).T).T
+        noise_all = eps_rng.normal(size=mean_white.shape)
+        x_white = mean_white + noise_all
+        if summary_compression == "none":
+            x_rows = x_white
+        else:
+            x_rows = np.asarray([compress(row) for row in x_white])
+        return (
+            torch.as_tensor(
+                transform_summary_np(np.asarray(x_rows)),
+                dtype=torch.float32,
+                device=torch_device,
+            ),
+            mean_white,
+            noise_all,
         )
 
     density_estimator = posterior_nn(
         model=density_estimator_model,
+        z_score_theta="independent",
+        z_score_x="independent",
         hidden_features=hidden_features,
         num_transforms=num_transforms,
         num_components=num_components,
@@ -288,6 +405,14 @@ def run_sbi(
     proposal = prior
     posterior = None
     round_paths: list[str] = []
+    round_simulation_runtime_sec: list[float] = []
+    round_training_summaries: list[dict[str, object]] = []
+    round_posterior_paths: list[str] = []
+    round_ready_paths: list[str] = []
+    last_round_posterior_samples: np.ndarray | None = None
+    last_round_posterior_samples_inference: np.ndarray | None = None
+    last_round_posterior_attempts: int | None = None
+    previous_round_samples_sha256: str | None = None
     t0 = time.time()
 
     def sample_from_proposal_inside_prior(proposal, nsim: int) -> torch.Tensor:
@@ -342,19 +467,44 @@ def run_sbi(
             theta = sample_from_proposal_inside_prior(posterior, nsim)
             proposal_for_append = proposal
 
-        x = simulate_whitened(theta, round_seed=seed + 1000 * (iround + 1))
+        round_seed = seed + 1000 * (iround + 1)
+        simulation_t0 = time.time()
+        x, x_mean_white, epsilon_white = simulate_whitened(
+            theta, round_seed=round_seed
+        )
+        round_simulation_runtime_sec.append(time.time() - simulation_t0)
         theta_physical = inference_to_theta_np(theta.detach().cpu().numpy())
+        x_np = x.detach().cpu().numpy()
+        if (
+            not np.all(np.isfinite(theta_physical))
+            or not np.all((theta_physical >= low[None, :]) & (theta_physical <= high[None, :]))
+            or not np.all(np.isfinite(x_np))
+            or not np.all(np.isfinite(x_mean_white))
+            or not np.all(np.isfinite(epsilon_white))
+        ):
+            raise RuntimeError(f"Round {iround + 1} produced non-finite/out-of-prior simulations")
+        if summary_compression == "none" and not np.array_equal(
+            x_np, np.asarray(x_mean_white + epsilon_white, dtype=np.float32)
+        ):
+            raise RuntimeError(f"Round {iround + 1} whitened simulation reconstruction failed")
         npz_path = output_dir / f"sbi_round{iround}_simulations.npz"
-        np.savez_compressed(
+        _atomic_npz(
             npz_path,
-            theta=theta_physical,
-            theta_inference=theta.detach().cpu().numpy(),
-            x=x.detach().cpu().numpy(),
-            round=np.asarray(iround),
-            nsim=np.asarray(nsim),
+            {
+                "theta": theta_physical,
+                "theta_inference": theta.detach().cpu().numpy(),
+                "x": x_np,
+                "x_mean_white": x_mean_white,
+                "epsilon_white": epsilon_white,
+                "round": np.asarray(iround),
+                "round_seed": np.asarray(round_seed),
+                "nsim": np.asarray(nsim),
+            },
         )
         round_paths.append(str(npz_path))
 
+        training_log_start = len(inference._summary["training_log_probs"])
+        validation_log_start = len(inference._summary["validation_log_probs"])
         density_estimator = inference.append_simulations(
             theta,
             x,
@@ -370,17 +520,165 @@ def run_sbi(
             force_first_round_loss=force_first_round_loss,
             show_train_summary=True,
         )
+        round_training_summaries.append({
+            "round": iround,
+            "epochs_trained": int(inference._summary["epochs_trained"][-1]),
+            "best_validation_log_prob": float(
+                inference._summary["best_validation_log_prob"][-1]
+            ),
+            "training_log_probs": [
+                float(value)
+                for value in inference._summary["training_log_probs"][training_log_start:]
+            ],
+            "validation_log_probs": [
+                float(value)
+                for value in inference._summary["validation_log_probs"][validation_log_start:]
+            ],
+            "epoch_durations_sec": [
+                float(value)
+                for value in inference._summary["epoch_durations_sec"][validation_log_start:]
+            ],
+            "reached_requested_max_num_epochs": bool(
+                int(inference._summary["epochs_trained"][-1]) >= max_num_epochs
+            ),
+        })
+        current_training = round_training_summaries[-1]
+        training_values = np.asarray(current_training["training_log_probs"], dtype=float)
+        validation_values = np.asarray(
+            current_training["validation_log_probs"], dtype=float
+        )
+        if (
+            training_values.size == 0
+            or validation_values.size == 0
+            or not np.all(np.isfinite(training_values))
+            or not np.all(np.isfinite(validation_values))
+            or not np.isfinite(current_training["best_validation_log_prob"])
+        ):
+            raise RuntimeError(f"Round {iround + 1} training diagnostics are non-finite")
+        if current_training["reached_requested_max_num_epochs"]:
+            raise RuntimeError(
+                f"Round {iround + 1} reached max_num_epochs without an early stop"
+            )
         posterior = inference.build_posterior(density_estimator)
         posterior.set_default_x(x_obs)
         proposal = posterior
         save_pickle(output_dir / f"sbi_posterior_round{iround}.pkl", posterior)
 
-    post_samples_inference_t, posterior_sample_attempts = sample_final_inside_prior(
-        posterior,
-        posterior_samples,
-    )
-    post_samples_inference = post_samples_inference_t.detach().cpu().numpy()
-    post_samples = inference_to_theta_np(post_samples_inference)
+        if posterior_samples_per_round:
+            round_samples_t, round_attempts = sample_final_inside_prior(
+                posterior, posterior_samples_per_round
+            )
+            round_samples_inference = round_samples_t.detach().cpu().numpy()
+            round_samples = inference_to_theta_np(round_samples_inference)
+            if (
+                round_samples.shape != (posterior_samples_per_round, len(param_specs))
+                or not np.all(np.isfinite(round_samples))
+                or not np.all(
+                    (round_samples >= low[None, :])
+                    & (round_samples <= high[None, :])
+                )
+            ):
+                raise RuntimeError(
+                    f"Round {iround + 1} posterior samples are invalid/out of prior"
+                )
+            round_metadata = {
+                "schema": "godmax.sbi.round.v1",
+                "round_index": iround,
+                "round_number": iround + 1,
+                "simulations_this_round": nsim,
+                "simulations_cumulative": int(
+                    sum(simulations_per_round[: iround + 1])
+                ),
+                "simulations_per_round": list(simulations_per_round),
+                "posterior_samples": posterior_samples_per_round,
+                "posterior_sample_attempts": round_attempts,
+                "seed": seed,
+                "round_seed": round_seed,
+                "theory_backend": theory_backend,
+                "theory_mode": theory_mode,
+                "theory_evaluation_mode": theory_evaluation_mode,
+                "fiducial_offset_correction": fiducial_offset,
+                "summary_compression": summary_compression,
+                "summary_dimension": int(np.size(x_obs_np)),
+                "parameter_transform": parameter_transform,
+                "internal_z_score_theta": "independent",
+                "internal_z_score_x": "independent",
+                "density_estimator": density_estimator_model,
+                "hidden_features": hidden_features,
+                "num_transforms": num_transforms,
+                "num_components": num_components,
+                "num_bins": num_bins,
+                "training_batch_size": training_batch_size,
+                "max_num_epochs": max_num_epochs,
+                "simulation_batch_size": simulation_batch_size,
+                "training_summary": round_training_summaries[-1],
+                "contract": dict(round_contract or {}),
+            }
+            round_sample_path = (
+                output_dir / f"sbi_posterior_samples_round{iround + 1}.npz"
+            )
+            _atomic_npz(
+                round_sample_path,
+                {
+                    "samples": round_samples,
+                    "samples_inference": round_samples_inference,
+                    "theta_fiducial": theta0_np,
+                    "prior_min": low,
+                    "prior_max": high,
+                    "data_vector": obs_np,
+                    "cov": np.asarray(selected["cov"]),
+                    "chol": chol_np,
+                    "selection_indices": np.asarray(selection.indices),
+                    "selection_ell_indices": np.asarray(selection.ell_indices),
+                    "metadata_json": np.asarray(
+                        json.dumps(round_metadata, sort_keys=True)
+                    ),
+                },
+            )
+            round_diagnostics_path = (
+                output_dir / f"sbi_round{iround + 1}_diagnostics.json"
+            )
+            _atomic_json(round_diagnostics_path, round_metadata)
+            samples_sha256 = _file_sha256(round_sample_path)
+            posterior_path = output_dir / f"sbi_posterior_round{iround}.pkl"
+            ready_payload = {
+                "schema": "godmax.sbi.round.ready.v1",
+                "round_index": iround,
+                "round_number": iround + 1,
+                "samples_path": str(round_sample_path),
+                "samples_sha256": samples_sha256,
+                "simulation_path": str(npz_path),
+                "simulation_sha256": _file_sha256(npz_path),
+                "posterior_path": str(posterior_path),
+                "posterior_sha256": _file_sha256(posterior_path),
+                "diagnostics_path": str(round_diagnostics_path),
+                "diagnostics_sha256": _file_sha256(round_diagnostics_path),
+                "previous_round_samples_sha256": previous_round_samples_sha256,
+                "contract": dict(round_contract or {}),
+            }
+            ready_path = output_dir / f"sbi_round{iround + 1}.ready.json"
+            _atomic_json(ready_path, ready_payload)
+            round_posterior_paths.append(str(round_sample_path))
+            round_ready_paths.append(str(ready_path))
+            previous_round_samples_sha256 = samples_sha256
+            last_round_posterior_samples = round_samples
+            last_round_posterior_samples_inference = round_samples_inference
+            last_round_posterior_attempts = round_attempts
+
+    if (
+        posterior_samples_per_round == posterior_samples
+        and last_round_posterior_samples is not None
+    ):
+        post_samples = last_round_posterior_samples
+        post_samples_inference = last_round_posterior_samples_inference
+        posterior_sample_attempts = int(last_round_posterior_attempts)
+    else:
+        post_samples_inference_t, posterior_sample_attempts = sample_final_inside_prior(
+            posterior,
+            posterior_samples,
+        )
+        post_samples_inference = post_samples_inference_t.detach().cpu().numpy()
+        post_samples = inference_to_theta_np(post_samples_inference)
     samples_path = output_dir / "sbi_posterior_samples.npz"
     np.savez_compressed(
         samples_path,
@@ -410,12 +708,22 @@ def run_sbi(
                     "max_num_epochs": max_num_epochs,
                     "validation": validation,
                     "round_paths": round_paths,
+                    "round_simulation_runtime_sec": round_simulation_runtime_sec,
+                    "round_training_summaries": round_training_summaries,
+                    "round_posterior_paths": round_posterior_paths,
+                    "round_ready_paths": round_ready_paths,
+                    "seed": seed,
                     "x_is_centered_cholesky_whitened": True,
                     "fiducial_offset_correction": fiducial_offset,
                     "theory_backend": theory_backend,
+                    "theory_mode": theory_mode,
+                    "theory_evaluation_mode": theory_evaluation_mode,
                     "summary_compression": summary_compression,
+                    "summary_dimension": int(np.size(x_obs_np)),
                     "device": device,
                     "density_estimator": density_estimator_model,
+                    "internal_z_score_theta": "independent",
+                    "internal_z_score_x": "independent",
                     "discard_prior_samples": discard_prior_samples,
                     "retrain_from_scratch": retrain_from_scratch,
                     "force_first_round_loss": force_first_round_loss,
@@ -424,8 +732,15 @@ def run_sbi(
                     "learning_rate": learning_rate,
                     "parameter_transform": parameter_transform,
                     "posterior_sample_attempts": posterior_sample_attempts,
+                    "posterior_sample_attempts_interpretation": (
+                        "wrapper candidate draws after DirectPosterior sampling; not the "
+                        "density-network rejection-attempt count"
+                    ),
                     "num_components": num_components,
                     "num_bins": num_bins,
+                    "simulation_batch_size": simulation_batch_size,
+                    "posterior_samples_per_round": posterior_samples_per_round,
+                    "round_contract": dict(round_contract or {}),
                 },
                 fixed_param_specs=fixed_param_specs,
             )
@@ -453,12 +768,22 @@ def run_sbi(
         "posterior_samples": posterior_samples,
         "posterior_sample_attempts": posterior_sample_attempts,
         "round_paths": round_paths,
+        "round_simulation_runtime_sec": round_simulation_runtime_sec,
+        "round_training_summaries": round_training_summaries,
+        "round_posterior_paths": round_posterior_paths,
+        "round_ready_paths": round_ready_paths,
+        "seed": seed,
         "samples_path": str(samples_path),
         "fiducial_offset_correction": fiducial_offset,
         "theory_backend": theory_backend,
+        "theory_mode": theory_mode,
+        "theory_evaluation_mode": theory_evaluation_mode,
         "summary_compression": summary_compression,
+        "summary_dimension": int(np.size(x_obs_np)),
         "device": device,
         "density_estimator": density_estimator_model,
+        "internal_z_score_theta": "independent",
+        "internal_z_score_x": "independent",
         "discard_prior_samples": discard_prior_samples,
         "retrain_from_scratch": retrain_from_scratch,
         "force_first_round_loss": force_first_round_loss,
@@ -466,12 +791,19 @@ def run_sbi(
         "validation_fraction": validation_fraction,
         "learning_rate": learning_rate,
         "parameter_transform": parameter_transform,
+        "posterior_sample_attempts_interpretation": (
+            "wrapper candidate draws after DirectPosterior sampling; not the "
+            "density-network rejection-attempt count"
+        ),
         "hidden_features": hidden_features,
         "num_transforms": num_transforms,
         "num_components": num_components,
         "num_bins": num_bins,
         "training_batch_size": training_batch_size,
         "max_num_epochs": max_num_epochs,
+        "simulation_batch_size": simulation_batch_size,
+        "posterior_samples_per_round": posterior_samples_per_round,
+        "round_contract": dict(round_contract or {}),
         "fixed_parameter_specs": [
             {
                 "name": spec.name,
@@ -521,6 +853,8 @@ def main() -> None:
                         help="Disable the constant numerical offset that aligns the JAX evaluator to the saved fiducial product.")
     parser.add_argument("--theory-backend", choices=("linearized", "direct"),
                         default="linearized")
+    parser.add_argument("--theory-mode", choices=("full", "map_matched_resolved"),
+                        default="map_matched_resolved")
     parser.add_argument("--summary-compression", choices=("score", "none"),
                         default="score")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -533,8 +867,15 @@ def main() -> None:
     parser.add_argument("--num-atoms", type=int, default=10)
     parser.add_argument("--validation-fraction", type=float, default=0.1)
     parser.add_argument("--learning-rate", type=float, default=5.0e-4)
-    parser.add_argument("--parameter-transform", choices=("none", "fisher"), default="none",
-                        help="Train SNPE in raw parameters or in a Fisher-whitened linear parameter basis.")
+    parser.add_argument(
+        "--parameter-transform",
+        choices=("none", "probit", "fisher"),
+        default="none",
+        help=(
+            "Train SNPE in raw parameters, an exact box-prior-to-Normal probit basis, "
+            "or a Fisher-whitened linear basis."
+        ),
+    )
     args = parser.parse_args()
 
     param_specs = parse_param_specs(args.param_spec)
@@ -542,6 +883,7 @@ def main() -> None:
         args.fiducial_path,
         param_specs=param_specs,
         force=args.force_fiducial,
+        theory_mode=args.theory_mode,
     )
     result = run_sbi(
         fiducial_path=pathlib.Path(fiducial_path),
@@ -563,6 +905,7 @@ def main() -> None:
         jit_compile=not args.no_jit,
         fiducial_offset=not args.no_fiducial_offset,
         theory_backend=args.theory_backend,
+        theory_mode=args.theory_mode,
         summary_compression=args.summary_compression,
         device=args.device,
         discard_prior_samples=args.discard_prior_samples,

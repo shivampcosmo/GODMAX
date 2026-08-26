@@ -14,10 +14,10 @@ invariants:
   - INV-PHYS-UNITS-01
 checks:
   - "TODO(godmax-core): assert every key used by src/ exists in params_default.yaml"
-verified_at_commit: cf72943
-verified_on: 2026-08-05
+verified_at_commit: 29c3a27
+verified_on: 2026-08-16
 see_also: [kb.arch.class-chain, kb.xdesi.analysis-state]
-scope_digest: sha256:178fae5e413c11cbc80336393e1fac74
+scope_digest: sha256:1dfc0adfd79381989ed41f10e19b9d62
 ---
 
 ## Claim
@@ -81,6 +81,13 @@ halo_params.nz: 96
 Fixed cosmology for the Stage-31 comparisons and HMC: `H0 67.36`, `Om0 0.30`, `Ob0 0.0493`,
 `sigma8 0.80`, `ns 0.9649`, `w0 -1.0`, flat.
 
+`analysis.clm_fourier_transform_method` is a static model-implementation selector. Its
+default is `direct_shell`; `legacy_fftlog` is the exact historical comparison path. Because
+project configurations are deep-merged, every override that omits this key now inherits the
+shell transform. To reproduce an older galaxy-spectrum result, the override must state
+`clm_fourier_transform_method: legacy_fftlog` explicitly. The value is parsed and validated
+once in `src/base_class.py:283-292` and is propagated through the injected class chain.
+
 Note `analysis.beam_fwhm_arcmin: 0.0`: the ACT beams, pixel windows, masks, transfer
 functions, shear sign, m-bias and kSZ conversion are applied by the measurement/theory
 wrapper, **not** by smooth GODMAX curves (`INV-BEAM-01`, `INV-WINDOW-CMP-01`).
@@ -113,6 +120,9 @@ EOF
 - **A silently inherited default.** Deep merge's strength is also its hazard: an override
   that omits a key inherits the default, so two configs can differ in a parameter neither
   file mentions. Symptom: two runs disagree with no visible config difference.
+- **Historical CLM run without an explicit transform selector.** It now inherits
+  `direct_shell`; use `legacy_fftlog` when numerical reproduction, rather than the new
+  mass-conserving galaxy window, is the objective.
 - **Assuming `analysis.beam_fwhm_arcmin: 0.0` means "no beam".** The beam is applied by the
   measurement wrapper. Setting a nonzero value here applies it twice — a monotonic high-ell
   deficit confined to the ACT y and T families.

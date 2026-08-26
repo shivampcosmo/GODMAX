@@ -19,10 +19,10 @@ invariants:
   - INV-NZ-NORM-01
 checks:
   - "TODO(halo-model-physicist): mass-budget and bias-normalisation tests on the production grid"
-verified_at_commit: a3b3f96
+verified_at_commit: 29c3a27
 verified_on: 2026-08-16
 see_also: [kb.arch.class-chain, kb.numerics.jax-contract]
-scope_digest: sha256:5181ad1fa54b98c9ddc82afd0cf4b271
+scope_digest: sha256:aacb4feac67b0857b454a2d5d8d5b84d
 ---
 
 ## Claim
@@ -63,6 +63,31 @@ fraction identity on the halo `(z, M)` grid. The implementation sets
 float64 roundoff; the exact command and absolute residual are in the linked re-verification
 ledger. This fraction check does not by itself establish closure of the separately
 discretised radial density profiles.
+
+For the galaxy-satellite collisionless window, the default source path now transforms the
+supplied cumulative mass directly. It treats `M(r0)` as one unresolved CLM cell with the
+NFW-cusp asymptotic `M(<r) proportional to r^2`, and each later `diff(M)` as a
+constant-volume-density shell (`src/get_radial_profiles.py:845-856` and
+`src/get_Pkzs.py:30-89`). This makes the represented monopole exact and gives the required
+`u(k)=1-k^2<r^2>/6+...` limit without clipping signed high-k values. The p=2 continuation is
+**only** for the unresolved CLM cell: central stars have a different inner mass law and gas
+another, so it is not applied to the total DMB profile.
+
+This does not certify the physical radial mass budget. On the freshly executed default
+`nr=23`, `r=0.005--8 Mpc/h`, `M=10^11.5--10^15.5 Msun/h` grid, the represented endpoint
+relative to `fclm*Mtot` reaches only `0.777810570` for the least-covered halo. The Fourier
+normalization is therefore exact for what the grid represents, while outer coverage remains
+an independent open failure. The source integration deliberately leaves `rho_clm_mat`,
+`rho_dmb_mat`, and all matter-only spectra unchanged.
+
+On the same actual default radial interval, an `nr=95` direct transform provides the current
+high-resolution numerical reference. At `nr=23`, the direct result differs by at most
+`8.43e-4` for `k<=0.1 h/Mpc` and `1.405e-2` over the full sampled range; the legacy
+density/FFTLog result differs by `1.272e-1` and `1.290e-1`, respectively. Direct full-range
+movement decreases from `1.144e-2` between 23 and 47 nodes to `2.612e-3` between 47 and 95
+nodes. Both mass-grid endpoints are finite; the largest halo supplies the worst `k<=1`
+coarse-grid error. This establishes convergence and a large accuracy improvement, not exact
+nonlinear-scale convergence at the default resolution.
 
 **Bias normalisation** (`INV-PHYS-BIASNORM-01`, high).
 `∫ b(M,z) n(M,z) M dM / rho_m = 1` within tolerance on the production grid, given the adopted
@@ -120,6 +145,9 @@ numbers, in the evidence ledger. Report the grid limits with every integral-base
 
 - **Mass-budget violation.** Matter P(k) amplitude drifts with baryon parameters at
   k < 0.1 h/Mpc, where baryons should be irrelevant — degenerate with sigma8.
+- **Confusing a normalized satellite window with mass closure.** `u_clm(0)=1` can remain
+  exact when `Mclm(rmax)/(fclm*Mtot)` is substantially below one. Always report endpoint
+  coverage and negative shell increments separately.
 - **Bias normalisation off.** 2-halo amplitude systematically wrong; the HOD's effective bias
   disagrees with the matter large-scale bias.
 - **Transition artefact.** A localised bump or dip near k ~ 1 h/Mpc that propagates into the

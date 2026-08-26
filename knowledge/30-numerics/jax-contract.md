@@ -3,7 +3,7 @@ id: kb.numerics.jax-contract
 title: The JAX contract — x64, tracing boundaries, gradient flow, determinism
 layer: 30-numerics
 owner: jax-numerics
-status: draft
+status: verified
 confidence: medium
 scope:
   - src/get_Cls.py
@@ -17,10 +17,10 @@ invariants:
   - INV-JAX-SEED-01
 checks:
   - "TODO(jax-numerics): gradient-finiteness test at fiducial, best fit and prior corners"
-verified_at_commit: 43e07ca
-verified_on: 2026-08-03
+verified_at_commit: 29c3a27
+verified_on: 2026-08-16
 see_also: [kb.arch.class-chain, kb.numerics.performance]
-scope_digest: sha256:3feaf673879475d4319ecb9b5fae3cf3
+scope_digest: sha256:a9b7f53df21487630b9c72bbc344a9b7
 ---
 
 ## Claim
@@ -61,6 +61,22 @@ so a NaN in an unused arm still poisons the reverse-mode gradient. Guards must g
 *inputs* of a division or log — the safe-denominator pattern — not only on the output. A
 non-finite gradient in one prior corner does not crash NUTS; it produces divergences and a
 posterior that stops short of the prior boundary.
+
+The direct CLM shell transform is a narrow positive example of the contract
+(`src/get_Pkzs.py:30-89,130-147`). Algorithm selection is static Python control from a
+configuration string; the numerical path is slice/difference, elementary window functions,
+and one `einsum`. A fresh CPU/x64 full reduced-constructor test differentiated a weighted
+`Pgg` objective with respect to `theta_ej_0`, `nu_theta_ej_M`, and `nu_theta_ej_z`; all nine
+gradient components at fiducial and the two registered prior corners were finite and
+nonzero, and lowered HLO contained no host callback. This is structural JAX/HMC evidence,
+not an actual GPU or full-NUTS run.
+
+A separate deterministic CPU/x64 NumPyro smoke ran eight warmup and eight NUTS samples for
+those three CLM-ejection parameters through the full reduced `get_Pkz -> Pgg` construction.
+All samples were finite and moved, with zero divergences and finite trajectories of three to
+seven leapfrog steps. This demonstrates that the new operator participates correctly in an
+actual sampler trajectory. It is not a posterior-convergence test, does not cover every
+Stage-31 parameter, and still does not substitute for a GPU runtime check.
 
 **Determinism** (`INV-JAX-SEED-01`). Stochastic steps take an explicit key or seed recorded
 in metadata — e.g. `random_seed: 42` in `notebooks/xDESI/abacus_pasting_config.yaml`.

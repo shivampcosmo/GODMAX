@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+# --- keep imports working from a theme subfolder: common/ holds the
+# --- modules shared by more than one stage.
+import pathlib as _pl, sys as _sys
+_ROOT = _pl.Path(__file__).resolve().parents[1]
+for _d in (_ROOT, _ROOT / "common"):
+    if str(_d) not in _sys.path:
+        _sys.path.insert(0, str(_d))
+
 import argparse
 import json
 import pathlib

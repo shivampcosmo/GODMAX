@@ -283,6 +283,13 @@ class base_class:
         self.backreaction = analysis_dict.get('backreaction', True)
         self.model_galaxies = analysis_dict.get('model_galaxies',True)
         self.model_tSZ = analysis_dict.get('model_tSZ',True)
+        self.clm_fourier_transform_method = analysis_dict.get(
+            'clm_fourier_transform_method', 'direct_shell'
+        )
+        if self.clm_fourier_transform_method not in ('direct_shell', 'legacy_fftlog'):
+            raise ValueError(
+                "clm_fourier_transform_method must be 'direct_shell' or 'legacy_fftlog'"
+            )
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
         self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')

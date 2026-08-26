@@ -19,10 +19,10 @@ invariants:
 checks:
   - /usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python -m pytest tests/test_get_radial_profiles.py -q
   - "TODO(godmax-core): construction smoke test — build the chain from params_default.yaml and assert C(ell) shape"
-verified_at_commit: a3b3f96
+verified_at_commit: 29c3a27
 verified_on: 2026-08-16
 see_also: [kb.arch.params-dicts, kb.numerics.jax-contract]
-scope_digest: sha256:be89031e20a5c7d10004549d40852fa1
+scope_digest: sha256:6adb006e90d261bd9007b640170e460e
 ---
 
 ## Claim
@@ -54,6 +54,14 @@ separate class-level, JIT-decorated methods (`src/get_radial_profiles.py:632-650
 building the central and satellite stellar fractions (`src/get_radial_profiles.py:223-239`).
 `tests/test_get_radial_profiles.py` regression-tests this contract through the live
 `run_stars_calc` path and checks the non-galaxy branch as its null control.
+
+The collisionless-matter shell boundary follows the same ownership rule. `Profiles`
+constructs cumulative `Mclm_mat` and exposes its signed finite-volume increments
+(`src/get_radial_profiles.py:282-297,845-856`); `get_Pkz` owns the selectable Fourier
+representation (`src/get_Pkzs.py:30-89,116-147`). The default `direct_shell` path performs
+one contraction over a combined target/raw k grid and preserves both historical public
+attributes, while `legacy_fftlog` retains the old density-transform path. The selector is a
+static configuration string, not a traced numerical value.
 
 The chain and its responsibilities are recorded in `src/context/codebase_summary.md`
 (section 2.1):
@@ -89,7 +97,7 @@ git grep -n -E "base_class_obj=|Profiles_obj=|Pkz_obj=|Cl_obj=" -- '*.py' '*.ipy
 # enumerate callers before changing any signature (both .py and .ipynb)
 git grep -n -E "from get_Cls import|import get_Cls|get_Cl\(" -- '*.py' '*.ipynb'
 
-# targeted core HOD construction, formulas, gradients, and non-galaxy null
+# targeted core HOD and CLM-shell construction, formulas, gradients, and nulls
 /usr/bin/env JAX_PLATFORMS=cpu /mnt/home/spandey/miniconda3/envs/ili-sbi/bin/python \
   -m pytest tests/test_get_radial_profiles.py -q
 

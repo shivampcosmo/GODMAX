@@ -10,6 +10,11 @@ import sys
 from typing import Dict, Mapping, Tuple
 
 import numpy as np
+
+from jax import config as jax_config
+
+jax_config.update("jax_enable_x64", True)
+
 import jax.numpy as jnp
 from jax import vmap
 from scipy.interpolate import RegularGridInterpolator
@@ -22,11 +27,16 @@ from gaussian_covariance import (
     invert_covariance,
     regularize_covariance,
 )
-from survey_defaults import SurveyDefaults
+from survey_defaults import (
+    SO_NOISE_MODEL,
+    SurveyDefaults,
+    so_noise_common_ell_support,
+    so_noise_supported_bins,
+)
 
 
 THIS_DIR = pathlib.Path(__file__).resolve().parent
-REPO_ROOT = THIS_DIR.parents[1]
+REPO_ROOT = THIS_DIR.parents[2]
 SRC_DIR = REPO_ROOT / "src"
 PASTING_DIR = REPO_ROOT / "notebooks" / "pasting"
 OUTPUT_DIR = THIS_DIR / "outputs"
@@ -200,6 +210,7 @@ def build_theory_objects(
     sim_param_overrides: Mapping[str, float] | None = None,
     halo_param_overrides: Mapping[str, float] | None = None,
     other_param_overrides: Mapping[str, float] | None = None,
+    ell_refinement_factor: int = 1,
 ):
     """Build base/profile/Pk/Cl objects for the fiducial validation point."""
 
@@ -230,6 +241,28 @@ def build_theory_objects(
     halo_params_dict = copy.deepcopy(halo_params_dict)
     analysis_dict = copy.deepcopy(analysis_dict)
     other_params_dict = copy.deepcopy(other_params_dict)
+
+    if int(ell_refinement_factor) != ell_refinement_factor or ell_refinement_factor < 1:
+        raise ValueError("ell_refinement_factor must be a positive integer")
+    ell_refinement_factor = int(ell_refinement_factor)
+    if ell_refinement_factor > 1:
+        coarse_center = np.asarray(analysis_dict["l_array_survey"], dtype=float)
+        coarse_width = np.asarray(analysis_dict["dl_array_survey"], dtype=float)
+        coarse_edges = np.concatenate(
+            ([coarse_center[0] - 0.5 * coarse_width[0]],
+             coarse_center + 0.5 * coarse_width)
+        )
+        refined_edges = [coarse_edges[0]]
+        for lower, upper in zip(coarse_edges[:-1], coarse_edges[1:]):
+            refined_edges.extend(
+                np.geomspace(lower, upper, ell_refinement_factor + 1)[1:]
+            )
+        refined_edges = np.asarray(refined_edges, dtype=float)
+        refined_width = np.diff(refined_edges)
+        refined_center = 0.5 * (refined_edges[:-1] + refined_edges[1:])
+        halo_params_dict["ell_array"] = jnp.asarray(refined_center)
+        analysis_dict["l_array_survey"] = jnp.asarray(refined_center)
+        analysis_dict["dl_array_survey"] = jnp.asarray(refined_width)
 
     if sim_param_overrides:
         for name, value in sim_param_overrides.items():
@@ -302,6 +335,7 @@ def build_theory_objects(
         "nbar_comoving": nbar_comoving,
         "kappa_source": kappa_source,
         "remove_galaxy_baryon_suppression": remove_galaxy_baryon_suppression,
+        "ell_refinement_factor": ell_refinement_factor,
         "sim_param_overrides": dict(sim_param_overrides or {}),
         "halo_param_overrides": dict(halo_param_overrides or {}),
         "other_param_overrides": dict(other_param_overrides or {}),
@@ -630,29 +664,52 @@ def build_full_signal_cls(context: Mapping[str, object],
     if apply_tau_physical_correction:
         tau_correction = compute_ne0_cm3(context["sim_params_dict"]["cosmo"]) * (1.0 + z_eff) ** 3
 
+    beam = beam_window_for_ell(context)
+    safe_beam = np.clip(beam, np.finfo(float).tiny, np.inf)
     cl_signal = {
         "gg": np.asarray(cls.Cl_gal_gal_tot_mat[:, 0, 0], dtype=float),
-        "gy": np.asarray(cls.Cl_gal_y_tot_mat[:, 0], dtype=float),
+        # The SO component-separated y N_ell is a deconvolved sky-field noise
+        # spectrum. Remove the native GODMAX analysis beam exactly once.
+        "gy": np.asarray(cls.Cl_gal_y_tot_mat[:, 0], dtype=float) / safe_beam,
         "gtau": np.asarray(cls.Cl_gal_tau_tot_mat[:, 0], dtype=float) * tau_correction,
         "gkappa": np.asarray(cls.Cl_gal_kappa_tot_mat[:, 0, 0], dtype=float),
-        "kappakappa": np.asarray(cls.Cl_kappa_kappa_tot_mat[:, 0, 0], dtype=float),
-        "ykappa": np.asarray(cls.Cl_kappa_y_tot_mat[:, 0], dtype=float),
     }
 
     yy_power = power_for_probe_pair(pkz, 3, 3)
     ytau_power = power_for_probe_pair(pkz, 3, 4)
     tautau_power = power_for_probe_pair(pkz, 4, 4)
+    ykappa_power = power_for_probe_pair(pkz, 3, 0)
     taukappa_power = power_for_probe_pair(pkz, 0, 4)
+    kappakappa_power = power_for_probe_pair(pkz, 0, 0)
 
+    # Use one robust full-P(k,z) projection for every covariance-only
+    # auxiliary.  The native cached kappa-y and kappa-kappa arrays can contain
+    # isolated interpolation spikes.  These are deconvolved sky spectra, so no
+    # analysis-beam factor is applied to any y leg.
     cl_signal["yy"] = project_power_to_cl(cls, yy_power, 3, 3)
-    cl_signal["ytau"] = project_power_to_cl(cls, ytau_power, 3, 4) * tau_correction
+    cl_signal["ytau"] = (
+        project_power_to_cl(cls, ytau_power, 3, 4) * tau_correction
+    )
     cl_signal["tautau"] = project_power_to_cl(cls, tautau_power, 4, 4) * tau_correction ** 2
+    cl_signal["ykappa"] = project_power_to_cl(cls, ykappa_power, 3, 0)
     cl_signal["taukappa"] = project_power_to_cl(cls, taukappa_power, 4, 0) * tau_correction
+    cl_signal["kappakappa"] = project_power_to_cl(
+        cls, kappakappa_power, 0, 0
+    )
 
     correction_meta = {
         "apply_tau_physical_correction": bool(apply_tau_physical_correction),
         "tau_physical_correction_factor": float(tau_correction),
         "tau_correction_z_eff": float(z_eff),
+        "y_observable_basis": "beam_deconvolved_compton_y",
+        "native_y_beam_removed_once": True,
+        "covariance_auxiliary_projection": "full_Pkz_regular_grid",
+        "covariance_auxiliary_y_beam_power": {
+            "yy": 0,
+            "ytau": 0,
+            "ykappa": 0,
+        },
+        "native_cached_kappa_auxiliaries_used": False,
     }
     return cl_signal, correction_meta
 
@@ -851,9 +908,42 @@ def build_and_save_fiducial(
         theory_mode=theory_mode,
         paint_r200c_factor=paint_r200c_factor,
     )
+    noise_model = "legacy_effective"
+    ell_selection_meta = {
+        "policy": "native_grid_all_centers",
+        "original_nell": int(len(ell)),
+        "selected_nell": int(len(ell)),
+    }
+    if theory_mode == "full":
+        if kappa_source != "cmb":
+            raise ValueError("The SO full-theory covariance requires kappa_source='cmb'")
+        noise_model = SO_NOISE_MODEL
+        support_min, support_max = so_noise_common_ell_support()
+        supported = so_noise_supported_bins(ell, delta_ell)
+        if not np.any(supported):
+            raise ValueError("The native ell grid does not overlap the SO noise support")
+        original_nell = len(ell)
+        ell = ell[supported]
+        delta_ell = delta_ell[supported]
+        cl_signal = {
+            key: np.asarray(value, dtype=float)[supported]
+            for key, value in cl_signal.items()
+        }
+        ell_selection_meta = {
+            "policy": "SO_y_kappa_complete_integer_bin_support_no_extrapolation",
+            "support_min": float(support_min),
+            "support_max": float(support_max),
+            "original_nell": int(original_nell),
+            "selected_nell": int(len(ell)),
+            "selected_native_ell_indices": np.flatnonzero(supported).tolist(),
+            "dropped_native_ell_centers": np.asarray(
+                np.asarray(cls.ell_array, dtype=float)[~supported]
+            ).tolist(),
+        }
     data_vector, labels = build_datavector(cl_signal, TARGET_SPECTRA)
     survey = SurveyDefaults(
-        beam_fwhm_arcmin=float(context["analysis_dict"].get("beam_fwhm_arcmin", 6.87))
+        beam_fwhm_arcmin=float(context["analysis_dict"].get("beam_fwhm_arcmin", 6.87)),
+        fsky_k=0.40 if noise_model == SO_NOISE_MODEL else 0.44,
     )
     cov, corr, noise, cov_meta = build_gaussian_covariance(
         ell,
@@ -862,6 +952,7 @@ def build_and_save_fiducial(
         nbar_gal_sr=nbar_gal_sr,
         survey=survey,
         spectra_order=TARGET_SPECTRA,
+        noise_model=noise_model,
     )
     cov, jitter = regularize_covariance(cov)
     diag = np.diag(cov)
@@ -876,6 +967,7 @@ def build_and_save_fiducial(
         "hod_mass_cut": float(hod_mass_cut),
         "kappa_source": kappa_source,
         "ell_grid": "paste_backlight_utils.build_config",
+        "ell_selection": ell_selection_meta,
         "data_vector_order": list(TARGET_SPECTRA),
         "covariance": cov_meta,
         "corrections": correction_meta,
@@ -891,6 +983,7 @@ def build_and_save_fiducial(
             key: float(value) for key, value in (other_param_overrides or {}).items()
         },
         "map_derived_calibrations_applied": False,
+        "correlation_jitter_added": float(jitter),
         "precision_jitter_added": float(jitter),
         "quality_checks": checks,
         "remove_galaxy_baryon_suppression": bool(context["remove_galaxy_baryon_suppression"]),

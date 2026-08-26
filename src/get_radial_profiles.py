@@ -29,6 +29,23 @@ mp = (1.6726219e-27*u.kg).to(u.Msun).value
 mue = 1.14
 Mpc_to_cm = 3.086e24
 
+
+def _nonthermal_redshift_factor(alpha_nt, n_nt, beta_nt, z, rmax_r200c=RMAX_R200c):
+    """Return the non-thermal redshift factor with its alpha->0 limit defined."""
+
+    alpha_nt = jnp.asarray(alpha_nt)
+    positive_alpha = alpha_nt > 0
+    alpha_for_division = jnp.where(
+        positive_alpha,
+        alpha_nt,
+        jnp.ones_like(alpha_nt),
+    )
+    redshift_power = (1 + z) ** beta_nt
+    fmax = rmax_r200c ** (-n_nt) / alpha_for_division
+    capped_evolution = (fmax - 1) * jnp.tanh(beta_nt * z) + 1
+    positive_alpha_result = jnp.minimum(redshift_power, capped_evolution)
+    return jnp.where(positive_alpha, positive_alpha_result, redshift_power)
+
 class Profiles(base_class):
     """"
     Optimized class to calculate the BCMP profile as described in BCM 2018 (Schneider et al.)
@@ -842,6 +859,19 @@ class Profiles(base_class):
         zeta = jnp.interp(0.0, value_out, zeta_array)
         return zeta
 
+    @staticmethod
+    def get_Mclm_shell_masses(Mclm_mat):
+        """Return signed CLM cell masses from cumulative mass samples.
+
+        ``Mclm_mat`` has radial axis first and units Msun/h. The first cell is
+        the represented mass inside ``r[0]``; later cells are finite-volume
+        increments between adjacent radial nodes. No clipping or monotonic
+        projection is applied, so an unphysical negative cell remains visible.
+        """
+        return jnp.concatenate(
+            (Mclm_mat[:1], jnp.diff(Mclm_mat, axis=0)), axis=0
+        )
+
 
     @partial(jit, static_argnums=(0,))
     def get_rho_clm(self, jz, jM, r_array_here=None):
@@ -950,9 +980,13 @@ class Profiles(base_class):
     @partial(jit, static_argnums=(0,))
     def get_fz_Pnt(self, jz, rmax_r200c=RMAX_R200c):
         '''This is the evolution of non-thermal pressure with redshift'''
-        fmax = (rmax_r200c)**(-1 * self.n_nt) / self.alpha_nt
-        fz = jnp.minimum((1 + self.z_array[jz])**self.beta_nt, (fmax - 1) * jnp.tanh(self.beta_nt * self.z_array[jz]) + 1)
-        return fz
+        return _nonthermal_redshift_factor(
+            self.alpha_nt,
+            self.n_nt,
+            self.beta_nt,
+            self.z_array[jz],
+            rmax_r200c=rmax_r200c,
+        )
 
     @partial(jit, static_argnums=(0,))
     def get_Pnt_fac(self, jr, jz, jM, r_array_here=None):
