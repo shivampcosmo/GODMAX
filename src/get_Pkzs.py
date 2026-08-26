@@ -1,7 +1,7 @@
 from get_radial_profiles import Profiles
 from base_class import get_vmapped_func, get_vmapped_func_warg
 import jax.numpy as jnp
-from jax import jit, vmap, lax
+from jax import jit, vmap
 from functools import partial
 from helpers.jax_cosmo_power import halofit_parameters, nonlinear_matter_power
 import jax.scipy.integrate as jsi
@@ -20,27 +20,6 @@ class get_Pkz(Profiles):
     Returns:
         None
     """    
-    @staticmethod
-    def _combine_1h2h_poweradd(p1, p2, alpha):
-        alpha = float(alpha)
-        if alpha == 1.0:
-            return p1 + p2
-        return (jnp.clip(p1, 1e-60, jnp.inf) ** alpha + jnp.clip(p2, 1e-60, jnp.inf) ** alpha) ** (1.0 / alpha)
-
-    @staticmethod
-    def _profile_grid_mass(r_array, rho_mat):
-        mass_shell_prefac = 4.0 * jnp.pi * r_array[:, None, None]**2
-        return jsi.trapezoid(mass_shell_prefac * rho_mat, x=r_array, axis=0)
-
-    @staticmethod
-    def _u_cga_analytic(k_array, Rh_mat):
-        x = k_array[:, None, None] * Rh_mat[None, :, :]
-        x2 = x**2
-        u_small_x = 1.0 - x2 / 3.0 + (x2**2) / 10.0
-        x_safe = jnp.clip(x, 1e-30, jnp.inf)
-        u_closed = jnp.sqrt(jnp.pi) * lax.erf(x_safe) / (2.0 * x_safe)
-        return jnp.where(x < 1e-2, u_small_x, u_closed)
-
     def __init__(
                 self,
                 sim_params_dict: dict,
@@ -49,61 +28,27 @@ class get_Pkz(Profiles):
                 other_params_dict: dict,
                 Profiles_obj=None,
             ):   
-        if analysis_dict is None:
-            analysis_dict = {}
-
         if Profiles_obj is None:
             super().__init__(sim_params_dict, halo_params_dict, analysis_dict, other_params_dict)
         else:
             self.__dict__.update(Profiles_obj.__dict__)
 
-        self.split_cga_fftlog = bool(analysis_dict.get('split_cga_fftlog', False))
-
         # Do the FFTlog transform of the real-space profiles. Normalize each
         # profile by the mass represented on this same radial grid so u(k->0)=1.
         xi2P_obj = (xi2P(self.r_array, nx=self.nr,lowring=True))
-        self.Mdmb_grid_mat = self._profile_grid_mass(self.r_array, self.rho_dmb_mat)
-        self.Mnfw_grid_mat = self._profile_grid_mass(self.r_array, self.rho_nfw_mat)
+        mass_shell_prefac = 4.0 * jnp.pi * self.r_array[:, None, None]**2
+        self.Mdmb_grid_mat = jsi.trapezoid(mass_shell_prefac * self.rho_dmb_mat, x=self.r_array, axis=0)
+        self.Mnfw_grid_mat = jsi.trapezoid(mass_shell_prefac * self.rho_nfw_mat, x=self.r_array, axis=0)
 
-        if self.split_cga_fftlog:
-            rho_smooth_mat = self.rho_dmb_mat - self.rho_cga_mat
-            self.Msmooth_grid_mat = self._profile_grid_mass(self.r_array, rho_smooth_mat)
-            self.Mcga_target_mat = self.fstar_cen_mat * self.Mtot_mat
-            self.Msmooth_target_mat = self.Mtot_mat - self.Mcga_target_mat
-
-            self.k_mcfit, uk_smooth = xi2P_obj(
-                rho_smooth_mat / jnp.clip(self.Msmooth_grid_mat[None, :, :], 1e-30, jnp.inf),
-                axis=0,
-                extrap=False,
-            )
-            self.uk_dmb_smooth_tointp = jnp.array(uk_smooth)
-            self.uk_cga_tointp = self._u_cga_analytic(self.k_mcfit, self.Rh_mat)
-
-            Mtot_safe = jnp.clip(self.Mtot_mat[None, :, :], 1e-30, jnp.inf)
-            w_smooth = self.Msmooth_target_mat[None, :, :] / Mtot_safe
-            w_cga = self.Mcga_target_mat[None, :, :] / Mtot_safe
-            self.Msmooth_grid_over_target_mat = self.Msmooth_grid_mat / jnp.clip(
-                self.Msmooth_target_mat, 1e-30, jnp.inf
-            )
-            uk_dmb = w_smooth * self.uk_dmb_smooth_tointp + w_cga * self.uk_cga_tointp
-        else:
-            self.k_mcfit, uk_dmb = xi2P_obj(
-                self.rho_dmb_mat / jnp.clip(self.Mdmb_grid_mat[None, :, :], 1e-30, jnp.inf),
-                axis=0,
-                extrap=False,
-            )
-
+        self.k_mcfit, uk_dmb = xi2P_obj(self.rho_dmb_mat / jnp.clip(self.Mdmb_grid_mat[None, :, :], 1e-30), axis=0, extrap=False)
         self.uk_dmb_tointp = jnp.array(uk_dmb)
-        self.k_mcfit, uk_nfw = xi2P_obj(
-            self.rho_nfw_mat / jnp.clip(self.Mnfw_grid_mat[None, :, :], 1e-30, jnp.inf),
-            axis=0,
-            extrap=False,
-        )
+        self.k_mcfit, uk_nfw = xi2P_obj(self.rho_nfw_mat / jnp.clip(self.Mnfw_grid_mat[None, :, :], 1e-30), axis=0, extrap=False)
         self.uk_nfw_tointp = jnp.array(uk_nfw)
 
         if self.model_galaxies:
-            self.k_mcfit, uk_clm = xi2P_obj(self.rho_clm_mat / self.Mclm_mat[-1, :, :][None, :, :], axis=0, extrap=False)
-            self.uk_clm_tointp = jnp.array(uk_clm)
+            if self.clm_fourier_transform_method == 'legacy_fftlog':
+                self.k_mcfit, uk_clm = xi2P_obj(self.rho_clm_mat / self.Mclm_mat[-1, :, :][None, :, :], axis=0, extrap=False)
+                self.uk_clm_tointp = jnp.array(uk_clm)
             # Use the electron profile shape here; physical n_e units enter the tau map/projection separately.
             self.k_mcfit, uk_ne = xi2P_obj(self.ne_mat / self.ne_mat_norm[-1, :, :][None, :, :], axis=0, extrap=False)
             self.uk_ne_tointp = jnp.array(uk_ne)
@@ -113,6 +58,12 @@ class get_Pkz(Profiles):
             self.k_mcfit, uk_y = xi2P_obj(self.y3d_mat, axis=0, extrap=False)
             self.uk_y_tointp = jnp.array(uk_y)
         else: self.uk_y_tointp = jnp.zeros((1,1,1)) 
+
+        if self.model_galaxies and self.clm_fourier_transform_method == 'direct_shell':
+            k_clm = jnp.concatenate((self.kPk_array, self.k_mcfit))
+            uk_clm = self.get_uk_clm_shell(k_clm)
+            self.uk_clm = uk_clm[:self.nk]
+            self.uk_clm_tointp = uk_clm[self.nk:]
                        
 
         # Get the Fourier profiles uk's in the interpolated k array:
@@ -124,7 +75,8 @@ class get_Pkz(Profiles):
         # else: self.uk_y = jnp.zeros((self.nk, self.nz, self.nM))
         else: self.uk_y = jnp.zeros((1,1,1))
         if self.model_galaxies:
-            self.uk_clm = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 2).T
+            if self.clm_fourier_transform_method == 'legacy_fftlog':
+                self.uk_clm = vmapped_func(jnp.arange(self.nz), jnp.arange(self.nM), 2).T
             self.nbarz = jnp.maximum(jsi.trapezoid(self.hmf_Mz_mat * (self.Ncen_mat + self.Nsat_mat), jnp.log(self.M_array), axis=-1), 1e-10)
             self.ukg_cross = jnp.maximum((self.Ncen_mat[None,:,:] + self.Nsat_mat[None,:,:] * self.uk_clm)/self.nbarz[None,:,None], 1e-10)
             ukg_auto_arg = jnp.maximum(
@@ -165,8 +117,8 @@ class get_Pkz(Profiles):
             bm_nfw_2h = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 1).T
             self.bm_nfw_kz_mat = bm_nfw_2h + self.bm_largescales_2h_mat_lt_Mmin   
         else:
-            self.bm_dmb_kz_mat = jnp.ones((self.nk, self.nz))
-            self.bm_nfw_kz_mat = jnp.ones((self.nk, self.nz))
+            self.bm_dmb_kz_mat = jnp.ones((len(self.nk), self.nz))
+            self.bm_nfw_kz_mat = jnp.ones((len(self.nk), self.nz))
 
         if self.model_tSZ:
             self.by_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3).T
@@ -380,3 +332,72 @@ class get_Pkz(Profiles):
         dndlnM_z = self.hmf_Mz_mat[jz, :]
         P_1h = jsi.trapezoid(ukz_sqr * dndlnM_z, x=jnp.log(self.M_array))
         return P_1h
+
+
+    @staticmethod
+    def _combine_1h2h_poweradd(p1, p2, alpha):
+        alpha = float(alpha)
+        if alpha == 1.0:
+            return p1 + p2
+        return (jnp.clip(p1, 1e-60, jnp.inf) ** alpha + jnp.clip(p2, 1e-60, jnp.inf) ** alpha) ** (1.0 / alpha)
+
+    @staticmethod
+    def _clm_tophat_window(x):
+        """Spherical top-hat window with a stable small-x branch."""
+        x2 = x * x
+        small = jnp.abs(x) < 1e-2
+        x_safe = jnp.where(small, 1.0, x)
+        exact = 3.0 * (jnp.sin(x_safe) - x_safe * jnp.cos(x_safe)) / x_safe**3
+        series = 1.0 - x2/10.0 + x2**2/280.0 - x2**3/15120.0
+        return jnp.where(small, series, exact)
+
+    @staticmethod
+    def _clm_inner_window(x):
+        """Window for the unresolved NFW-cusp cell, M(<r) proportional to r^2."""
+        x2 = x * x
+        small = jnp.abs(x) < 1e-2
+        x_safe = jnp.where(small, 1.0, x)
+        exact = 2.0 * (1.0 - jnp.cos(x_safe)) / x_safe**2
+        series = 1.0 - x2/12.0 + x2**2/360.0 - x2**3/20160.0
+        return jnp.where(small, series, exact)
+
+    @classmethod
+    def _clm_shell_window(cls, k_array, r_array):
+        """Constant-density shell windows on a radial grid in Mpc/h."""
+        k = jnp.atleast_1d(k_array)[:, None]
+        rin = r_array[:-1]
+        rout = r_array[1:]
+        volume = rout**3 - rin**3
+
+        exact = (
+            rout[None, :]**3 * cls._clm_tophat_window(k * rout[None, :])
+            - rin[None, :]**3 * cls._clm_tophat_window(k * rin[None, :])
+        ) / volume[None, :]
+
+        k2 = k * k
+        series = (
+            1.0
+            - k2/10.0 * ((rout**5 - rin**5) / volume)[None, :]
+            + k2**2/280.0 * ((rout**7 - rin**7) / volume)[None, :]
+            - k2**3/15120.0 * ((rout**9 - rin**9) / volume)[None, :]
+        )
+        return jnp.where(jnp.abs(k * rout[None, :]) < 1e-2, series, exact)
+
+    def get_uk_clm_shell(self, k_array, Mclm_mat=None):
+        """Direct finite-volume CLM transform.
+
+        ``k_array`` is in h/Mpc, ``r_array`` is in Mpc/h, and cumulative CLM
+        masses are in Msun/h, so ``kr`` and the returned normalized window are
+        dimensionless. Signed shell masses and signed high-k windows are kept.
+        """
+        enclosed_mass = self.Mclm_mat if Mclm_mat is None else Mclm_mat
+        shell_mass = self.get_Mclm_shell_masses(enclosed_mass)
+        k = jnp.atleast_1d(k_array)
+
+        inner = self._clm_inner_window(k * self.r_array[0])[:, None]
+        outer = self._clm_shell_window(k, self.r_array)
+        window = jnp.concatenate((inner, outer), axis=1)
+
+        endpoint = enclosed_mass[-1]
+        endpoint_safe = jnp.where(endpoint > 0.0, endpoint, jnp.nan)
+        return jnp.einsum('kr,rzm->kzm', window, shell_mass) / endpoint_safe[None, :, :]

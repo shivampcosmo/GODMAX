@@ -90,28 +90,13 @@ class get_Cl(get_Pkz):
 
         else: self.logPkgmlz_2d_interp, self.logPkgglz_2d_interp, self.logPkgylz_2d_interp, self.logPkgm_nfw_lz_2d_interp, self.logPkge_lz_2d_interp = EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable(), EmptyCallable()
 
-        def stack_bin_vectors(func, nbins):
-            return jnp.stack([jnp.squeeze(func(jb)) for jb in range(nbins)], axis=0)
-
-        def stack_bin_z_vectors(func, nbins):
-            return jnp.stack(
-                [
-                    jnp.stack(
-                        [jnp.squeeze(func(jb, jz)) for jz in range(self.nz_for_Cls)],
-                        axis=0,
-                    )
-                    for jb in range(nbins)
-                ],
-                axis=0,
-            )
-
         # Get the window functions for different probes:
         if self.is_cmb_lensing:
-            self.Wk_mat = stack_bin_z_vectors(self.get_cmb_lensing_kernel, self.nbins)
+            self.Wk_mat = get_vmapped_func(self.get_cmb_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
         else:
-            self.pzs_inp_mat = stack_bin_vectors(self.get_photoz_biased_nz, self.nbins)
-            self.Wk_gravonly_mat = stack_bin_z_vectors(self.get_weak_lensing_kernel, self.nbins)
-            self.nla_mat = stack_bin_z_vectors(self.get_nla_kernel, self.nbins)
+            self.pzs_inp_mat = vmap(self.get_photoz_biased_nz)(jnp.arange(self.nbins))
+            self.Wk_gravonly_mat = get_vmapped_func(self.get_weak_lensing_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T
+            self.nla_mat = get_vmapped_func(self.get_nla_kernel, 2)(jnp.arange(self.nbins), jnp.arange(self.nz_for_Cls)).T        
             self.Wk_mat = self.Wk_gravonly_mat + self.nla_mat
         self.Wy_array = (1.0 / (1.0 + self.z_array_for_Cls))
         oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
@@ -119,7 +104,7 @@ class get_Cl(get_Pkz):
         self.Wtau_array = self.const_coeff_tau * (1.0 / (1.0 + self.z_array_for_Cls))
 
         if self.model_galaxies:
-            self.Wg_mat = stack_bin_vectors(self.get_nz_lens_interp, self.nbins_lens)
+            self.Wg_mat = vmap(self.get_nz_lens_interp)(jnp.arange(self.nbins_lens))
         else: self.Wg_mat = jnp.zeros((1,1))
 
         if self.ENABLE_TIMING:
@@ -128,31 +113,8 @@ class get_Cl(get_Pkz):
         # vmapped_func = get_vmapped_func_warg(self.get_Cl_tot, 3, 5)
         # self.Cl_kappa_kappa_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins), jnp.arange(self.nbins), 0, 0).T
 
-        def stack_Cl_pairs(nbins1, nbins2, probe1, probe2):
-            return jnp.stack(
-                [
-                    jnp.stack(
-                        [
-                            self.get_Cl_tot(jb1, jb2, probe1, probe2)
-                            for jb2 in range(nbins2)
-                        ],
-                        axis=1,
-                    )
-                    for jb1 in range(nbins1)
-                ],
-                axis=1,
-            )
-
-        def stack_Cl_single(nbins1, jb2, probe1, probe2):
-            return jnp.stack(
-                [
-                    self.get_Cl_tot(jb1, jb2, probe1, probe2)
-                    for jb1 in range(nbins1)
-                ],
-                axis=1,
-            )
-
-        self.Cl_kappa_kappa_tot_mat = stack_Cl_pairs(self.nbins, self.nbins, 0, 0)
+        vmapped_func = get_vmapped_func_warg(self.get_Cl_tot, 2, 4)
+        self.Cl_kappa_kappa_tot_mat = vmapped_func(jnp.arange(self.nbins), jnp.arange(self.nbins), 0, 0).T
 
 
         # self.Cl_kappa_kappa_nfw_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins), jnp.arange(self.nbins), 1, 1).T
@@ -162,13 +124,13 @@ class get_Cl(get_Pkz):
 
         if self.model_galaxies:
             # self.Cl_gal_gal_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins_lens), jnp.arange(self.nbins_lens), 2, 2).T
-            self.Cl_gal_gal_tot_mat = stack_Cl_pairs(self.nbins_lens, self.nbins_lens, 2, 2)
+            self.Cl_gal_gal_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), jnp.arange(self.nbins_lens), 2, 2).T
             if self.ENABLE_TIMING:
                 print("Time to compute the gal gal: ", time.time() - ti)
                 ti = time.time()
             
             # self.Cl_gal_kappa_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins_lens), jnp.arange(self.nbins), 2, 0).T
-            self.Cl_gal_kappa_tot_mat = stack_Cl_pairs(self.nbins_lens, self.nbins, 2, 0)
+            self.Cl_gal_kappa_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), jnp.arange(self.nbins), 2, 0).T
             if self.ENABLE_TIMING:
                 print("Time to compute the kappa gal: ", time.time() - ti)
                 ti = time.time()
@@ -183,16 +145,19 @@ class get_Cl(get_Pkz):
                 print("Time to compute the Pge in the k-array: ", time.time() - ti)
                 ti = time.time()
         if self.model_tSZ:
+            # vmapped_func = get_vmapped_func_warg(self.get_Cl_tot, 2, 5)
+            vmapped_func = get_vmapped_func_warg(self.get_Cl_tot, 1, 4)
+
             # self.Cl_kappa_y_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins), 0, 0, 3).T
-            self.Cl_kappa_y_tot_mat = stack_Cl_single(self.nbins, 0, 0, 3)
+            self.Cl_kappa_y_tot_mat = vmapped_func(jnp.arange(self.nbins), 0, 0, 3).T
             if self.ENABLE_TIMING:
                 print("Time to compute the kappa y: ", time.time() - ti)
                 ti = time.time()
             if self.model_galaxies:
                 # self.Cl_gal_y_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins_lens), 0, 2, 3).T        
-                self.Cl_gal_y_tot_mat = stack_Cl_single(self.nbins_lens, 0, 2, 3)
+                self.Cl_gal_y_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), 0, 2, 3).T
 
-                self.Cl_gal_tau_tot_mat = stack_Cl_single(self.nbins_lens, 0, 2, 4)
+                self.Cl_gal_tau_tot_mat = vmapped_func(jnp.arange(self.nbins_lens), 0, 2, 4).T
 
                 if self.ENABLE_TIMING:
                     print("Time to compute the gal y: ", time.time() - ti)
@@ -298,7 +263,7 @@ class get_Cl(get_Pkz):
         dndz = (jnp.interp(z, self.z_array_nz, self.pzs_inp_mat[jb, :]))
         return Az_IA * dndz / dchi_dz
 
-    @partial(jit, static_argnums=(0, 3, 4))
+    @partial(jit, static_argnums=(0,))
     def get_Cl_tot(self, jb1, jb2, probe1, probe2): 
         """
         Compute the total angular power spectrum C(ℓ) for given multipole index jl,
@@ -342,14 +307,8 @@ class get_Cl(get_Pkz):
         prefac_for_uk2 = compute_prefac(probe2, jb2)        
 
         Pk = self.cached_power_spectra[probe1, probe2]
-        los_weight = (
-            prefac_for_uk1
-            * prefac_for_uk2
-            * (self.chi_array_for_Cls ** 2)
-            * self.dchi_dz_array_for_Cls
-        )
-        fx = los_weight[..., None, :] * Pk
-        return jsi.trapezoid(fx, x=self.z_array_for_Cls, axis=-1)
+        fx = prefac_for_uk1 * prefac_for_uk2  * (self.chi_array_for_Cls ** 2) * self.dchi_dz_array_for_Cls * Pk
+        return jsi.trapezoid(fx, x=self.z_array_for_Cls)     
 
     @partial(jit, static_argnums=(0,))
     def get_Pge_interpz(self, jk):

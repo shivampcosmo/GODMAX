@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from astropy.io import fits
 import healpy as hp
 import jax.scipy.integrate as jsi
+import jax.scipy.special as jss
 from functools import partial
 from astropy import constants as const
 from scipy import interpolate as interp
@@ -43,6 +44,33 @@ def _np_trapezoid(y, x=None, axis=-1):
     return np.trapz(y, x=x, axis=axis)
 
 
+def resolve_profile_smoothing(nside_map, mock_params_dict):
+    """Resolve one explicit Gaussian profile-smoothing contract."""
+
+    pixel_fwhm_arcmin = float(hp.nside2resol(int(nside_map), arcmin=True))
+    explicit_fwhm = mock_params_dict.get('profile_smoothing_fwhm_arcmin', None)
+    pixel_fraction = float(mock_params_dict.get('profile_smoothing_fwhm_pixel_fraction', 1.0))
+    if explicit_fwhm is not None and 'profile_smoothing_fwhm_pixel_fraction' in mock_params_dict:
+        raise ValueError('Specify either profile_smoothing_fwhm_arcmin or profile_smoothing_fwhm_pixel_fraction, not both')
+    theta_fwhm_arcmin = float(explicit_fwhm) if explicit_fwhm is not None else pixel_fraction * pixel_fwhm_arcmin
+    if not np.isfinite(theta_fwhm_arcmin) or theta_fwhm_arcmin <= 0.0:
+        raise ValueError('Profile-smoothing FWHM must be finite and positive')
+    theta_fwhm_rad = np.deg2rad(theta_fwhm_arcmin / 60.0)
+    sigma_rad = theta_fwhm_rad / np.sqrt(8.0 * np.log(2.0))
+    return pixel_fwhm_arcmin, theta_fwhm_arcmin, sigma_rad
+
+
+def compute_cmb_lensing_efficiency(z_grid, chi_grid, chi_cmb, omega_m):
+    """Return the CMB W_kappa(z) used by both map construction and provenance."""
+
+    z_grid = np.asarray(z_grid, dtype=np.float64)
+    chi_grid = np.asarray(chi_grid, dtype=np.float64)
+    chi_cmb = float(np.ravel(np.asarray(chi_cmb, dtype=np.float64))[0])
+    constant_factor = 3.0 * (100.0 ** 2) * float(omega_m) / (2.0 * ((const.c.value * 1e-3) ** 2))
+    radial_kernel = np.clip(chi_cmb - chi_grid, 0.0, None) / max(chi_cmb, 0.1)
+    return constant_factor * radial_kernel * (1.0 + z_grid) * chi_grid
+
+
 class setup_sim_map(Profiles):
     def __init__(
                 self,
@@ -58,6 +86,49 @@ class setup_sim_map(Profiles):
         else:
             self.__dict__.update(Profiles_obj.__dict__)
         self._profiles_obj_ref = Profiles_obj
+
+        # The historical Abel projector mixes a physical transverse radius
+        # with the comoving upper edge of ``r_array``.  Keep that path as the
+        # compatibility default, but allow comparison/validation runs to opt
+        # into a unit-consistent, nonsingular line-of-sight quadrature.
+        self.projected_profile_integration_method = str(
+            analysis_dict.get(
+                'projected_profile_integration_method',
+                'legacy_log_radius',
+            )
+        )
+        supported_projection_methods = {
+            'legacy_log_radius',
+            'physical_table_cosh',
+        }
+        if self.projected_profile_integration_method not in supported_projection_methods:
+            raise ValueError(
+                'Unsupported projected_profile_integration_method='
+                f'{self.projected_profile_integration_method!r}; expected one of '
+                f'{sorted(supported_projection_methods)}.'
+            )
+        self.num_points_projected_profile = int(
+            analysis_dict.get('num_points_projected_profile', 32)
+        )
+        if self.num_points_projected_profile < 2:
+            raise ValueError(
+                'num_points_projected_profile must be at least 2; got '
+                f'{self.num_points_projected_profile}.'
+            )
+        los_max = analysis_dict.get(
+            'projected_profile_los_max_comoving_mpc', None
+        )
+        self.projected_profile_los_max_comoving_mpc = (
+            None if los_max is None else float(los_max)
+        )
+        if (
+            self.projected_profile_los_max_comoving_mpc is not None
+            and self.projected_profile_los_max_comoving_mpc <= 0.0
+        ):
+            raise ValueError(
+                'projected_profile_los_max_comoving_mpc must be positive or '
+                f'null; got {self.projected_profile_los_max_comoving_mpc}.'
+            )
             
         # --- Timing Setup ---
         self.profile_timing = mock_params_dict.get('profile_timing', False)
@@ -97,9 +168,31 @@ class setup_sim_map(Profiles):
         
         # Map parameters
         self.nside_map = mock_params_dict['nside']
-        theta_fwhm_arcmin = hp.nside2resol(self.nside_map, arcmin=True)
-        theta_fwhm_rad = (theta_fwhm_arcmin / 60.) * (jnp.pi / 180.)
-        self.sigma_val = theta_fwhm_rad / jnp.sqrt(8. * jnp.log(2.))
+        pixel_fwhm_arcmin, theta_fwhm_arcmin, sigma_rad = resolve_profile_smoothing(
+            self.nside_map, mock_params_dict
+        )
+        self.profile_smoothing_pixel_resolution_arcmin = pixel_fwhm_arcmin
+        self.profile_smoothing_fwhm_pixel_fraction = theta_fwhm_arcmin / pixel_fwhm_arcmin
+        self.profile_smoothing_fwhm_arcmin = theta_fwhm_arcmin
+        self.sigma_val = jnp.asarray(sigma_rad)
+        self.profile_smoothing_method = mock_params_dict.get(
+            'profile_smoothing_method', 'legacy_fftlog'
+        )
+        self.profile_smoothing_quadrature_points = int(
+            mock_params_dict.get('profile_smoothing_quadrature_points', 64)
+        )
+        self.profile_smoothing_radial_sigma_cutoff = float(
+            mock_params_dict.get('profile_smoothing_radial_sigma_cutoff', 10.0)
+        )
+        if self.profile_smoothing_quadrature_points < 16:
+            raise ValueError('profile_smoothing_quadrature_points must be >= 16')
+        if self.profile_smoothing_radial_sigma_cutoff < 6.0:
+            raise ValueError('profile_smoothing_radial_sigma_cutoff must be >= 6')
+        gl_nodes, gl_weights = np.polynomial.legendre.leggauss(
+            self.profile_smoothing_quadrature_points
+        )
+        self.profile_smoothing_gl_nodes = jnp.asarray(gl_nodes)
+        self.profile_smoothing_gl_weights = jnp.asarray(gl_weights)
                 
         # Constants
         self._setup_constants()
@@ -183,6 +276,7 @@ class setup_sim_map(Profiles):
         self.y2D_mat_physical = self._compute_projections(
             self.Pe_mat_physical, 'y2D'
         ).astype(jnp.float32)
+        self.y2D_mat_physical_orig = self.y2D_mat_physical
         if self.profile_timing: self.timing_results['ymap_projection_calculation'] = time.perf_counter() - start_time
         
         if self.smooth_profiles:
@@ -208,6 +302,7 @@ class setup_sim_map(Profiles):
         self.ne2D_mat_physical = self._compute_projections(
             self.ne_mat_physical, 'ne2D'
         ).astype(jnp.float32)
+        self.ne2D_mat_physical_orig = self.ne2D_mat_physical
         if self.profile_timing: self.timing_results['ne_map_projection_calculation'] = time.perf_counter() - start_time
         
         if self.smooth_profiles:
@@ -298,16 +393,16 @@ class setup_sim_map(Profiles):
         interpolation of log(N_sat), which is retained.
         """
         self.Ncen_interp = interpax.Interpolator2D(
-            self.z_array.astype(jnp.float32),
-            jnp.log(self.M_array).astype(jnp.float32),
-            self.Ncen_mat.astype(jnp.float32),
+            self.z_array.astype(jnp.float64),
+            jnp.log(self.M_array).astype(jnp.float64),
+            self.Ncen_mat.astype(jnp.float64),
             method='linear',
             extrap=True,
         )
         self.logNsat_interp = interpax.Interpolator2D(
-            self.z_array.astype(jnp.float32),
-            jnp.log(self.M_array).astype(jnp.float32),
-            jnp.log(self.Nsat_mat + 1e-20).astype(jnp.float32),
+            self.z_array.astype(jnp.float64),
+            jnp.log(self.M_array).astype(jnp.float64),
+            jnp.log(self.Nsat_mat + 1e-20).astype(jnp.float64),
             method='monotonic',
             extrap=[-20, -20]
         )
@@ -377,13 +472,62 @@ class setup_sim_map(Profiles):
         return sigma_T * ne_bar * c * tau_z
 
     @partial(jit, static_argnums=(0, 6))
-    def _generic_2D_projection(self, jrp, jz, jM, mat_physical, const_factor=1.0, num_trapz_points=32):
-        """Generic 2D projection helper"""
+    def _generic_2D_projection(self, jrp, jz, jM, mat_physical, const_factor=1.0, num_trapz_points=None):
+        """Project a physical 3D table at a physical transverse radius.
+
+        ``legacy_log_radius`` reproduces the historical implementation.
+        ``physical_table_cosh`` uses a physical line-of-sight limit bounded by
+        the comoving 3D table and the substitution ``r = rp cosh(t)``.  The
+        latter removes the Abel singularity without dropping the interval
+        immediately above ``rp`` and never extrapolates the terminal value.
+        """
         zval = self.z_array[jz]
-        # rp = self.rp_array[jrp]/(1 + zval)
         rp = self.rp_array[jrp]
+        n_points = (
+            self.num_points_projected_profile
+            if num_trapz_points is None
+            else int(num_trapz_points)
+        )
+
+        if self.projected_profile_integration_method == 'physical_table_cosh':
+            table_r_max = jnp.max(self.r_array) / (1.0 + zval)
+            has_support = rp < table_r_max
+            table_los_max = jnp.sqrt(
+                jnp.maximum(table_r_max**2 - rp**2, 0.0)
+            )
+            los_cutoff = getattr(
+                self, 'projected_profile_los_max_comoving_mpc', None
+            )
+            if los_cutoff is None:
+                los_max = table_los_max
+            else:
+                requested_los_max = (
+                    los_cutoff
+                    * self.h
+                    / (1.0 + zval)
+                )
+                los_max = jnp.minimum(requested_los_max, table_los_max)
+            t_max = jnp.arcsinh(los_max / rp)
+            nodes, weights = np.polynomial.legendre.leggauss(n_points)
+            nodes = jnp.asarray(nodes)
+            weights = jnp.asarray(weights)
+            t_array = 0.5 * (nodes + 1.0) * t_max
+            r_array_here = rp * jnp.cosh(t_array)
+            quantity_rarray = jnp.exp(jnp.interp(
+                jnp.log(r_array_here),
+                jnp.log(self.r_array / (1.0 + zval)),
+                jnp.log(mat_physical[:, jz, jM]),
+            ))
+            projected = t_max * jnp.sum(
+                weights * r_array_here * quantity_rarray
+            )
+            return jnp.where(has_support, const_factor * projected, 0.0)
+
+        # Historical compatibility path.  Here ``r_max`` is comoving while
+        # ``rp`` and the interpolation coordinates are physical; interpolation
+        # therefore clamps the endpoint above the physical table support.
         r_max = jnp.minimum(jnp.max(self.r_array), rp * 100.0)
-        r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(r_max), num_trapz_points))
+        r_array_here = jnp.exp(jnp.linspace(jnp.log(rp*1.01), jnp.log(r_max), n_points))
         
         quantity_rarray = jnp.exp(jnp.interp(
             jnp.log(r_array_here), 
@@ -395,22 +539,22 @@ class setup_sim_map(Profiles):
         return const_factor * 2.0 * jsi.trapezoid(integrand * r_array_here, jnp.log(r_array_here))
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_y2D_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_y2D_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute y2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.Pe_mat_physical, self.const_coeff, num_trapz_points)
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_ne2D_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_ne2D_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute ne2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.ne_mat_physical, 1.0, num_trapz_points)
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_rhom2D_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_rhom2D_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute rhom2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.rho_dmb_mat_physical, 1.0, num_trapz_points)
 
     @partial(jit, static_argnums=(0, 4))        
-    def get_rhom2D_dmo_physical_proj(self, jrp, jz, jM, num_trapz_points=32):
+    def get_rhom2D_dmo_physical_proj(self, jrp, jz, jM, num_trapz_points=None):
         """Compute rhom2D projection"""
         return self._generic_2D_projection(jrp, jz, jM, self.rho_dmo_mat_physical, 1.0, num_trapz_points)
 
@@ -438,6 +582,9 @@ class setup_sim_map(Profiles):
     @partial(jit, static_argnums=(0,))
     def _generic_smoothing(self, jz, jM, proj_2d_mat):
         """Generic smoothing helper"""
+        if self.profile_smoothing_method == 'real_space_gaussian':
+            return self._real_space_gaussian_smoothing(jz, jM, proj_2d_mat)
+
         DA_val = self.DA_array[jz]
         theta_array = self.rp_array / DA_val
         # theta_array = self.rp_array / (DA_val * (1 + self.z_array[jz]))
@@ -468,6 +615,58 @@ class setup_sim_map(Profiles):
         ))
 
         return jnp.clip(prof_smooth_interp,  jnp.min(proj_2d_mat[:,jz, jM]), jnp.max(proj_2d_mat[:,jz, jM]))
+
+    @partial(jit, static_argnums=(0,))
+    def _real_space_gaussian_smoothing(self, jz, jM, proj_2d_mat):
+        """Positive flat-sky convolution by a normalized circular Gaussian.
+
+        The scaled ``i0e`` form avoids overflow at theta/sigma >> 1.  The
+        projected profile is constant inside its innermost tabulated radius
+        and exactly zero outside its outermost tabulated radius.
+        """
+
+        theta = self.rp_array / self.DA_array[jz]
+        sigma = self.sigma_val
+        cutoff = self.profile_smoothing_radial_sigma_cutoff
+        lower = jnp.maximum(0.0, theta - cutoff * sigma)
+        upper = jnp.minimum(theta[-1], theta + cutoff * sigma)
+        midpoint = 0.5 * (lower + upper)
+        half_width = 0.5 * (upper - lower)
+        theta_prime = (
+            midpoint[:, None]
+            + half_width[:, None] * self.profile_smoothing_gl_nodes[None, :]
+        )
+
+        source = proj_2d_mat[:, jz, jM]
+        source_floor = jnp.finfo(source.dtype).tiny
+        source_at_prime = jnp.exp(
+            jnp.interp(
+                jnp.log(jnp.maximum(theta_prime, theta[0])),
+                jnp.log(theta),
+                jnp.log(jnp.maximum(source, source_floor)),
+            )
+        )
+        argument = theta[:, None] * theta_prime / (sigma ** 2)
+        radial_kernel = (
+            theta_prime
+            / (sigma ** 2)
+            * jnp.exp(-0.5 * ((theta[:, None] - theta_prime) / sigma) ** 2)
+            * jss.i0e(argument)
+        )
+        smoothed = half_width * jnp.sum(
+            self.profile_smoothing_gl_weights[None, :]
+            * radial_kernel
+            * source_at_prime,
+            axis=-1,
+        )
+        smoothed = jnp.maximum(smoothed, source_floor)
+        # A circular Gaussian conserves the two-dimensional monopole.  Restore
+        # that identity after evaluating the finite radial table so its outer
+        # boundary and sparse sampling cannot introduce an amplitude shift.
+        input_flux = jsi.trapezoid(theta * source, theta)
+        output_flux = jsi.trapezoid(theta * smoothed, theta)
+        smoothed = smoothed * input_flux / jnp.maximum(output_flux, source_floor)
+        return jnp.maximum(smoothed, source_floor)
 
     @partial(jit, static_argnums=(0,))        
     def get_y2D_smoothed_prof(self, jz, jM):
@@ -545,9 +744,22 @@ class get_sim_map(Profiles):
         
         # Map parameters
         self.nside_map = mock_params_dict['nside']
-        theta_fwhm_arcmin = hp.nside2resol(self.nside_map, arcmin=True)
-        theta_fwhm_rad = (theta_fwhm_arcmin / 60.) * (jnp.pi / 180.)
-        self.sigma_val = theta_fwhm_rad / jnp.sqrt(8. * jnp.log(2.))
+        pixel_fwhm_arcmin, theta_fwhm_arcmin, sigma_rad = resolve_profile_smoothing(
+            self.nside_map, mock_params_dict
+        )
+        self.profile_smoothing_pixel_resolution_arcmin = pixel_fwhm_arcmin
+        self.profile_smoothing_fwhm_pixel_fraction = theta_fwhm_arcmin / pixel_fwhm_arcmin
+        self.profile_smoothing_fwhm_arcmin = theta_fwhm_arcmin
+        self.sigma_val = jnp.asarray(sigma_rad)
+        self.profile_smoothing_method = mock_params_dict.get(
+            'profile_smoothing_method', 'legacy_fftlog'
+        )
+        self.profile_smoothing_quadrature_points = int(
+            mock_params_dict.get('profile_smoothing_quadrature_points', 64)
+        )
+        self.profile_smoothing_radial_sigma_cutoff = float(
+            mock_params_dict.get('profile_smoothing_radial_sigma_cutoff', 10.0)
+        )
         self.pix_area = hp.nside2pixarea(self.nside_map, degrees=False)
         
         # Pixel arrays. Pixel ids/grouping stay on host; only per-pixel profile
@@ -708,9 +920,9 @@ class get_sim_map(Profiles):
         )
 
         if bool(is_cmb_lensing):
-            chi_cmb = float(np.ravel(np.asarray(self.chi_CMB, dtype=np.float64))[0])
-            radial_kernel = np.clip(chi_cmb - chi_grid, 0.0, None) / max(chi_cmb, 0.1)
-            Wk_array = constant_factor * radial_kernel * (1.0 + z_grid) * chi_grid
+            Wk_array = compute_cmb_lensing_efficiency(
+                z_grid, chi_grid, self.chi_CMB, self.cosmo_jax.Omega_m
+            )
             source_label = 'cmb'
         else:
             z_source = np.asarray(self.z_array_nz, dtype=np.float64)
@@ -1217,8 +1429,13 @@ class get_sim_map(Profiles):
     @partial(jit, static_argnums=(0,))
     def get_hod_params(self, mass, z):
         """Get HOD parameters for M200c mass definition"""
-        mean_ncen = jnp.nan_to_num(self.Ncen_interp(z, jnp.log(mass)))
-        mean_nsat = jnp.nan_to_num(jnp.exp(self.logNsat_interp(z, jnp.log(mass))))
+        # Interpax requires query points and spline grids to share a dtype.
+        # These compact HOD tables are float64 so their derivative branches
+        # remain type-consistent when JAX x64 is enabled.
+        z_interp = jnp.asarray(z, dtype=jnp.float64)
+        log_mass_interp = jnp.log(jnp.asarray(mass, dtype=jnp.float64))
+        mean_ncen = jnp.nan_to_num(self.Ncen_interp(z_interp, log_mass_interp))
+        mean_nsat = jnp.nan_to_num(jnp.exp(self.logNsat_interp(z_interp, log_mass_interp)))
         # Clamp to physical range (Ncen ∈ [0,1] by construction of the erf HOD)
         mean_ncen = jnp.clip(mean_ncen, 0.0, 1.0)
         mean_nsat = jnp.clip(mean_nsat, 0.0)
