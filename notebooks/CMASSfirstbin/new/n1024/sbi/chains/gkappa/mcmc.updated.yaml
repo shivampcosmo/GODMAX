@@ -1,0 +1,75 @@
+theory: null
+likelihood:
+  gp_emulator:
+    emulator_path: /work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi/gp_emulator_gkappa.pkl
+    x_obs_path: /work/hdd/bdne/aacharya2/GODMAX/notebooks/CMASSfirstbin/new/n1024/sbi/x_obs.npy
+    feature_idx:
+    - 5
+    - 11
+    - 17
+    - 23
+    - 29
+    - 35
+    type: []
+    speed: -1
+    stop_at_error: false
+    version: null
+    external: !!python/name:__main__.GPEmulatorLikelihood ''
+    input_params:
+    - theta_ej_0
+    - nu_theta_ej_M
+    output_params: []
+params:
+  theta_ej_0:
+    prior:
+      min: 1.0
+      max: 6.0
+    ref: 3.5
+    proposal: 0.5
+    latex: \theta_{ej,0}
+  nu_theta_ej_M:
+    prior:
+      min: -0.3
+      max: 0.0
+    ref: -0.15
+    proposal: 0.03
+    latex: \nu_{\theta_{ej}}^{M}
+sampler:
+  mcmc:
+    sampler_type: mcmc
+    supports_periodic_params: true
+    burn_in: 200
+    max_tries: 10000
+    covmat: null
+    covmat_params: null
+    proposal_scale: 2.4
+    output_every: 60s
+    learn_every: 40d
+    temperature: 1
+    learn_proposal: true
+    learn_proposal_Rminus1_max: 0.5
+    learn_proposal_Rminus1_max_early: 30.0
+    learn_proposal_Rminus1_min: 0.0
+    max_samples: 5000
+    Rminus1_stop: 0.02
+    Rminus1_cl_stop: 0.2
+    Rminus1_cl_level: 0.95
+    Rminus1_single_split: 4
+    measure_speeds: true
+    oversample_power: 0.4
+    oversample_thin: true
+    drag: false
+    blocking:
+    - - 1
+      - - theta_ej_0
+        - nu_theta_ej_M
+    callback_function: null
+    callback_every: null
+    seed: null
+    check_every: null
+    oversample: null
+    drag_limits: null
+    fallback_covmat_scale: 4
+    version: 3.6.2
+output: mcmc
+version: 3.6.2
