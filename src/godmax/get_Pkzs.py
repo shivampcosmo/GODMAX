@@ -99,7 +99,8 @@ class get_Pkz(Profiles):
             vmap_func = vmap(symbolic_pkhalofit,(None, None, None, None, None, None, None, None, 0))
             self.phfit_kz_mat = vmap_func(self.kPk_array, self.plin_kz_mat, self.Om0, self.cosmo_params['Ob0'], self.h, self.cosmo_params['ns'], self.cosmo_params['sigma8'], self.z_array, jnp.arange(self.nz)).T
         else:
-            hfit_params = vmap(halofit_parameters,(None, 0))(self.cosmo_jax, self.scale_fac_a_array).T
+            hfit_params = vmap(partial(halofit_parameters, num_points=self.num_points_halofit),
+                               (None, 0))(self.cosmo_jax, self.scale_fac_a_array).T
             self.phfit_kz_mat = vmap(nonlinear_matter_power,(None, None, 0, None, None, None))(self.cosmo_jax, self.kPk_array, self.scale_fac_a_array, self.plin_kz_mat, hfit_params, self.scale_fac_a_array).T
 
         # Get the large-scale bias of the fields:

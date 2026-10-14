@@ -693,7 +693,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mnfw = self.logspace_trapezoidal_integral(self.get_rho_nfw_normed, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mnfw
@@ -871,7 +871,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mcga = self.logspace_trapezoidal_integral(self.get_rho_cga, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mcga
@@ -897,10 +897,22 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_rho_gas_norm(self, jz, jM, rmax_r200c=RMAX_R200c):
-        '''This is the normalization of the gas profile'''
+        '''Normalisation of the gas profile: M_gas(<infinity) = f_gas M_tot
+        (Schneider & Teyssier 2019, Eq. 2.13; GODMAX paper, arXiv:2401.18072, Sec. 2.1.2).
+
+        Beyond r_ej the gas density falls as r^-7, so integrating to max(rmax_r200c r200c, 50 r_ej)
+        leaves ~50^-4 = 2e-7 of the mass out. The previous upper limit, rmax_r200c r200c (8 r200c),
+        normalised only the gas inside 8 r200c while the profile extends to several r_ej: with a
+        mass-dependent ejection radius (r_ej up to ~60 r200c at 1e11.5 Msun/h, ~900 r200c at 1e8)
+        the radial grid then held up to 20x (1e4x at 1e8) the halo's gas budget.
+        The normalisation no longer depends on the radial grid; whether the grid contains the gas
+        is checked separately (godmax.validation.coverage_report, scripts/preflight.py).
+        See notebooks/test-godmax/07_gas_normalisation_smoke.py.'''
         r200c = self.r200c_mat[jz, jM]
-        logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
-        # logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(self.r_array[-1]), self.num_points_trapz_int)        
+        r_out = jnp.maximum(rmax_r200c * r200c, 50.0 * self.r_ej_mat[jz, jM])
+        logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(r_out), 512)
+        # OLD (normalised within rmax_r200c * r200c only):
+        # logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
         int_unnorm_prof = self.logspace_trapezoidal_integral(self.get_rho_gas_unnorm, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         rho_gas_norm = self.fgas_mat[jz, jM] * self.Mtot_mat[jz, jM] / int_unnorm_prof
         return rho_gas_norm
@@ -920,7 +932,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mgas = self.logspace_trapezoidal_integral(self.get_rho_gas_normed, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mgas
@@ -971,19 +983,20 @@ class Profiles(base_class):
         else:
             Mclm_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.Mclm_mat[:, jz, jM])))
         
-        # lnMclm_interp = interpax.CubicSpline(jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30), extrapolate=True, check=False)
-        # lnMclm_interp = interpax.Akima1DInterpolator(jnp.log(r_array_here), jnp.log(Mclm_here + 1e-30), extrapolate=True, check=False)
-        # lnMclm_interp = interpax.PchipInterpolator(jnp.log(r_array_here), jnp.nan_to_num(jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30)), extrapolate=True, check=False)
-        # dlnMclm_dr = lnMclm_interp.derivative(nu=1)(jnp.log(r_array_here))
-
-        # def lnMclm_interp(x, xp, yp):
-        #   return jnp.interp(x, xp, yp)
-        # lnMclm_interp = (jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30), extrapolate=True, check=False)
-        dlnMclm_dr = jax.vmap(jax.grad(lambda x_val: jnp.interp(x_val, jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30))))(jnp.log(r_array_here))
-        # f_prime_vec = jax.vmap(f_prime)(x_grid)
-
-        dMclm_dr = dlnMclm_dr * Mclm_here / r_array_here
-        rho_clm = dMclm_dr / (4*jnp.pi*r_array_here**2)   
+        # rho_clm = (1/4 pi r^2) dM_clm/dr, with d ln M_clm / d ln r from a central difference
+        # (ported from tsv-dev-debug, B7). The previous version took jax.grad of a piecewise-linear
+        # interp at its own knots, i.e. one-sided segment slopes, which under-recovers the CLM mass
+        # (-4.6% on a 64-point grid, -13% on 23 points). Central differences are not exactly
+        # conservative either (+0.4% on 64 points, converging with nr). This rho_clm feeds rho_dmb
+        # (u_dmb, P_mm) and Mdmb_mat (HSE pressure); the galaxy u_clm uses the shell transform of
+        # Mclm_mat instead (get_Pkz.get_uk_clm_shell). See notebooks/test-godmax/06_rho_clm_dmb_path_*.ipynb.
+        # OLD:
+        # dlnMclm_dr = jax.vmap(jax.grad(lambda x_val: jnp.interp(x_val, jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30))))(jnp.log(r_array_here))
+        ln_r = jnp.log(r_array_here)
+        ln_Mclm = jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30)
+        dlnMclm_dlnr = jnp.gradient(ln_Mclm, ln_r)
+        dMclm_dr = dlnMclm_dlnr * Mclm_here / r_array_here
+        rho_clm = dMclm_dr / (4 * jnp.pi * r_array_here**2)
         return jnp.clip(rho_clm, 0, 1e30)
 
 
@@ -1025,7 +1038,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mdmb = self.logspace_trapezoidal_integral(self.get_rho_dmb, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mdmb
@@ -1034,7 +1047,7 @@ class Profiles(base_class):
     def get_Mdmb_r200(self, jz, jM):
         '''This is the mass inside some radius for the full dmb profile'''
         r = self.r200c_mat[jz, jM]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mdmb = self.logspace_trapezoidal_integral(self.get_rho_dmb, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mdmb
@@ -1043,7 +1056,7 @@ class Profiles(base_class):
     def get_r500_z0_wMdmb(self, jz, jM):
         '''This is the mass inside some radius for the full dmb profile'''
         r = self.r200c_mat[jz, jM]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mdmb = self.logspace_trapezoidal_integral(self.get_rho_dmb, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mdmb

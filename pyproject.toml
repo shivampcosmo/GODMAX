@@ -30,8 +30,8 @@ dependencies = [
     "numpy>=2.0",
     "scipy>=1.11",
     "numpyro>=0.15",
-    "jax>=0.4.25",
-    "jaxlib>=0.4.25",
+    "jax>=0.4.31",      # jnp.gradient with a non-uniform coordinate array (get_rho_clm); 0.4.30 raises NotImplementedError
+    "jaxlib>=0.4.31",
     "interpax>=0.3",
     "colossus",
     "configobj",
@@ -39,6 +39,7 @@ dependencies = [
     "jax_cosmo",
     "deepmerge",
     "healpy",
+    "matplotlib",
 ]
 
 [project.urls]

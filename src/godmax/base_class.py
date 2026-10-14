@@ -358,7 +358,13 @@ class base_class:
         # Controls the accuracy of the trapezoidal integration.
         self.num_points_trapz_int = analysis_dict.get('num_points_trapz_int', 64)
         self.num_points_gal_cal = analysis_dict.get('num_points_trapz_int', 32)
-        
+        # Nodes of the halofit non-linear-scale search (and its Simpson steps). R_nl is found by linear
+        # interpolation to sigma(R)=1 on this grid, so d R_nl / d(cosmology) is piecewise constant in
+        # between nodes: the value converges by ~64 nodes, the derivative does not. At 64 the d/dOm of
+        # k_nl, C and ln P_nl are wrong by tens of percent; 512 is within ~2% of the grid-free result
+        # (notebooks/test-godmax/04_halofit_num_points_convergence.ipynb).
+        self.num_points_halofit = int(analysis_dict.get('num_points_halofit', 512))
+
         self.calc_nfw_only = analysis_dict.get('calc_nfw_only', True)
         self.beam_fwhm_arcmin = analysis_dict.get('beam_fwhm_arcmin', 1.4)
         self.sig_beam = self.beam_fwhm_arcmin * (1. / 60.) * (jnp.pi / 180.) * (1. / jnp.sqrt(8. * jnp.log(2)))
