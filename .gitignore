@@ -163,6 +163,3 @@ dmypy.json
 # Ignore any directory with 'logs' in its name
 **/*logs*/
 
-
-# Local Claude Code project instructions
-CLAUDE.md
