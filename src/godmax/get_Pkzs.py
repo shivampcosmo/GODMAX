@@ -135,6 +135,7 @@ class get_Pkz(Profiles):
         self.Pmm_nfw_2h_kz_mat = self.bm_nfw_kz_mat * self.bm_nfw_kz_mat * self.plin_kz_mat
         if self.model_tSZ:
             self.Pym_2h_kz_mat = self.bm_dmb_kz_mat * self.by_kz_mat * self.plin_kz_mat
+            self.Pyy_2h_kz_mat = self.by_kz_mat * self.by_kz_mat * self.plin_kz_mat
         if self.model_galaxies:
             self.Pge_2h_kz_mat = self.bg_kz_mat * self.be_kz_mat * self.plin_kz_mat
             self.Pgm_2h_kz_mat = self.bg_kz_mat * self.bm_dmb_kz_mat * self.plin_kz_mat
@@ -155,6 +156,7 @@ class get_Pkz(Profiles):
 
         if self.model_tSZ:
             self.Pym_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0, 3).T
+            self.Pyy_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 3, 3).T
         if self.model_galaxies:
             self.Pge_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 2, 4).T
             self.Pgm_1h_kz_mat = vmapped_func(jnp.arange(self.nk), jnp.arange(self.nz), 0, 2).T
@@ -174,6 +176,10 @@ class get_Pkz(Profiles):
             self.Pym_tot_mat = self._combine_1h2h_poweradd(self.Pym_1h_kz_mat, self.Pym_2h_kz_mat, self.alpha_ky)
             if self.tSZ_transition_model == 'response':
                 self.Pym_tot_mat = self.Pym_tot_mat * self.Pmm_sup_tot_mat
+            # tSZ auto-spectrum (moved here from get_covs so it is available alongside the other
+            # P(k,z) spectra). Kept as the simple 1h+2h sum to reproduce the previous covariance
+            # behaviour exactly; get_covs now consumes self.Pyy_tot_kz_mat instead of recomputing it.
+            self.Pyy_tot_kz_mat = self.Pyy_1h_kz_mat + self.Pyy_2h_kz_mat
         if self.model_galaxies:
             self.Pge_tot_mat = self._combine_1h2h_poweradd(self.Pge_1h_kz_mat, self.Pge_2h_kz_mat, self.alpha_ge)
             if self.galaxy_electron_transition_model == 'response':
