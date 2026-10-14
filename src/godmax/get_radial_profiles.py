@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 from functools import partial
-import helpers.constants as constants
+import godmax.helpers.constants as constants
 import astropy.units as u
 import jax
 from astropy import constants as const
@@ -11,8 +11,8 @@ from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 import jax_cosmo.background as bkgrd
 import time
 import interpax
-from base_class import base_class, get_vmapped_func, get_vmapped_func_warg
-from hmf_symbolic import *
+from godmax.base_class import base_class, get_vmapped_func, get_vmapped_func_warg
+from godmax.hmf_symbolic import *
 
 RMAX_R200c = 8.
 # Define constants once at module level
@@ -80,7 +80,24 @@ class Profiles(base_class):
         self.run_dmb_calc()
 
         if self.model_tSZ:
-            self.run_pressure_calc()
+            self.setup_tsz_conversion()
+
+            # Single physical switch: the two branches are fully independent.
+            # True  -> full baryonic tSZ model (baryonified gas, DMB potential,
+            #          nonthermal pressure included).
+            # False -> fully thermal NFW reference (gas traces NFW, NFW potential,
+            #          P_th = P_tot). Run the pipeline twice to compare.
+            if self.baryonification_tSZ:
+                self.run_pressure_calc()
+            else:
+                self.run_pressure_calc_nfw()
+
+            # Diagnostic only: grid-integrated Compton-Y of the active branch.
+            # No cross-branch normalization is applied anywhere — integrated Y is
+            # not a conserved quantity under feedback/ejection/nonthermal support,
+            # so the Y difference between branches is part of the physical signal.
+            fourpi_r2 = 4.0 * jnp.pi * self.r_array[:, None, None] ** 2
+            self.Y3D_active_mat = jsi.trapezoid(fourpi_r2 * self.y3d_mat, x=self.r_array, axis=0)
 
     def timing_decorator(func):
         """Decorator to time a function if the instance or class enables timing."""
@@ -327,34 +344,106 @@ class Profiles(base_class):
         # Calculate mass profiles
         self.Mdmb_mat = get_vmapped_func(self.get_Mdmb, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
 
+        # Cumulative NFW-only enclosed mass on r_array (both -> Mtot at large r; mass is conserved
+        # between DMB and NFW). Used as the gravity leg of the gravity-only HSE pressure (get_Ptot_nfw).
+        if self.model_tSZ and not self.baryonification_tSZ:
+            self.Mnfw_mat = get_vmapped_func(self.get_Mnfw, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
+
     @timing_decorator
-    def run_pressure_calc(self):
-        """Get the pressure profiles - optimized."""
-        # Calculate pressure profiles
-        Ptot_mat = get_vmapped_func(self.get_Ptot, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-            
-        # Convert to physical coordinates
-        self.Ptot_mat_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 4)
-        
-        # Calculate non-thermal pressure
-        Pnt_fac = get_vmapped_func(self.get_Pnt_fac, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
-        # Pnt_mat = Pnt_fac * Ptot_mat
-        
-        # Calculate thermal pressure more efficiently
-        # Pth_mat = Ptot_mat * jnp.maximum(0, 1 - Pnt_fac)
-        Pth_mat_physical = self.Ptot_mat_physical * jnp.maximum(0, 1 - Pnt_fac)
-        
-        # Convert to electron pressure (factor 1.932)
-        self.Pe_mat_physical = Pth_mat_physical/1.932
-        
-        # Calculate y3d parameter with pre-computed coefficient
+    def setup_tsz_conversion(self):
+        """Set the common electron-pressure to 3D Compton-y conversion coefficient.
+
+        Common to both tSZ branches (baryonified and NFW reference); carries no
+        baryonification dependence, so it lives outside either branch."""
         sigmat = const.sigma_T
         m_e = const.m_e
         c = const.c
         coeff = sigmat / (m_e * (c ** 2))
         oneMpc = (((10 ** 6)) * (u.pc).to(u.m)) * (u.m)
-        const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
-        self.y3d_mat = const_coeff * self.Pe_mat_physical
+        self.y3d_const_coeff = (((coeff * oneMpc).to(((u.cm ** 3) / u.keV))).value)/(self.cosmo_params['H0']/100.)
+
+    @timing_decorator
+    def run_pressure_calc(self):
+        """
+        Full baryonic tSZ model (baryonification_tSZ = True).
+
+        HSE inputs (Eq. 14):
+          gas density      = baryonified gas profile
+          enclosed mass    = DMB profile
+
+        Thermal pressure:
+          P_th = P_tot * (1 - R_nt)
+
+        Nonthermal pressure support (Eq. 15) is part of the complete baryonic
+        model — there is no separate nonthermal toggle.
+        """
+        Ptot_mat = get_vmapped_func(self.get_Ptot, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
+
+        # Convert to physical coordinates
+        Ptot_physical = Ptot_mat / (self.scale_fac_a_array[None, :, None] ** 4)
+
+        # Calculate non-thermal pressure fraction
+        Pnt_fac = get_vmapped_func(self.get_Pnt_fac, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
+
+        # Thermal pressure: P_th = P_tot * (1 - R_nt)
+        Pth_physical = Ptot_physical * jnp.maximum(0, 1 - Pnt_fac)
+
+        # Convert to electron pressure (factor 1.932)
+        Pe_physical = Pth_physical / 1.932
+        y3d = self.y3d_const_coeff * Pe_physical
+
+        # Explicit branch-specific outputs
+        self.Ptot_bary_mat_physical = Ptot_physical
+        self.Pnt_fac_bary_mat = Pnt_fac
+        self.Pe_bary_mat_physical = Pe_physical
+        self.y3d_bary_mat = y3d
+
+        # Active profiles used by the downstream pipeline
+        self.Ptot_mat_physical = Ptot_physical
+        self.Pe_mat_physical = Pe_physical
+        self.y3d_mat = y3d
+
+    @timing_decorator
+    def run_pressure_calc_nfw(self):
+        """
+        No-baryonification tSZ reference (baryonification_tSZ = False).
+
+        The no-baryonification reference assumes:
+
+          1. the gas traces the NFW matter profile;
+          2. the gravitational potential is generated by NFW;
+          3. all hydrostatic pressure is thermal (P_th = P_tot);
+          4. no amplitude or low-k matching to the baryonified
+             profile is imposed.
+
+        The baryonified branch (run_pressure_calc) includes gas redistribution,
+        the DMB gravitational potential, and nonthermal pressure. Integrated
+        Compton-Y is NOT conserved between the branches: feedback, ejection and
+        nonthermal support genuinely change the thermal energy, and that
+        difference is part of the physical signal.
+
+        Fully independent of run_pressure_calc — neither branch requires the
+        other to have run.
+        """
+        Ptot_nfw_mat = get_vmapped_func(self.get_Ptot_nfw, 3)(jnp.arange(self.nr), jnp.arange(self.nz), jnp.arange(self.nM)).T
+        Ptot_nfw_physical = Ptot_nfw_mat / (self.scale_fac_a_array[None, :, None] ** 4)
+
+        # Fully thermal reference: P_th = P_tot. Deliberate: the non-thermal
+        # pressure support (Eq. 15) is itself sourced by baryonic processes
+        # (feedback-driven turbulence/bulk motions), so the no-baryonification
+        # reference excludes it along with the gas reshaping.
+        Pe_nfw_physical = Ptot_nfw_physical / 1.932
+        y3d_nfw = self.y3d_const_coeff * Pe_nfw_physical
+
+        # Explicit branch-specific outputs
+        self.Ptot_nfw_mat_physical = Ptot_nfw_physical
+        self.Pe_nfw_mat_physical = Pe_nfw_physical
+        self.y3d_nfw_mat = y3d_nfw
+
+        # Active profiles used by the downstream pipeline
+        self.Ptot_mat_physical = Ptot_nfw_physical
+        self.Pe_mat_physical = Pe_nfw_physical
+        self.y3d_mat = y3d_nfw
 
     @partial(jit, static_argnums=(0,))
     def get_M_to_R(self, jz, jM, mdef_delta=200):
@@ -604,7 +693,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mnfw = self.logspace_trapezoidal_integral(self.get_rho_nfw_normed, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mnfw
@@ -782,7 +871,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mcga = self.logspace_trapezoidal_integral(self.get_rho_cga, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mcga
@@ -808,10 +897,22 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_rho_gas_norm(self, jz, jM, rmax_r200c=RMAX_R200c):
-        '''This is the normalization of the gas profile'''
+        '''Normalisation of the gas profile: M_gas(<infinity) = f_gas M_tot
+        (Schneider & Teyssier 2019, Eq. 2.13; GODMAX paper, arXiv:2401.18072, Sec. 2.1.2).
+
+        Beyond r_ej the gas density falls as r^-7, so integrating to max(rmax_r200c r200c, 50 r_ej)
+        leaves ~50^-4 = 2e-7 of the mass out. The previous upper limit, rmax_r200c r200c (8 r200c),
+        normalised only the gas inside 8 r200c while the profile extends to several r_ej: with a
+        mass-dependent ejection radius (r_ej up to ~60 r200c at 1e11.5 Msun/h, ~900 r200c at 1e8)
+        the radial grid then held up to 20x (1e4x at 1e8) the halo's gas budget.
+        The normalisation no longer depends on the radial grid; whether the grid contains the gas
+        is checked separately (godmax.validation.coverage_report, scripts/preflight.py).
+        See notebooks/test-godmax/07_gas_normalisation_smoke.py.'''
         r200c = self.r200c_mat[jz, jM]
-        logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
-        # logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(self.r_array[-1]), self.num_points_trapz_int)        
+        r_out = jnp.maximum(rmax_r200c * r200c, 50.0 * self.r_ej_mat[jz, jM])
+        logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(r_out), 512)
+        # OLD (normalised within rmax_r200c * r200c only):
+        # logx = jnp.linspace(jnp.log(0.01*r200c), jnp.log(rmax_r200c*r200c), self.num_points_trapz_int)
         int_unnorm_prof = self.logspace_trapezoidal_integral(self.get_rho_gas_unnorm, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         rho_gas_norm = self.fgas_mat[jz, jM] * self.Mtot_mat[jz, jM] / int_unnorm_prof
         return rho_gas_norm
@@ -831,7 +932,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mgas = self.logspace_trapezoidal_integral(self.get_rho_gas_normed, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mgas
@@ -882,19 +983,20 @@ class Profiles(base_class):
         else:
             Mclm_here = jnp.exp(jnp.interp(jnp.log(r_array_here), jnp.log(self.r_array), jnp.log(self.Mclm_mat[:, jz, jM])))
         
-        # lnMclm_interp = interpax.CubicSpline(jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30), extrapolate=True, check=False)
-        # lnMclm_interp = interpax.Akima1DInterpolator(jnp.log(r_array_here), jnp.log(Mclm_here + 1e-30), extrapolate=True, check=False)
-        # lnMclm_interp = interpax.PchipInterpolator(jnp.log(r_array_here), jnp.nan_to_num(jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30)), extrapolate=True, check=False)
-        # dlnMclm_dr = lnMclm_interp.derivative(nu=1)(jnp.log(r_array_here))
-
-        # def lnMclm_interp(x, xp, yp):
-        #   return jnp.interp(x, xp, yp)
-        # lnMclm_interp = (jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30), extrapolate=True, check=False)
-        dlnMclm_dr = jax.vmap(jax.grad(lambda x_val: jnp.interp(x_val, jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30))))(jnp.log(r_array_here))
-        # f_prime_vec = jax.vmap(f_prime)(x_grid)
-
-        dMclm_dr = dlnMclm_dr * Mclm_here / r_array_here
-        rho_clm = dMclm_dr / (4*jnp.pi*r_array_here**2)   
+        # rho_clm = (1/4 pi r^2) dM_clm/dr, with d ln M_clm / d ln r from a central difference
+        # (ported from tsv-dev-debug, B7). The previous version took jax.grad of a piecewise-linear
+        # interp at its own knots, i.e. one-sided segment slopes, which under-recovers the CLM mass
+        # (-4.6% on a 64-point grid, -13% on 23 points). Central differences are not exactly
+        # conservative either (+0.4% on 64 points, converging with nr). This rho_clm feeds rho_dmb
+        # (u_dmb, P_mm) and Mdmb_mat (HSE pressure); the galaxy u_clm uses the shell transform of
+        # Mclm_mat instead (get_Pkz.get_uk_clm_shell). See notebooks/test-godmax/06_rho_clm_dmb_path_*.ipynb.
+        # OLD:
+        # dlnMclm_dr = jax.vmap(jax.grad(lambda x_val: jnp.interp(x_val, jnp.log(r_array_here), jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30))))(jnp.log(r_array_here))
+        ln_r = jnp.log(r_array_here)
+        ln_Mclm = jnp.log(jnp.clip(Mclm_here, 0, None) + 1e-30)
+        dlnMclm_dlnr = jnp.gradient(ln_Mclm, ln_r)
+        dMclm_dr = dlnMclm_dlnr * Mclm_here / r_array_here
+        rho_clm = dMclm_dr / (4 * jnp.pi * r_array_here**2)
         return jnp.clip(rho_clm, 0, 1e30)
 
 
@@ -936,7 +1038,7 @@ class Profiles(base_class):
             r = self.r_array[jr]
         else:
             r = r_array_here[jr]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mdmb = self.logspace_trapezoidal_integral(self.get_rho_dmb, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mdmb
@@ -945,7 +1047,7 @@ class Profiles(base_class):
     def get_Mdmb_r200(self, jz, jM):
         '''This is the mass inside some radius for the full dmb profile'''
         r = self.r200c_mat[jz, jM]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mdmb = self.logspace_trapezoidal_integral(self.get_rho_dmb, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mdmb
@@ -954,7 +1056,7 @@ class Profiles(base_class):
     def get_r500_z0_wMdmb(self, jz, jM):
         '''This is the mass inside some radius for the full dmb profile'''
         r = self.r200c_mat[jz, jM]
-        minr = jnp.minimum(5e-4, 0.005*self.r200c_mat[jz, jM])        
+        minr = jnp.minimum(jnp.minimum(5e-4, 0.5 * self.r_array[0]), 0.005*self.r200c_mat[jz, jM])        
         logx = jnp.linspace(jnp.log(minr), jnp.log(r), self.num_points_trapz_int)
         Mdmb = self.logspace_trapezoidal_integral(self.get_rho_dmb, logx, jz=jz, jM=jM, axis_tup=(0, None, None, None))
         return Mdmb
@@ -976,7 +1078,27 @@ class Profiles(base_class):
         # there is a factor of h^2 as dP = -G * rho_g * M(<r)/r^2 dr ~ G * M^2/r^4 and both mass and r are in the units of little h
         Ptot = jnp.clip(Ptot, 1e-30) * (self.cosmo_params['H0'] / 100.)**2
         return Ptot
-    
+
+    @partial(jit, static_argnums=(0,))
+    def get_Ptot_nfw(self, jr, jz, jM, r_array_here=None, rmax_r200c=RMAX_R200c):
+        '''Gravity-only total pressure, assuming HSE with NFW on both legs of Eq. 14:
+        gas density -> fgas * rho_nfw_normed (gas traces matter; fgas = Ob0/Om0 - fstar_tot, the
+        same fraction that normalises the baryonified gas profile), enclosed mass -> M_nfw(<r).
+        Mirrors get_Ptot exactly apart from the two swapped legs.'''
+        if r_array_here is None:
+            r = self.r_array[jr]
+        else:
+            r = r_array_here[jr]
+        logx = jnp.linspace(jnp.log(r), jnp.log(rmax_r200c*self.r200c_mat[jz, jM]), self.num_points_trapz_int)
+        x = jnp.exp(logx)
+        fx1 = self.fgas_mat[jz, jM] * (vmap(self.get_rho_nfw_normed, (0, None, None, None))(jnp.arange(len(logx)), jz, jM, x))
+        # Floor the enclosed mass before log (get_Mnfw can underflow to 0 at the innermost node).
+        fx2 = jnp.exp(jnp.interp(logx, jnp.log(self.r_array), jnp.log(jnp.clip(self.Mnfw_mat[:, jz, jM], 1e-30))))
+        fx = (fx1 * fx2 * G_new / x**2) * x
+        Ptot = jsi.trapezoid(fx, x=logx)
+        Ptot = jnp.clip(Ptot, 1e-30) * (self.cosmo_params['H0'] / 100.)**2
+        return Ptot
+
     @partial(jit, static_argnums=(0,))
     def get_fz_Pnt(self, jz, rmax_r200c=RMAX_R200c):
         '''This is the evolution of non-thermal pressure with redshift'''

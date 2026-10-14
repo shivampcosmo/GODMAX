@@ -1,9 +1,11 @@
-from get_Pkzs import get_Pkz
-from base_class import get_vmapped_func, get_vmapped_func_warg, EmptyCallable
+from godmax.get_Pkzs import get_Pkz
+from godmax.base_class import get_vmapped_func, get_vmapped_func_warg, EmptyCallable
 import jax.numpy as jnp
+import numpy as np
 from jax import jit, vmap
 import jax.scipy.integrate as jsi
 from functools import partial
+import math
 from astropy import constants as const
 import interpax
 from jax_cosmo.scipy.integrate import simps
@@ -107,6 +109,15 @@ class get_Cl(get_Pkz):
             self.Wg_mat = vmap(self.get_nz_lens_interp)(jnp.arange(self.nbins_lens))
         else: self.Wg_mat = jnp.zeros((1,1))
 
+        # tSZ y Fourier profile in l-space (moved here from get_covs so it is accessible outside the
+        # covariance code): uyl_mat_tointp[l, z, M] (beam-convolved), uyl_mat[l, z_for_Cls, M]
+        # (z-interpolated), and uy_l_for_cov (with the Compton-y radial kernel Wy).
+        if self.model_tSZ:
+            self.uyl_mat_tointp = get_vmapped_func(self.get_uyl, 3)(jnp.arange(self.nell), jnp.arange(self.nz), jnp.arange(self.nM)).T
+            self.uyl_mat = get_vmapped_func(self.get_uyl_interp, 2)(jnp.arange(self.nell), jnp.arange(self.nM)).T
+            self.uyl_mat = jnp.moveaxis(self.uyl_mat, 0, 1)
+            self.uy_l_for_cov = self.get_uy_l_forcov()
+
         if self.ENABLE_TIMING:
             ti = time.time()
         # Get the Cls:
@@ -150,6 +161,45 @@ class get_Cl(get_Pkz):
 
             # self.Cl_kappa_y_tot_mat = vmapped_func(jnp.arange(self.nell), jnp.arange(self.nbins), 0, 0, 3).T
             self.Cl_kappa_y_tot_mat = vmapped_func(jnp.arange(self.nbins), 0, 0, 3).T
+            # tSZ auto Cl (moved here from get_covs so it is available on get_Cl instances alongside the
+            # other Cls). Feeds off Pyy_tot_kz_mat (now in get_Pkzs); get_covs inherits these unchanged.
+            self.Pkyy_lz_mat = get_vmapped_func(self.get_Pkyy_lz, 2)(jnp.arange(self.nell), jnp.arange(self.nz)).T
+            self.logPkyylz_2d_interp = interpax.Interpolator2D(jnp.log(self.ell_array), self.z_array, jnp.log(self.Pkyy_lz_mat), extrap=True)
+
+            # yy naming convention (same signal / noise / tot split used by the other probes'
+            # Cl_result_dict entries in get_covs):
+            #   Cl_y_y_signal_mat : theory-only C_yy (1h + 2h, beam^2 included)
+            #   Cl_y_y_noise_mat  : instrumental/foreground noise from the yy noise or total file
+            #   Cl_y_y_tot_mat    : signal + noise
+            # All three live on self.ell_array. get_covs consumes them directly.
+            self.Cl_y_y_signal_mat = vmap(self.get_Cl_y_y_signal)(jnp.arange(self.nell))
+
+            yy_total_ell_fname = analysis_dict.get('yy_total_ell_fname', None)
+            yy_noise_ell_fname = analysis_dict.get('yy_noise_ell_fname', None)
+            if yy_total_ell_fname is not None:
+                ell_yy_f, Cl_yy_f = np.loadtxt(yy_total_ell_fname, unpack=True, usecols=(0, 1))
+                log_Cl_yy_tot_interp = interpax.Interpolator1D(
+                    jnp.log(jnp.array(ell_yy_f)),
+                    jnp.log(jnp.array(Cl_yy_f) + 1e-25),
+                    extrap=(math.log(Cl_yy_f[0]), math.log(Cl_yy_f[-1]))
+                )
+                self.Cl_y_y_tot_mat = jnp.exp(log_Cl_yy_tot_interp(jnp.log(self.ell_array)))
+                self.Cl_y_y_noise_mat = jnp.maximum(self.Cl_y_y_tot_mat - self.Cl_y_y_signal_mat, 0.0)
+                print('Loaded yy total from file into Cl_y_y_tot_mat')
+            elif yy_noise_ell_fname is not None:
+                ell_yy_n, Cl_yy_n = np.loadtxt(yy_noise_ell_fname, unpack=True, usecols=(0, 1))
+                log_Cl_yy_noise_interp = interpax.Interpolator1D(
+                    jnp.log(jnp.array(ell_yy_n)),
+                    jnp.log(jnp.abs(jnp.array(Cl_yy_n)) + 1e-25),
+                    extrap=True
+                )
+                self.Cl_y_y_noise_mat = jnp.exp(log_Cl_yy_noise_interp(jnp.log(self.ell_array)))
+                self.Cl_y_y_tot_mat = self.Cl_y_y_signal_mat + self.Cl_y_y_noise_mat
+                print('Loaded yy noise from file; Cl_y_y_tot_mat = signal + noise')
+            else:
+                print('Warning: no yy-total or yy-noise file provided; Cl_y_y_tot_mat = signal only')
+                self.Cl_y_y_noise_mat = jnp.zeros_like(self.Cl_y_y_signal_mat)
+                self.Cl_y_y_tot_mat = self.Cl_y_y_signal_mat
             if self.ENABLE_TIMING:
                 print("Time to compute the kappa y: ", time.time() - ti)
                 ti = time.time()
@@ -164,6 +214,51 @@ class get_Cl(get_Pkz):
             if self.ENABLE_TIMING:
                 print("Time to compute SZ angular power spectra: ", time.time() - ti)
                 ti = time.time()
+
+    @partial(jit, static_argnums=(0,))
+    def get_uyl(self, jl, jz, jM):
+        '''Beam-convolved tSZ y Fourier profile projected to (l, z, M): interpolate uk_y to
+        k_ell = (l+0.5)/chi(z) and apply the Gaussian beam. Moved here from get_covs so the
+        l-space y profile is available outside the covariance code.'''
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        uk_min = jnp.min(jnp.absolute(self.uk_y[:,jz, jM]))
+        uk_clipped = jnp.clip(self.uk_y[:,jz, jM], uk_min + 1e-25)
+        uyl = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(uk_clipped)))
+        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+        return uyl * Bl
+
+    @partial(jit, static_argnums=(0,))
+    def get_uyl_interp(self, jl, jM):
+        val = jnp.interp(self.z_array_for_Cls, self.z_array, self.uyl_mat_tointp[jl,:,jM])
+        return val
+
+    @partial(jit, static_argnums=(0,))
+    def get_uy_l_forcov(self):
+        Wk_jb = self.Wy_array
+        prefac_for_uk = Wk_jb/(self.chi_array_for_Cls**2)
+        prefac_for_uk_tile = jnp.tile(prefac_for_uk[None,:,None], (self.uyl_mat.shape[0], 1, self.uyl_mat.shape[2]))
+        return prefac_for_uk_tile *  self.uyl_mat
+
+    @partial(jit, static_argnums=(0,))
+    def get_Pkyy_lz(self, jl, jz):
+        '''Beam-convolved tSZ auto power at (l, z): interpolate Pyy_tot_kz_mat to k_ell and apply Bl^2.'''
+        ell = self.ell_array[jl]
+        chi_z = self.chi_array[jz]
+        Bl = jnp.exp(-1. * ell * (ell + 1) * (self.sig_beam ** 2) / 2.)
+        k_ell = (ell + 0.5)/jnp.clip(chi_z, 1.0)
+        Pkz_ell = jnp.exp(jnp.interp(jnp.log(k_ell), jnp.log(self.kPk_array), jnp.log(self.Pyy_tot_kz_mat[:,jz])))
+        return (Bl**2)*Pkz_ell
+
+    @partial(jit, static_argnums=(0,))
+    def get_Cl_y_y_signal(self, jl):
+        '''tSZ auto signal Cl via Limber projection of the (l, z) y power with the Compton-y kernel Wy.'''
+        Pk = jnp.exp(self.logPkyylz_2d_interp(jnp.log(self.ell_array[jl]), self.z_array_for_Cls))
+        Wy_array = (1.0 / (1.0 + self.z_array_for_Cls))
+        prefac = Wy_array / (self.chi_array_for_Cls**2)
+        fx = prefac * prefac * (self.chi_array_for_Cls ** 2) * self.dchi_dz_array_for_Cls * Pk
+        return jsi.trapezoid(fx, x=self.z_array_for_Cls)
 
     @partial(jit, static_argnums=(0,))
     def get_P_lz(self, jl, jz, Pk_mat):

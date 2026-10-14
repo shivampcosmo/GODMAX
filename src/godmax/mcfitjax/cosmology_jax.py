@@ -4,8 +4,8 @@ import os, sys
 file_path = os.path.abspath(__file__)
 sys.path.append(file_path)
 # import pdb; pdb.set_trace()
-from mcfitjax.mcfit_jax import mcfit
-import mcfitjax.kernels as kernels
+from godmax.mcfitjax.mcfit_jax import mcfit
+import godmax.mcfitjax.kernels as kernels
 from jax.numpy import pi
 
 

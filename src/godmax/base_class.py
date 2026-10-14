@@ -13,11 +13,11 @@ Mpc_to_cm = 3.086e24
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
 import jax_cosmo.background as bkgrd
 import time
-import helpers.constants as constants
+import godmax.helpers.constants as constants
 from jax_cosmo import Cosmology
-from helpers.jax_cosmo_power import linear_matter_power
+from godmax.helpers.jax_cosmo_power import linear_matter_power
 from jax_cosmo.background import angular_diameter_distance, radial_comoving_distance
-from matter_pk_symbolic import *
+from godmax.matter_pk_symbolic import *
 
 class EmptyCallable:
     def __call__(self, *args, **kwargs):
@@ -292,6 +292,18 @@ class base_class:
             )
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
+        # Single physical switch for the tSZ (pressure) sector.
+        # True  = full baryonic tSZ model: baryonified gas density, DMB gravitational
+        #         potential, nonthermal pressure included (P_th = P_tot * (1 - R_nt)).
+        # False = fully thermal NFW reference: gas traces NFW (fgas * rho_nfw), NFW
+        #         gravitational potential, P_th = P_tot. No amplitude or low-k matching
+        #         to the baryonified branch is applied — the branches are independent
+        #         and their difference is the full baryonic modification of the tSZ signal.
+        # Independent of matter/galaxy toggles.
+        # Accept either spelling of the key (baryonification_tSZ / baryonification_tsz) so a casing
+        # typo does not silently leave the tSZ baryonification on.
+        self.baryonification_tSZ = analysis_dict.get(
+            'baryonification_tSZ', analysis_dict.get('baryonification_tsz', True))
         self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
 
         self.lowpass_Pmm1h_lowk = analysis_dict.get('lowpass_Pmm1h_lowk', True)
@@ -346,7 +358,13 @@ class base_class:
         # Controls the accuracy of the trapezoidal integration.
         self.num_points_trapz_int = analysis_dict.get('num_points_trapz_int', 64)
         self.num_points_gal_cal = analysis_dict.get('num_points_trapz_int', 32)
-        
+        # Nodes of the halofit non-linear-scale search (and its Simpson steps). R_nl is found by linear
+        # interpolation to sigma(R)=1 on this grid, so d R_nl / d(cosmology) is piecewise constant in
+        # between nodes: the value converges by ~64 nodes, the derivative does not. At 64 the d/dOm of
+        # k_nl, C and ln P_nl are wrong by tens of percent; 512 is within ~2% of the grid-free result
+        # (notebooks/test-godmax/04_halofit_num_points_convergence.ipynb).
+        self.num_points_halofit = int(analysis_dict.get('num_points_halofit', 512))
+
         self.calc_nfw_only = analysis_dict.get('calc_nfw_only', True)
         self.beam_fwhm_arcmin = analysis_dict.get('beam_fwhm_arcmin', 1.4)
         self.sig_beam = self.beam_fwhm_arcmin * (1. / 60.) * (jnp.pi / 180.) * (1. / jnp.sqrt(8. * jnp.log(2)))

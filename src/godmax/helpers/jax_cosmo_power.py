@@ -85,7 +85,7 @@ def linear(cosmo, k, a, transfer_fn):
     return linear_matter_power(cosmo, k, a, transfer_fn)
 
 
-def halofit_parameters(cosmo, a, transfer_fn=tklib.Eisenstein_Hu, num_points=64):
+def halofit_parameters(cosmo, a, transfer_fn=tklib.Eisenstein_Hu, num_points=512):
     r"""Computes the non linear scale,
     effective spectral index,
     spectral curvature
