@@ -161,6 +161,19 @@ analysis:
   backreaction: True
   model_galaxies: True
   model_tSZ: True
+  # tSZ pressure model:
+  #
+  # true:
+  #   baryonified gas density
+  #   DMB gravitational potential
+  #   nonthermal pressure included
+  #
+  # false:
+  #   gas traces NFW
+  #   NFW gravitational potential
+  #   fully thermal HSE pressure
+  #
+  baryonification_tSZ: True
   num_points_trapz_int: 32
   num_points_gal_cal: 32
   calc_nfw_only: True

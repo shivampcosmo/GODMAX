@@ -292,6 +292,18 @@ class base_class:
             )
         # Weather to model the matter with full baryonic effects or just with halofit, for shear-2pt chains
         self.model_matter = analysis_dict.get('model_matter','DMB')
+        # Single physical switch for the tSZ (pressure) sector.
+        # True  = full baryonic tSZ model: baryonified gas density, DMB gravitational
+        #         potential, nonthermal pressure included (P_th = P_tot * (1 - R_nt)).
+        # False = fully thermal NFW reference: gas traces NFW (fgas * rho_nfw), NFW
+        #         gravitational potential, P_th = P_tot. No amplitude or low-k matching
+        #         to the baryonified branch is applied — the branches are independent
+        #         and their difference is the full baryonic modification of the tSZ signal.
+        # Independent of matter/galaxy toggles.
+        # Accept either spelling of the key (baryonification_tSZ / baryonification_tsz) so a casing
+        # typo does not silently leave the tSZ baryonification on.
+        self.baryonification_tSZ = analysis_dict.get(
+            'baryonification_tSZ', analysis_dict.get('baryonification_tsz', True))
         self.hod_params_model = analysis_dict.get('hod_params_model', 'combined')
 
         self.lowpass_Pmm1h_lowk = analysis_dict.get('lowpass_Pmm1h_lowk', True)
