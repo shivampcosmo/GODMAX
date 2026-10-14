@@ -13,11 +13,11 @@ Mpc_to_cm = 3.086e24
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
 import jax_cosmo.background as bkgrd
 import time
-import helpers.constants as constants
+import godmax.helpers.constants as constants
 from jax_cosmo import Cosmology
-from helpers.jax_cosmo_power import linear_matter_power
+from godmax.helpers.jax_cosmo_power import linear_matter_power
 from jax_cosmo.background import angular_diameter_distance, radial_comoving_distance
-from matter_pk_symbolic import *
+from godmax.matter_pk_symbolic import *
 
 class EmptyCallable:
     def __call__(self, *args, **kwargs):

@@ -3,8 +3,8 @@
 # from mcfit_jax import mcfit
 # import kernels
 
-from mcfitjax.mcfit_jax import mcfit
-import mcfitjax.kernels as kernels
+from godmax.mcfitjax.mcfit_jax import mcfit
+import godmax.mcfitjax.kernels as kernels
 
 from jax.numpy import pi
 

@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 from jax import jit
-from matter_pk_symbolic import symbolic_D, symbolic_As
+from godmax.matter_pk_symbolic import symbolic_D, symbolic_As
 
 @jit
 def symbolic_lnsigma_corr(R, Omm, Omb, h, ns):

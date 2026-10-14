@@ -1,13 +1,13 @@
-from get_radial_profiles import Profiles
-from base_class import get_vmapped_func, get_vmapped_func_warg
+from godmax.get_radial_profiles import Profiles
+from godmax.base_class import get_vmapped_func, get_vmapped_func_warg
 import jax.numpy as jnp
 from jax import jit, vmap
 from functools import partial
-from helpers.jax_cosmo_power import halofit_parameters, nonlinear_matter_power
+from godmax.helpers.jax_cosmo_power import halofit_parameters, nonlinear_matter_power
 import jax.scipy.integrate as jsi
-import helpers.constants as constants
-from mcfitjax.cosmology_jax import xi2P
-from matter_pk_symbolic import *
+import godmax.helpers.constants as constants
+from godmax.mcfitjax.cosmology_jax import xi2P
+from godmax.matter_pk_symbolic import *
 
 
 class get_Pkz(Profiles):

@@ -1,6 +1,6 @@
 import os
-from base_class import get_vmapped_func, get_vmapped_func_warg
-from get_Cls import get_Cl
+from godmax.base_class import get_vmapped_func, get_vmapped_func_warg
+from godmax.get_Cls import get_Cl
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 import numpy as np
@@ -11,9 +11,9 @@ import astropy.units as u
 from astropy import constants as const
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.eV / u.cm**3)).value
-from mcfitjax.transforms import Hankel
+from godmax.mcfitjax.transforms import Hankel
 import time
-from helpers.twobessel import *
+from godmax.helpers.twobessel import *
 import interpax
 import scipy as sp
 import math

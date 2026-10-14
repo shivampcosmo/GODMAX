@@ -1,6 +1,6 @@
 import os, sys
-from base_class import get_vmapped_func, get_vmapped_func_warg
-from get_radial_profiles import Profiles
+from godmax.base_class import get_vmapped_func, get_vmapped_func_warg
+from godmax.get_radial_profiles import Profiles
 import jax
 import jax.numpy as jnp
 from astropy.io import fits
@@ -15,7 +15,7 @@ import astropy.units as u
 RHO_CRIT_0_MPC3 = 2.77536627245708E11
 G_new = ((const.G * (u.M_sun / u.Mpc**3) * (u.M_sun) / (u.Mpc)).to(u.keV / u.cm**3)).value
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
-import helpers.constants as constants
+import godmax.helpers.constants as constants
 mp = (1.6726219e-27*u.kg).to(u.Msun).value
 mue = 1.14
 Mpc_to_cm = 3.086e24
@@ -30,7 +30,7 @@ from jax_cosmo import Cosmology
 import interpax
 from tqdm import tqdm
 import time
-from mcfitjax.transforms import Hankel
+from godmax.mcfitjax.transforms import Hankel
 from jax.random import PRNGKey, split, poisson, uniform, normal, bernoulli
 from functools import partial
 from jax.scipy.ndimage import map_coordinates

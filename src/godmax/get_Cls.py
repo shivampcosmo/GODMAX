@@ -1,5 +1,5 @@
-from get_Pkzs import get_Pkz
-from base_class import get_vmapped_func, get_vmapped_func_warg, EmptyCallable
+from godmax.get_Pkzs import get_Pkz
+from godmax.base_class import get_vmapped_func, get_vmapped_func_warg, EmptyCallable
 import jax.numpy as jnp
 from jax import jit, vmap
 import jax.scipy.integrate as jsi

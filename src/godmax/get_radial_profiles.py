@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 from functools import partial
-import helpers.constants as constants
+import godmax.helpers.constants as constants
 import astropy.units as u
 import jax
 from astropy import constants as const
@@ -11,8 +11,8 @@ from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 import jax_cosmo.background as bkgrd
 import time
 import interpax
-from base_class import base_class, get_vmapped_func, get_vmapped_func_warg
-from hmf_symbolic import *
+from godmax.base_class import base_class, get_vmapped_func, get_vmapped_func_warg
+from godmax.hmf_symbolic import *
 
 RMAX_R200c = 8.
 # Define constants once at module level

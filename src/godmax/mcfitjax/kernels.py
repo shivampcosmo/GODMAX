@@ -1,9 +1,9 @@
 from jax.numpy import arange, exp, log, ndim, pi, sqrt
 import jax.numpy as jnp
-from mcfitjax.loggamma_jax import loggamma as loggamma_orig
+from godmax.mcfitjax.loggamma_jax import loggamma as loggamma_orig
 from jax import vmap
 loggamma = vmap(loggamma_orig, in_axes=0)
-from mcfitjax.loggamma_jax import cgamma as gamma
+from godmax.mcfitjax.loggamma_jax import cgamma as gamma
 
 
 def _deriv(MK, deriv):
