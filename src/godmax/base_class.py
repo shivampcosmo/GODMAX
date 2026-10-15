@@ -193,6 +193,8 @@ class base_class:
         self.beta_nt = sim_params_dict.get('beta_nt',0.5)
         self.n_nt = sim_params_dict.get('n_nt',0.3)
 
+        # HOD model choice
+        self.Zheng_HOD = analysis_dict.get('Zheng_HOD', False)
 
         # Stellar profile parameters. These are also the galaxy HOD parameters.
         # Keep scalar attributes for older configs and array attributes for per-bin HOD configs.
@@ -225,6 +227,27 @@ class base_class:
         set_hod_param('Bsat_Nsat', 9.01)
         set_hod_param('betacut_Nsat', 0.6)
         set_hod_param('betasat_Nsat', 0.74)
+
+        if self.Zheng_HOD:
+            set_hod_param('log10Mmin_Ncen', 12.0) # Halo mass threshold, in log(Msun/h)
+            # Fix the SHMR evolution and shape parameters
+            # to recover the usual HOD configuration.
+            fixed_hod_params = {
+                'log10M1_a_fshmr': 0.0,
+                'log10Mstar0_a_fshmr': 0.0,
+                'beta_a_fshmr': 0.0,
+                'delta_fshmr': 0.0,
+                'delta_a_fshmr': 0.0,
+                'gamma_fshmr': 0.0,
+                'gamma_a_fshmr': 0.0,
+                'Bcut_Nsat': 0.0,
+                'betacut_Nsat': 0.0,
+                'betasat_Nsat': 0.0,
+            }
+
+            for name, value in fixed_hod_params.items():
+                setattr(self, name, value)
+                setattr(self, f'{name}_array', jnp.atleast_1d(jnp.asarray(value)))
 
         fcen_array = sim_params_dict.get('fcen_array', None)
         if fcen_array is not None:
