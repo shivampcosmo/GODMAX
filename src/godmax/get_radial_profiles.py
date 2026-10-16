@@ -226,6 +226,8 @@ class Profiles(base_class):
         self.betasat_Nsat_z = select_hod_array(self.betasat_Nsat_array)
         self.betacut_Nsat_z = select_hod_array(self.betacut_Nsat_array)
         self.alphasat_Nsat_z = select_hod_array(self.alphasat_Nsat_array)
+        if self.Zheng_HOD:
+            self.log10Mmin_Ncen_z = select_hod_array(self.log10Mmin_Ncen_array)
 
         z_edges_lower = self.z_edges_bins_lens[:, 0]
         z_edges_upper = self.z_edges_bins_lens[:, 1]
@@ -757,43 +759,50 @@ class Profiles(base_class):
 
     @partial(jit, static_argnums=(0,))
     def get_Mthresh(self, jz):
-        npoints = self.num_points_gal_cal
-        nbar_inp = self.nbar_gal_comoving_array[jz]
-        def get_Ncen(jz, jM, log10mthresh):
-            log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
-            num = log10mthresh - log10Mstar
-            denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
-            val = self.fcen_z[jz] * (0.5 * (1 - jax.lax.erf(num / denom)))
-            return val
 
-        def get_Nsat(jz, jM, log10mthresh):
-            Mval = self.M_array[jM]
-            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
-            Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
-            Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
-            Ncen = get_Ncen(jz, jM, log10mthresh) / jnp.maximum(self.fcen_z[jz], 1e-10)
-            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
-            return val
+        if self.Zheng_HOD:
+            log10Mmin = self.log10Mmin_Ncen_z[jz] - jnp.log10(self.h)
+            log10Mthresh = self.log10Mstar0_fshmr_z[jz] + (log10Mmin - self.log10M1_fshmr_z[jz]) / self.beta_fshmr_z[jz]
+            return 10**log10Mthresh * self.h
+        
+        else:
+            npoints = self.num_points_gal_cal
+            nbar_inp = self.nbar_gal_comoving_array[jz]
+            def get_Ncen(jz, jM, log10mthresh):
+                log10Mstar = jnp.log10(self.get_Mstar_Mh(jz, jM))
+                num = log10mthresh - log10Mstar
+                denom = jnp.sqrt(2) * self.siglogMstar_Ncen_z[jz]
+                val = self.fcen_z[jz] * (0.5 * (1 - jax.lax.erf(num / denom)))
+                return val
 
-        def get_Nsat(jz, jM, log10mthresh):
-            Mval = self.M_array[jM]
-            Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
-            Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
-            Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
-            Ncen = get_Ncen(jz, jM, log10mthresh) / jnp.maximum(self.fcen_z[jz], 1e-10)
-            val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
-            return val            
+            def get_Nsat(jz, jM, log10mthresh):
+                Mval = self.M_array[jM]
+                Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
+                Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
+                Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
+                Ncen = get_Ncen(jz, jM, log10mthresh) / jnp.maximum(self.fcen_z[jz], 1e-10)
+                val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
+                return val
 
-        Mthresh_array = jnp.logspace(9, 14, 2*npoints)
-        Ncen_mat = get_vmapped_func(get_Ncen, 3)(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
-        Nsat_mat = get_vmapped_func(get_Nsat, 3)(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
-        Ntot_mat = (Ncen_mat + Nsat_mat)[0,...]
-        dndlogM = self.hmf_Mz_mat[jz,:][:, None]
-        nbar = jsi.trapezoid(dndlogM * Ntot_mat, x=jnp.log(self.M_array), axis=0)
+            def get_Nsat(jz, jM, log10mthresh):
+                Mval = self.M_array[jM]
+                Mh_Mthresh = self.get_Mh_Mstar(jz, jM, Mstar_array=10**log10mthresh/self.h)
+                Msat = (1e12 * self.h) * self.Bsat_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betasat_Nsat_z[jz]
+                Mcut = (1e12 * self.h) * self.Bcut_Nsat_z[jz] * (Mh_Mthresh / 1e12)**self.betacut_Nsat_z[jz]
+                Ncen = get_Ncen(jz, jM, log10mthresh) / jnp.maximum(self.fcen_z[jz], 1e-10)
+                val = Ncen * ((Mval / Msat)**self.alphasat_Nsat_z[jz]) * jnp.exp(-(Mcut / Mval))
+                return val            
 
-        func = nbar_inp - nbar
-        log10Mthresh = jnp.interp(0, func, jnp.log10(Mthresh_array))
-        return 10**log10Mthresh
+            Mthresh_array = jnp.logspace(9, 14, 2*npoints)
+            Ncen_mat = get_vmapped_func(get_Ncen, 3)(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
+            Nsat_mat = get_vmapped_func(get_Nsat, 3)(jnp.array([jz]), jnp.arange(len(self.M_array)), jnp.log10(Mthresh_array)).T
+            Ntot_mat = (Ncen_mat + Nsat_mat)[0,...]
+            dndlogM = self.hmf_Mz_mat[jz,:][:, None]
+            nbar = jsi.trapezoid(dndlogM * Ntot_mat, x=jnp.log(self.M_array), axis=0)
+
+            func = nbar_inp - nbar
+            log10Mthresh = jnp.interp(0, func, jnp.log10(Mthresh_array))
+            return 10**log10Mthresh
 
     @partial(jit, static_argnums=(0,))
     def get_fstar_cen(self, jz, jM):
