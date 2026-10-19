@@ -378,7 +378,8 @@ class base_class:
 
         self.is_cmb_lensing = analysis_dict.get('is_cmb_lensing', False)
         a_CMB = 1/(1 + 1100)
-        self.chi_CMB = radial_comoving_distance(self.cosmo_jax, a_CMB)
+        # jax_cosmo returns shape (1,) for a scalar a; squeeze so Wk_mat is (nbins, nz_for_Cls).
+        self.chi_CMB = jnp.squeeze(radial_comoving_distance(self.cosmo_jax, a_CMB))
         nz_info_dict = analysis_dict.get('nz_source_info_dict', None)
         try:
             self.nbins = nz_info_dict['nbins']
