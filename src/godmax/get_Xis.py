@@ -1,9 +1,9 @@
-from get_Cls import get_Cl
-from base_class import get_vmapped_func
+from godmax.get_Cls import get_Cl
+from godmax.base_class import get_vmapped_func
 import jax.numpy as jnp
 from jax import jit
 from functools import partial
-from mcfitjax.transforms import Hankel
+from godmax.mcfitjax.transforms import Hankel
 
 class get_xi(get_Cl):
     """

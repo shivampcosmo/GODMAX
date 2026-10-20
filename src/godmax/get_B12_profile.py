@@ -1,5 +1,5 @@
 import numpy as np
-from base_class import base_class, get_vmapped_func, get_vmapped_func_warg
+from godmax.base_class import base_class, get_vmapped_func, get_vmapped_func_warg
 from functools import partial
 from jax import grad, jit, vmap
 import astropy.units as u
@@ -10,7 +10,7 @@ mp = (1.6726219e-27*u.kg).to(u.Msun).value
 mue = 1.14
 Mpc_to_cm = 3.086e24
 G_new_rhom = const.G.to(u.Mpc**3 / ((u.s**2) * u.M_sun))
-import helpers.constants as constants
+import godmax.helpers.constants as constants
 import jax_cosmo.background as bkgrd
 from jax_cosmo import Cosmology
 import jax.numpy as jnp

@@ -161,8 +161,24 @@ analysis:
   backreaction: True
   model_galaxies: True
   model_tSZ: True
+  # tSZ pressure model:
+  #
+  # true:
+  #   baryonified gas density
+  #   DMB gravitational potential
+  #   nonthermal pressure included
+  #
+  # false:
+  #   gas traces NFW
+  #   NFW gravitational potential
+  #   fully thermal HSE pressure
+  #
+  baryonification_tSZ: True
   num_points_trapz_int: 32
   num_points_gal_cal: 32
+  # Nodes of the halofit non-linear-scale search. Below ~256 the cosmology derivatives of P_halofit are
+  # wrong by tens of percent (the value is fine); see notebooks/test-godmax/04_halofit_num_points_convergence.ipynb
+  num_points_halofit: 512
   calc_nfw_only: True
   beam_fwhm_arcmin: 1.6
   verbose_time: False  
